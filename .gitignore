@@ -1,0 +1,49 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+dist/
+build/
+
+# Virtual environments
+venv/
+.venv/
+env/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Test outputs / temporary results
+redock_test_*/
+vs_test/
+md_results/
+docking_results/
+*.log
+
+# Test data run artifacts
+test_data/cli_run*/
+test_data/dock_test/
+test_data/e2e_*/
+test_data/6LU7_out/
+test_data/*.pdbqt
+
+# GitHub CLI artifacts
+gmx_MMPBSA.log
+
+# Large data files
+*.dcd
+*.xtc
+*.trr
+trajectory.dcd
+
+# Session artifacts
+*.tmp
+/tmp/
