@@ -32,6 +32,50 @@ INTERACTION_CATEGORIES = {
 }
 
 
+def _extract_ligand_atoms_plip(rec: Any, plip_attr: str) -> list[dict[str, Any]]:
+    """Extract ligand atom coordinates from a PLIP interaction record."""
+    atoms: list[dict[str, Any]] = []
+    if plip_attr in ("hbonds_ldon",):
+        # Ligand is H-bond donor
+        atoms = [{"coords": rec.d.coords}]
+    elif plip_attr in ("hbonds_pdon",):
+        # Ligand is H-bond acceptor
+        atoms = [{"coords": rec.a.coords}]
+    elif plip_attr in ("hydrophobic_contacts",):
+        atoms = [{"coords": rec.ligatom.coords}]
+    elif plip_attr in ("pistacking",):
+        if hasattr(rec, "ligandring") and rec.ligandring:
+            atoms = [{"coords": a.coords} for a in rec.ligandring.atoms]
+    elif plip_attr in ("pication_laro",):
+        # Ligand is aromatic ring (protein has cation)
+        if hasattr(rec, "ring") and rec.ring:
+            atoms = [{"coords": a.coords} for a in rec.ring.atoms]
+    elif plip_attr in ("pication_paro",):
+        # Ligand is cation (protein has aromatic ring)
+        if hasattr(rec, "charge") and rec.charge:
+            atoms = [{"coords": a.coords} for a in rec.charge.atoms]
+    elif plip_attr in ("saltbridge_lneg",):
+        # Ligand is negatively charged
+        if hasattr(rec, "negative") and rec.negative:
+            atoms = [{"coords": a.coords} for a in rec.negative.atoms]
+    elif plip_attr in ("saltbridge_pneg",):
+        # Ligand is positively charged
+        if hasattr(rec, "positive") and rec.positive:
+            atoms = [{"coords": a.coords} for a in rec.positive.atoms]
+    elif plip_attr in ("halogen_bonds",):
+        if hasattr(rec, "don") and rec.don:
+            atoms = [{"coords": rec.don.x.coords}]
+    elif plip_attr in ("water_bridges",):
+        if rec.protisdon:
+            atoms = [{"coords": rec.a.coords}]
+        else:
+            atoms = [{"coords": rec.d.coords}]
+    elif plip_attr in ("metal_complexes",):
+        if hasattr(rec, "target") and rec.target:
+            atoms = [{"coords": rec.target.atom.coords}]
+    return atoms
+
+
 def _build_complex_pdb(receptor_pdb: str, ligand_pdbqt: str, output_pdb: str) -> str:
     """
     Merge receptor PDB and ligand PDBQT into a single PDB for PLIP analysis.
@@ -145,6 +189,7 @@ def detect_interactions_plip(
                     if distance is not None:
                         desc += f" — {distance:.2f} Å"
 
+                    ligand_atoms = _extract_ligand_atoms_plip(rec, plip_attr)
                     interactions.append({
                         "type": display_type,
                         "color": color,
@@ -154,6 +199,7 @@ def detect_interactions_plip(
                         "atom": atom,
                         "distance": round(float(distance), 2) if distance is not None else None,
                         "description": desc,
+                        "ligand_atoms": ligand_atoms,
                     })
                 except Exception as exc:
                     logger.debug(f"Skipping malformed PLIP record: {exc}")

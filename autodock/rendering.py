@@ -5,6 +5,7 @@ autodock.rendering — Publication-quality visualization.
 """
 from __future__ import annotations
 
+import math
 import os
 import re
 import tempfile
@@ -242,21 +243,56 @@ def render_scene_pymol(
 # RDKit 2D Interaction Diagram
 # ─────────────────────────────────────────────────────────────────────────────
 
+def _parse_smiles_idx_from_pdbqt(ligand_pdbqt: str) -> dict[int, int]:
+    """Parse REMARK SMILES IDX lines from PDBQT.
+
+    Returns mapping: PDB serial number -> SMILES atom index (1-based).
+    """
+    smiles_idx_map: dict[int, int] = {}
+    with open(ligand_pdbqt) as fh:
+        for line in fh:
+            if line.startswith("REMARK SMILES IDX"):
+                parts = line.strip().split()
+                nums = [int(x) for x in parts[3:]]
+                for i in range(0, len(nums), 2):
+                    smiles_idx = nums[i]
+                    pdb_serial = nums[i + 1]
+                    smiles_idx_map[pdb_serial] = smiles_idx
+    return smiles_idx_map
+
+
+def _parse_pdbqt_coords(ligand_pdbqt: str) -> dict[tuple[float, float, float], int]:
+    """Parse ATOM/HETATM coordinates from PDBQT.
+
+    Returns mapping: rounded (x, y, z) -> PDB serial number.
+    """
+    coords_map: dict[tuple[float, float, float], int] = {}
+    with open(ligand_pdbqt) as fh:
+        for line in fh:
+            if line.startswith(("ATOM  ", "HETATM")):
+                serial = int(line[6:11].strip())
+                x = float(line[30:38])
+                y = float(line[38:46])
+                z = float(line[46:54])
+                coords_map[(round(x, 3), round(y, 3), round(z, 3))] = serial
+    return coords_map
+
+
 def render_interactions_2d(
     receptor_pdb: str,
     ligand_pdbqt: str,
     interactions: list[dict[str, Any]],
     output_png: str,
-    width: int = 1000,
-    height: int = 800,
+    width: int = 1200,
+    height: int = 900,
     dpi: int = DEFAULT_DPI,
 ) -> str:
     """
     Render a 2D interaction diagram using RDKit + PIL.
 
-    Draws the ligand 2D structure with colored dots / arcs indicating
-    interacting residues.  This is a simplified but publication-quality
-    representation suitable for supplementary figures.
+    Draws the ligand 2D structure with highlighted interacting atoms
+    colored by interaction type, plus residue labels positioned near
+    the corresponding atoms.
 
     Args:
         receptor_pdb: Receptor PDB (not directly used, kept for API consistency).
@@ -272,26 +308,24 @@ def render_interactions_2d(
     """
     try:
         from rdkit import Chem
-        from rdkit.Chem import Draw, rdMolDescriptors
+        from rdkit.Chem import Draw, AllChem
         from PIL import Image, ImageDraw, ImageFont
     except ImportError as exc:
         raise VisualizationError(f"Required packages missing for 2D rendering: {exc}")
 
-    # Extract SMILES from PDBQT if available
+    # ── Parse ligand structure ────────────────────────────────────────────────
     smiles = None
     with open(ligand_pdbqt) as fh:
         for line in fh:
-            if line.startswith("REMARK SMILES "):
+            if line.startswith("REMARK SMILES ") and not line.startswith("REMARK SMILES IDX"):
                 parts = line.strip().split()
                 if len(parts) >= 3:
                     smiles = parts[2]
                 break
 
-    # Parse ligand structure
     if smiles:
         mol = Chem.MolFromSmiles(smiles)
     else:
-        # Try parsing PDBQT as PDB block
         with open(ligand_pdbqt) as fh:
             lines = fh.readlines()
         clean = [l for l in lines if l.startswith(("ATOM  ", "HETATM"))]
@@ -301,32 +335,186 @@ def render_interactions_2d(
         raise VisualizationError("Could not parse ligand structure for 2D rendering")
 
     mol = Chem.RemoveHs(mol)
-    from rdkit.Chem import AllChem
     AllChem.Compute2DCoords(mol)
 
-    # Generate RDKit 2D depiction
+    # ── Build mappings from PDBQT ─────────────────────────────────────────────
+    smiles_idx_map = _parse_smiles_idx_from_pdbqt(ligand_pdbqt)
+    pdbqt_coords = _parse_pdbqt_coords(ligand_pdbqt)
+
+    # ── Map interactions to RDKit atoms ───────────────────────────────────────
+    # Group by (type, resn, resi, chain) to deduplicate labels
+    interaction_groups: dict[tuple, dict[str, Any]] = {}
+    for inter in interactions:
+        key = (inter.get("type"), inter.get("resn"), inter.get("resi"), inter.get("chain"))
+        if key not in interaction_groups:
+            interaction_groups[key] = {
+                "type": inter.get("type"),
+                "resn": inter.get("resn"),
+                "resi": inter.get("resi"),
+                "chain": inter.get("chain"),
+                "color": inter.get("color"),
+                "rdkit_atoms": set(),
+            }
+        for atom_info in inter.get("ligand_atoms", []):
+            coords = tuple(round(c, 3) for c in atom_info["coords"])
+            pdb_serial = pdbqt_coords.get(coords)
+            if pdb_serial and pdb_serial in smiles_idx_map:
+                rdkit_idx = smiles_idx_map[pdb_serial] - 1
+                if 0 <= rdkit_idx < mol.GetNumAtoms():
+                    interaction_groups[key]["rdkit_atoms"].add(rdkit_idx)
+
+    # ── Build RDKit highlight dictionaries ────────────────────────────────────
+    highlight_atoms: set[int] = set()
+    highlight_atom_colors: dict[int, tuple[float, float, float]] = {}
+
+    color_rgb_float = {
+        "cyan": (0.0, 0.75, 0.75),
+        "orange": (1.0, 0.55, 0.0),
+        "green": (0.0, 0.65, 0.0),
+        "purple": (0.55, 0.15, 0.85),
+        "red": (0.85, 0.1, 0.15),
+        "yellow": (0.9, 0.75, 0.0),
+        "blue": (0.15, 0.45, 1.0),
+        "grey": (0.5, 0.5, 0.5),
+    }
+
+    for group in interaction_groups.values():
+        color_name = group["color"]
+        rgb = color_rgb_float.get(color_name, (0.5, 0.5, 0.5))
+        for rdkit_idx in group["rdkit_atoms"]:
+            highlight_atoms.add(rdkit_idx)
+            # If atom already has a color, keep the first one encountered
+            if rdkit_idx not in highlight_atom_colors:
+                highlight_atom_colors[rdkit_idx] = rgb
+
+    # ── Draw molecule with highlights ─────────────────────────────────────────
     drawer = Draw.MolDraw2DCairo(width, height)
-    drawer.DrawMolecule(mol)
+    drawer.drawOptions().highlightRadius = 0.25
+    drawer.drawOptions().clearBackground = True
+
+    if highlight_atoms:
+        drawer.DrawMolecule(
+            mol,
+            highlightAtoms=list(highlight_atoms),
+            highlightAtomColors=highlight_atom_colors,
+        )
+    else:
+        drawer.DrawMolecule(mol)
     drawer.FinishDrawing()
     png_data = drawer.GetDrawingText()
 
-    # Open as PIL Image
     img = Image.open(__import__("io").BytesIO(png_data))
     draw = ImageDraw.Draw(img)
 
-    # Draw legend
+    # ── Fonts ─────────────────────────────────────────────────────────────────
     try:
-        font = ImageFont.truetype("/System/Library/Fonts/Helvetica.ttc", 18)
+        font = ImageFont.truetype("/System/Library/Fonts/Helvetica.ttc", 16)
+        small_font = ImageFont.truetype("/System/Library/Fonts/Helvetica.ttc", 12)
     except Exception:
         font = ImageFont.load_default()
+        small_font = ImageFont.load_default()
 
-    # Count interactions by type
+    # ── Draw residue labels near atoms ────────────────────────────────────────
+    # Sort groups so that labels with fewer atoms (more specific) are placed first
+    sorted_groups = sorted(
+        interaction_groups.values(),
+        key=lambda g: len(g["rdkit_atoms"]),
+    )
+
+    placed_boxes: list[tuple[int, int, int, int]] = []
+
+    # Count how many labels anchor to each atom (for fan-out placement)
+    atom_label_counts: dict[int, int] = {}
+    for group in sorted_groups:
+        if not group["rdkit_atoms"]:
+            continue
+        best_atom = min(group["rdkit_atoms"], key=lambda idx: drawer.GetDrawCoords(idx).y)
+        atom_label_counts[best_atom] = atom_label_counts.get(best_atom, 0) + 1
+
+    atom_label_indices: dict[int, int] = {}
+
+    for group in sorted_groups:
+        if not group["rdkit_atoms"]:
+            continue
+
+        label = f"{group['resn']}{group['resi']}"
+        color_name = group["color"]
+        rgb = tuple(int(c * 255) for c in color_rgb_float.get(color_name, (0.5, 0.5, 0.5)))
+
+        # Pick the atom closest to the top of the canvas for this group
+        best_atom = min(group["rdkit_atoms"], key=lambda idx: drawer.GetDrawCoords(idx).y)
+        pos = drawer.GetDrawCoords(best_atom)
+        ax, ay = int(pos.x), int(pos.y)
+
+        bbox = draw.textbbox((0, 0), label, font=font)
+        text_w = bbox[2] - bbox[0]
+        text_h = bbox[3] - bbox[1]
+        padding = 3
+
+        # Fan-out labels that share the same anchor atom
+        total_for_atom = atom_label_counts.get(best_atom, 1)
+        idx_for_atom = atom_label_indices.get(best_atom, 0)
+        atom_label_indices[best_atom] = idx_for_atom + 1
+
+        base_angle = -math.pi / 2  # straight up
+        if total_for_atom > 1:
+            spread = min(math.pi * 0.6, 0.35 * total_for_atom)
+            base_angle = -math.pi / 2 + (idx_for_atom - (total_for_atom - 1) / 2) * spread / (total_for_atom - 1)
+
+        dist = 55
+        lx = ax + int(dist * math.cos(base_angle)) - text_w // 2
+        ly = ay + int(dist * math.sin(base_angle)) - text_h // 2
+
+        # Check overlap with already-placed boxes and nudge if needed
+        for _ in range(15):
+            box = (lx - padding, ly - padding, lx + text_w + padding, ly + text_h + padding)
+            overlap = False
+            for bx1, by1, bx2, by2 in placed_boxes:
+                if not (box[2] < bx1 or box[0] > bx2 or box[3] < by1 or box[1] > by2):
+                    overlap = True
+                    lx += 10
+                    ly -= 6
+                    break
+            if not overlap:
+                break
+
+        # Keep within canvas margins
+        lx = max(5, min(lx, width - text_w - 5))
+        ly = max(5, min(ly, height - text_h - 5))
+
+        # Draw leader line from atom to label centre
+        draw.line([(ax, ay), (lx + text_w // 2, ly + text_h // 2)], fill=rgb, width=1)
+
+        # Draw label background box
+        draw.rectangle(
+            [(lx - padding, ly - padding), (lx + text_w + padding, ly + text_h + padding)],
+            fill=(255, 255, 255, 220),
+            outline=rgb,
+        )
+        draw.text((lx, ly), label, fill=(0, 0, 0), font=font)
+
+        placed_boxes.append((
+            lx - padding, ly - padding,
+            lx + text_w + padding, ly + text_h + padding,
+        ))
+
+    # ── Draw legend box ───────────────────────────────────────────────────────
+    color_rgb_int = {
+        "cyan": (0, 190, 190),
+        "orange": (255, 140, 0),
+        "green": (0, 170, 0),
+        "purple": (140, 40, 230),
+        "red": (210, 30, 50),
+        "yellow": (230, 190, 0),
+        "blue": (40, 115, 255),
+        "grey": (128, 128, 128),
+    }
+
     type_counts: dict[str, int] = {}
-    for inter in interactions:
-        t = inter.get("type", "Unknown")
+    for group in interaction_groups.values():
+        t = group["type"]
         type_counts[t] = type_counts.get(t, 0) + 1
 
-    # Draw legend box
     legend_x = width - 280
     legend_y = 20
     legend_h = 30 + len(type_counts) * 24
@@ -337,43 +525,13 @@ def render_interactions_2d(
     )
     draw.text((legend_x, legend_y), "Interactions", fill=(0, 0, 0), font=font)
 
-    color_rgb = {
-        "cyan": (0, 200, 200),
-        "orange": (255, 140, 0),
-        "green": (0, 180, 0),
-        "purple": (160, 32, 240),
-        "red": (220, 20, 60),
-        "yellow": (255, 215, 0),
-        "blue": (30, 144, 255),
-        "grey": (128, 128, 128),
-    }
-
     y_off = legend_y + 28
     for itype, count in sorted(type_counts.items()):
         color_name = INTERACTION_COLORS.get(itype, "grey")
-        rgb = color_rgb.get(color_name, (128, 128, 128))
+        rgb = color_rgb_int.get(color_name, (128, 128, 128))
         draw.ellipse([(legend_x, y_off), (legend_x + 14, y_off + 14)], fill=rgb)
         draw.text((legend_x + 20, y_off), f"{itype}: {count}", fill=(0, 0, 0), font=font)
         y_off += 24
-
-    # Draw interacting residue labels near ligand
-    # Map residues to positions (simplified: just list them below legend)
-    if interactions:
-        res_list = []
-        for inter in interactions:
-            resn = inter.get("resn", "")
-            resi = inter.get("resi", "")
-            if resn and resi:
-                label = f"{resn}{resi}"
-                if label not in res_list:
-                    res_list.append(label)
-        if res_list:
-            y_off += 10
-            draw.text((legend_x, y_off), "Residues:", fill=(0, 0, 0), font=font)
-            y_off += 22
-            for label in sorted(res_list):
-                draw.text((legend_x + 10, y_off), label, fill=(50, 50, 50), font=font)
-                y_off += 20
 
     ensure_dir(os.path.dirname(output_png) or ".")
     img.save(output_png, dpi=(dpi, dpi))
