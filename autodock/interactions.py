@@ -246,6 +246,12 @@ def detect_interactions(
     Returns:
         List of interaction dicts.
     """
+    plip_intx: list[dict[str, Any]] = []
+    prolif_intx: list[dict[str, Any]] = []
+
+    if method not in ("plip", "prolif", "both"):
+        raise ValueError(f"Invalid interaction method: {method}. Choose 'plip', 'prolif', or 'both'.")
+
     if method in ("plip", "both"):
         try:
             plip_intx = detect_interactions_plip(receptor_pdb, ligand_pdbqt, output_dir)

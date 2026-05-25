@@ -165,6 +165,7 @@ def cmd_validate(args: argparse.Namespace) -> int:
         ligand_smiles=args.ligand_smiles,
         exhaustiveness=args.exhaustiveness,
         n_poses=args.n_poses,
+        seed=args.seed,
         output_dir=args.output_dir,
         box_padding=args.box_padding,
     )
@@ -220,6 +221,172 @@ def cmd_report(args: argparse.Namespace) -> int:
     # In full pipeline, this reads result pickles / JSON
     print("Report generation requires a completed docking run.")
     print("Use 'autodock run' for end-to-end pipeline with auto-reporting.")
+    return 0
+
+
+def cmd_posebusters_eval(args: argparse.Namespace) -> int:
+    """Run PoseBusters benchmark evaluation."""
+    from autodock.posebusters_eval import run_posebusters_evaluation
+
+    summary = run_posebusters_evaluation(
+        args.id_list,
+        output_dir=args.outdir,
+        exhaustiveness=args.exhaustiveness,
+        n_poses=args.n_poses,
+        seed=args.seed,
+        n_workers=args.workers,
+        max_targets=args.max_targets,
+    )
+
+    print(f"\n{'='*60}")
+    print("📊  PoseBusters Evaluation Complete")
+    print(f"{'='*60}")
+    print(f"  Total targets:      {summary['n_total']}")
+    print(f"  Successful:         {summary['n_success']}")
+    print(f"  Success rate:       {summary['success_rate']*100:.1f}%")
+    if summary['median_rmsd'] is not None:
+        print(f"  Median RMSD:        {summary['median_rmsd']:.2f} Å")
+    print(f"  PoseBusters pass:   {summary['posebusters_pass_count']}/{summary['n_success']}")
+    print(f"  PoseBusters rate:   {summary['posebusters_pass_rate']*100:.1f}%")
+    print(f"{'='*60}")
+    print(f"  Output directory: {args.outdir}")
+    print(f"{'='*60}")
+    return 0
+
+
+def cmd_benchmark_redock(args: argparse.Namespace) -> int:
+    """Run redocking benchmark on a standard target set."""
+    import json
+    from autodock.benchmark import run_redocking_benchmark
+
+    targets = None
+    if args.targets:
+        with open(args.targets, "r") as fh:
+            targets = json.load(fh)
+
+    summary = run_redocking_benchmark(
+        targets=targets,
+        output_dir=args.outdir,
+        exhaustiveness=args.exhaustiveness,
+        n_poses=args.n_poses,
+        seed=args.seed,
+        n_workers=args.workers,
+    )
+
+    print(f"\n{'='*55}")
+    print("📊  Redocking Benchmark Results")
+    print(f"{'='*55}")
+    print(f"  Total targets:     {summary['n_total']}")
+    print(f"  Successful:        {summary['n_success']}")
+    print(f"  Success rate:      {summary['success_rate']*100:.1f}%")
+    if summary['median_rmsd'] is not None:
+        print(f"  Median RMSD:       {summary['median_rmsd']:.2f} Å")
+        print(f"  Mean RMSD:         {summary['mean_rmsd']:.2f} Å ± {summary['rmsd_std']:.2f}")
+    print(f"\n  By family:")
+    for fam, stats in summary.get("by_family", {}).items():
+        print(f"    {fam:20s}  {stats['n_success']}/{stats['n_total']}  ({stats['success_rate']*100:.1f}%)  mean={stats['mean_rmsd']:.2f}Å" if stats['mean_rmsd'] else f"    {fam:20s}  {stats['n_success']}/{stats['n_total']}")
+    print(f"{'='*55}")
+    print(f"  JSON: {summary['json_path']}")
+    if summary.get('csv_path'):
+        print(f"  CSV:  {summary['csv_path']}")
+    print(f"{'='*55}")
+    return 0
+
+
+def cmd_batch_dock(args: argparse.Namespace) -> int:
+    """Run batch docking across multiple receptors and ligands."""
+    import json
+    from autodock.docking import batch_dock
+
+    # Load pocket definitions
+    with open(args.pockets, "r") as fh:
+        pockets_raw = json.load(fh)
+
+    pockets: dict[str, dict[str, tuple[float, float, float]]] = {}
+    for rec_name, pdef in pockets_raw.items():
+        pockets[rec_name] = {
+            "center": tuple(pdef["center"]),
+            "box_size": tuple(pdef["box_size"]),
+        }
+
+    # Build receptor/ligand dicts from file paths
+    receptors: dict[str, str] = {}
+    for path in args.receptors:
+        name = os.path.splitext(os.path.basename(path))[0]
+        receptors[name] = path
+
+    ligands: dict[str, str] = {}
+    for path in args.ligands:
+        name = os.path.splitext(os.path.basename(path))[0]
+        ligands[name] = path
+
+    results = batch_dock(
+        receptors, ligands, pockets,
+        exhaustiveness=args.exhaustiveness,
+        n_poses=args.n_poses,
+        seed=args.seed,
+        output_dir=args.outdir,
+        n_workers=args.workers,
+    )
+
+    print(f"\n{'='*55}")
+    print("🧬  Batch Docking Complete")
+    print(f"{'='*55}")
+    for rec_name, res_list in results.items():
+        successes = sum(1 for r in res_list if r.best_affinity is not None)
+        print(f"  {rec_name}: {successes}/{len(res_list)} ligands docked successfully")
+        for r in res_list:
+            aff = r.best_affinity
+            aff_str = f"{aff:.2f} kcal/mol" if aff is not None else "FAILED"
+            print(f"    {r.compound_name:20s}  {aff_str}")
+    print(f"{'='*55}")
+    print(f"  Output directory: {args.outdir}")
+    print(f"{'='*55}")
+    return 0
+
+
+def cmd_ensemble_dock(args: argparse.Namespace) -> int:
+    """Run repeated docking with ensemble statistics."""
+    from autodock.docking import dock_ensemble
+    from autodock.preparation import find_top_pockets
+
+    center = tuple(args.center) if args.center else None
+    box_size = tuple(args.box_size) if args.box_size else None
+
+    if center is None:
+        pockets = find_top_pockets(args.receptor.replace(".pdbqt", ".pdb"))
+        center = pockets[0]["center"]
+        box_size = pockets[0]["box_size"]
+        print(f"Auto-detected pocket: center={center}, box={box_size}")
+
+    summary = dock_ensemble(
+        args.receptor,
+        args.ligand,
+        center=center,
+        box_size=box_size,
+        n_repeats=args.n_repeats,
+        exhaustiveness=args.exhaustiveness,
+        n_poses=args.n_poses,
+        seed=args.seed,
+        output_dir=args.outdir,
+        compound_name=args.name,
+    )
+
+    print(f"\n{'='*60}")
+    print(f"🧬  Ensemble Docking Complete: {args.name or args.ligand}")
+    print(f"{'='*60}")
+    print(f"  Repeats:          {summary['n_repeats']} ({summary['n_successful']} successful)")
+    print(f"  Best affinity:    {summary['ensemble_best_affinity_mean']:.3f} ± {summary['ensemble_best_affinity_std']:.3f} kcal/mol")
+    print(f"  Range:            {summary['ensemble_best_affinity_min']:.3f} → {summary['ensemble_best_affinity_max']:.3f} kcal/mol")
+    print(f"  CV:               {summary['ensemble_best_affinity_cv']:.3f}")
+    if summary['pose_stability_rmsd_mean'] is not None:
+        print(f"  Pose RMSD:        {summary['pose_stability_rmsd_mean']:.2f} ± {summary['pose_stability_rmsd_std']:.2f} Å")
+    print(f"  Clusters:         {summary['n_clusters']}")
+    print(f"  Confidence:       {summary['confidence'].upper()}")
+    print(f"  Recommendation:   {summary['recommendation']}")
+    print(f"{'='*60}")
+    print(f"  Output directory: {args.outdir}")
+    print(f"{'='*60}")
     return 0
 
 
@@ -503,7 +670,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_dock.add_argument("--box-size", nargs=3, type=float, help="Box size (sx sy sz)")
     p_dock.add_argument("--exhaustiveness", type=int, default=32)
     p_dock.add_argument("--n-poses", type=int, default=20)
-    p_dock.add_argument("--seed", type=int, default=None)
+    p_dock.add_argument("--seed", type=int, default=42)
     p_dock.add_argument("--output-dir", default="./docking_results")
     p_dock.add_argument("--name", help="Compound name")
     p_dock.set_defaults(func=cmd_dock)
@@ -516,6 +683,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_val.add_argument("--ligand-smiles", default=None, help="Optional SMILES for ligand preparation")
     p_val.add_argument("--exhaustiveness", type=int, default=32)
     p_val.add_argument("--n-poses", type=int, default=20)
+    p_val.add_argument("--seed", type=int, default=42)
     p_val.add_argument("--box-padding", type=float, default=5.0)
     p_val.add_argument("--output-dir", default="./redock_validation")
     p_val.set_defaults(func=cmd_validate)
@@ -532,6 +700,53 @@ def build_parser() -> argparse.ArgumentParser:
     p_report.add_argument("result_dir", help="Directory with docking results")
     p_report.set_defaults(func=cmd_report)
 
+    # benchmark-redock
+    p_bench = subparsers.add_parser("benchmark-redock", help="Run redocking benchmark on standard target set")
+    p_bench.add_argument("--outdir", default="./benchmark_results")
+    p_bench.add_argument("--exhaustiveness", type=int, default=32)
+    p_bench.add_argument("--n-poses", type=int, default=20)
+    p_bench.add_argument("--seed", type=int, default=42)
+    p_bench.add_argument("--workers", type=int, default=1)
+    p_bench.add_argument("--targets", type=str, default=None, help="JSON file with custom target list")
+    p_bench.set_defaults(func=cmd_benchmark_redock)
+
+    # posebusters-eval
+    p_pb = subparsers.add_parser("posebusters-eval", help="Run PoseBusters benchmark evaluation")
+    p_pb.add_argument("id_list", help="Text file with PoseBusters IDs (PDBID_CCD per line)")
+    p_pb.add_argument("--outdir", default="./posebusters_results")
+    p_pb.add_argument("--exhaustiveness", type=int, default=32)
+    p_pb.add_argument("--n-poses", type=int, default=20)
+    p_pb.add_argument("--seed", type=int, default=42)
+    p_pb.add_argument("--workers", type=int, default=1)
+    p_pb.add_argument("--max-targets", type=int, default=None, help="Limit to first N targets for quick tests")
+    p_pb.set_defaults(func=cmd_posebusters_eval)
+
+    # batch-dock
+    p_batch = subparsers.add_parser("batch-dock", help="Multi-receptor × multi-ligand batch docking")
+    p_batch.add_argument("--receptors", nargs="+", required=True, help="Receptor PDBQT files")
+    p_batch.add_argument("--ligands", nargs="+", required=True, help="Ligand PDBQT files")
+    p_batch.add_argument("--pockets", required=True, help="JSON file with pocket definitions per receptor")
+    p_batch.add_argument("--exhaustiveness", type=int, default=32)
+    p_batch.add_argument("--n-poses", type=int, default=20)
+    p_batch.add_argument("--seed", type=int, default=42)
+    p_batch.add_argument("--workers", type=int, default=1, help="Parallel workers (-1 = all cores)")
+    p_batch.add_argument("--outdir", default="./batch_docking_results")
+    p_batch.set_defaults(func=cmd_batch_dock)
+
+    # ensemble-dock
+    p_ensemble = subparsers.add_parser("ensemble-dock", help="Repeated docking with ensemble statistics")
+    p_ensemble.add_argument("receptor", help="Receptor PDBQT")
+    p_ensemble.add_argument("ligand", help="Ligand PDBQT")
+    p_ensemble.add_argument("--center", type=float, nargs=3, default=None, help="Box center (x y z)")
+    p_ensemble.add_argument("--box-size", type=float, nargs=3, default=[20.0, 20.0, 20.0], help="Box dimensions (x y z)")
+    p_ensemble.add_argument("--n-repeats", type=int, default=10, help="Number of independent runs")
+    p_ensemble.add_argument("--exhaustiveness", type=int, default=32)
+    p_ensemble.add_argument("--n-poses", type=int, default=20)
+    p_ensemble.add_argument("--seed", type=int, default=42)
+    p_ensemble.add_argument("--outdir", default="./ensemble_docking_results")
+    p_ensemble.add_argument("--name", default=None, help="Compound name")
+    p_ensemble.set_defaults(func=cmd_ensemble_dock)
+
     # virtual-screen
     p_vs = subparsers.add_parser("virtual-screen", help="Screen compound library")
     p_vs.add_argument("--receptor", required=True, help="PDB ID (e.g. 6LU7)")
@@ -539,6 +754,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_vs.add_argument("--outdir", default="./vs_results")
     p_vs.add_argument("--exhaustiveness", type=int, default=16)
     p_vs.add_argument("--n-poses", type=int, default=3)
+    p_vs.add_argument("--seed", type=int, default=42)
     p_vs.add_argument("--workers", type=int, default=1, help="Parallel workers (-1 = all cores)")
     p_vs.set_defaults(func=cmd_virtual_screen)
 
@@ -561,6 +777,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_run.add_argument("--outdir", default="./docking_results")
     p_run.add_argument("--exhaustiveness", type=int, default=32)
     p_run.add_argument("--n-poses", type=int, default=20)
+    p_run.add_argument("--seed", type=int, default=42)
     p_run.set_defaults(func=cmd_run)
 
     return parser

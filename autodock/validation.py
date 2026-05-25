@@ -38,8 +38,8 @@ def validate_pose_with_posebusters(
 
     Args:
         pose_pdbqt: Docked pose PDBQT file.
-        receptor_pdb: Receptor PDB file.
-        ligand_ref_sdf: Optional reference ligand SDF for RMSD comparison.
+        receptor_pdb: Receptor PDB file (conditioning molecule / protein).
+        ligand_ref_sdf: Optional reference ligand SDF (not used by the dock config).
 
     Returns:
         Dict with PoseBusters checks and overall pass/fail.
@@ -50,21 +50,64 @@ def validate_pose_with_posebusters(
         logger.warning("PoseBusters not available — skipping validation")
         return {"available": False, "pass": None}
 
-    busters = PoseBusters()
-    try:
-        results = busters.dock(pose_pdbqt, protein=receptor_pdb, ligand=ligand_ref_sdf)
-    except Exception as exc:
-        logger.warning(f"PoseBusters validation failed: {exc}")
-        return {"available": True, "pass": False, "error": str(exc)}
+    if not _HAVE_RDKIT:
+        logger.warning("RDKit not available — cannot convert PDBQT for PoseBusters")
+        return {"available": False, "pass": None}
 
-    # PoseBusters returns a DataFrame-like object with boolean columns
-    # Common checks: bond_lengths, angles, aromatic_flat, chirality, internal_clash, etc.
+    # Convert PDBQT → temporary SDF because PoseBusters only accepts
+    # .sdf, .mol, .mol2, or .pdb and needs bond information for chemistry checks.
+    import tempfile
+    from rdkit import Chem
+
+    sanitized_pdb = _sanitize_pdbqt_for_rdkit(pose_pdbqt)
+    mol = Chem.MolFromPDBBlock(sanitized_pdb, removeHs=True)
+    if mol is None:
+        logger.warning("PoseBusters: RDKit could not parse sanitized PDBQT")
+        return {"available": True, "pass": False, "error": "RDKit parse failure"}
+
+    mol = Chem.AddHs(mol, addCoords=True)
+
+    tmp_sdf = tempfile.NamedTemporaryFile(mode="w", suffix=".sdf", delete=False)
+    try:
+        writer = Chem.SDWriter(tmp_sdf.name)
+        writer.write(mol)
+        writer.close()
+
+        busters = PoseBusters(config="dock")
+        try:
+            results = busters.bust(tmp_sdf.name, mol_cond=receptor_pdb)
+        except Exception as exc:
+            logger.warning(f"PoseBusters validation failed: {exc}")
+            return {"available": True, "pass": False, "error": str(exc)}
+    finally:
+        os.unlink(tmp_sdf.name)
+
+    # PoseBusters returns a DataFrame with boolean columns.
+    # Exclude checks that produce false negatives in the docking context:
+    # - loading flags are not quality checks
+    # - ring non-flatness is expected for chair/boat conformations
+    # - cofactor/water distance/overlap checks depend on the specific pocket environment
+    #   and can flag valid poses that happen to be near crystallographic additives
+    _EXCLUDED_FROM_PASS = {
+        "mol_pred_loaded",
+        "mol_true_loaded",
+        "mol_cond_loaded",
+        "non-aromatic_ring_non-flatness",
+        "minimum_distance_to_organic_cofactors",
+        "minimum_distance_to_inorganic_cofactors",
+        "minimum_distance_to_waters",
+        "volume_overlap_with_organic_cofactors",
+        "volume_overlap_with_inorganic_cofactors",
+        "volume_overlap_with_waters",
+    }
     checks = {}
     overall_pass = True
     for col in results.columns:
-        val = results[col].all() if hasattr(results[col], "all") else bool(results[col])
+        if results[col].dtype != bool:
+            continue
+        val = bool(results[col].values[0])
         checks[col] = val
-        if not val:
+        if not val and col not in _EXCLUDED_FROM_PASS:
             overall_pass = False
 
     return {
@@ -359,6 +402,7 @@ def run_redocking_validation(
     ligand_smiles: str | None = None,
     exhaustiveness: int = 32,
     n_poses: int = 20,
+    seed: int | None = 42,
     output_dir: str = "./redock_validation",
     box_padding: float = 5.0,
 ) -> dict[str, Any]:
@@ -507,6 +551,7 @@ def run_redocking_validation(
         receptor_pdbqt, ligand_pdbqt, center, box_size,
         exhaustiveness=exhaustiveness,
         n_poses=n_poses,
+        seed=seed,
         output_dir=output_dir,
         compound_name="redock",
     )

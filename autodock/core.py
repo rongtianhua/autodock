@@ -92,8 +92,8 @@ if not autodock_logger.handlers:
             datefmt="%Y-%m-%d %H:%M:%S",
         ))
         autodock_logger.addHandler(_file_handler)
-    except Exception:
-        pass
+    except (OSError, PermissionError):
+        pass  # Cannot write to home directory log path
 
 logger = autodock_logger  # backward-compat alias
 
@@ -103,8 +103,10 @@ def set_log_level(level: int | str) -> None:
     if isinstance(level, str):
         level = getattr(logging, level.upper(), logging.INFO)
     autodock_logger.setLevel(level)
+    # Only adjust StreamHandler levels; leave FileHandler at DEBUG for audit trail
     for h in autodock_logger.handlers:
-        h.setLevel(level)
+        if isinstance(h, logging.StreamHandler) and not isinstance(h, logging.FileHandler):
+            h.setLevel(level)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -113,15 +115,19 @@ def set_log_level(level: int | str) -> None:
 
 import random
 
+# Default deterministic seed for publication-grade reproducibility
+DEFAULT_SEED: int = 42
+
+
 def _get_vina_seed(seed: int | None = None) -> int:
     """
     Return a valid Vina seed integer.
     - If seed is given, use it directly (deterministic).
-    - If seed is None, draw a random integer in [1, 2^31-1].
+    - If seed is None, return the global default seed (42) for reproducibility.
     """
     if seed is not None:
         return int(seed)
-    return random.randint(1, 2_147_483_647)
+    return DEFAULT_SEED
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -388,6 +394,11 @@ class DockingResult:
     clash_score: float | None = None            # Å overlap
     clash_acceptable: bool | None = None
 
+    # ── Pose clustering ──────────────────────────────────────────────
+    pose_clusters: list[dict] | None = None
+    n_clusters: int | None = None
+    rmsd_clustering_threshold: float | None = None
+
     # ── Interactions (raw list) ──────────────────────────────────────
     interactions: list[dict] = field(default_factory=list)
 
@@ -399,6 +410,11 @@ class DockingResult:
     best_pose_pdbqt: str | None = None
     all_poses_pdbqt: str | None = None
     output_dir: str | None = None
+
+    # ── Provenance / reproducibility ─────────────────────────────────
+    version: str = field(default_factory=lambda: __import__("autodock").__version__)
+    timestamp: str = field(default_factory=lambda: datetime.now().isoformat())
+    runtime_seconds: float | None = None
 
     # ── Internal cached aggregates ───────────────────────────────────
     _interactions_computed: bool = field(default=False, repr=False)
@@ -584,6 +600,7 @@ _SKIP_WATER: set[str] = {"HOH", "WAT", "H2O", "DOD", "TIP", "SOL"}
 _SKIP_ADDITIVES: set[str] = {
     "PJE", "02J", "010", "03U", "03T", "02K", "02L",
     "SO4", "PO4", "GOL", "EDO", "ACT", "PEG", "MES",
+    "NAG", "MAN", "FUC", "GAL", "SIA", "NGA", "GLC",
 }
 
 # Combined skip set for backward compat

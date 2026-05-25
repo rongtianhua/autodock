@@ -47,3 +47,16 @@ trajectory.dcd
 # Session artifacts
 *.tmp
 /tmp/
+
+# Benchmark / evaluation artifacts
+benchmark_results/
+benchmark_results_v1/
+pb_test/
+quick_benchmark_test/
+out.pdbqt
+coverage.xml
+.coverage
+
+# Project metadata (generated)
+PUBLICATION_READINESS_REPORT.md
+local_knowledge/

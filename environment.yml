@@ -1,0 +1,44 @@
+name: autodock
+channels:
+  - conda-forge
+  - bioconda
+  - defaults
+dependencies:
+  - python>=3.10
+  - pip
+  # Core scientific stack
+  - numpy>=1.24
+  - pandas>=2.0
+  - scipy>=1.10
+  # Cheminformatics & docking
+  - rdkit>=2023.03
+  - vina>=1.2.0
+  - meeko>=0.6.0
+  - openbabel>=3.1
+  # Pocket detection
+  - fpocket
+  - openjdk>=11
+  # Visualization
+  - pymol-open-source>=2.5
+  # Python packages (prefer conda where available)
+  - pillow>=10.0
+  - pyyaml>=6.0
+  - jupyter
+  # MD simulation
+  - openmm>=8.1
+  - mdanalysis>=2.6.0
+  # Optional: install via pip if not in conda
+  - pip:
+    - reportlab>=4.0
+    - openpyxl>=3.1
+    - pubchempy>=1.0
+    - plip>=2.3.0
+    - prolif>=2.0.0
+    - openmmforcefields>=0.12
+    - posebusters>=0.2.0
+    # Dev tools
+    - pytest>=8.0
+    - pytest-cov>=4.1
+    - ruff>=0.4.0
+    - black>=24.0
+    - mypy>=1.9

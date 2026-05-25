@@ -82,7 +82,7 @@ def _run_vina_dock(
             f"Docking timed out after {timeout}s. Try smaller search space or lower exhaustiveness."
         )
     if "error" in result_state:
-        raise DockingCalculationError(f"Docking failed: {result_state['error']}")
+        raise DockingCalculationError(f"Docking failed: {result_state['error']}") from None
 
     energies = v.energies(n_poses=n_poses, energy_range=energy_range)
 
@@ -118,12 +118,30 @@ def _score_pose_with_sf(
         from vina import Vina
         v = Vina(sf_name=sf_name, seed=_get_vina_seed(seed))
         v.set_receptor(receptor_pdbqt)
-        v.set_ligand_from_file(pose_pdbqt)
-        v.compute_vina_maps(center=list(center), box_size=list(box_size))
-        score = v.score()
-        total = float(score[0]) if hasattr(score, "__getitem__") else float(score)
-        return total
-    except Exception as exc:
+        # Vina rejects PDBQT files containing MODEL/ENDMDL tags.
+        # Strip them to a plain single-model PDBQT.
+        with open(pose_pdbqt) as fh:
+            lines = fh.readlines()
+        clean_lines = [
+            l for l in lines
+            if not l.startswith(("MODEL", "ENDMDL"))
+        ]
+        import tempfile
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".pdbqt", delete=False) as tf:
+            tf.writelines(clean_lines)
+            tmp_pose = tf.name
+        try:
+            v.set_ligand_from_file(tmp_pose)
+            v.compute_vina_maps(center=list(center), box_size=list(box_size))
+            score = v.score()
+            total = float(score[0]) if hasattr(score, "__getitem__") else float(score)
+            return total
+        finally:
+            try:
+                os.unlink(tmp_pose)
+            except OSError:
+                pass
+    except (ImportError, RuntimeError, OSError) as exc:
         logger.debug(f"Re-scoring with {sf_name} failed: {exc}")
         return None
 
@@ -198,16 +216,32 @@ def dock_ligand(
     Returns:
         DockingResult with scores, file paths, and metadata.
     """
-    if not os.path.isfile(receptor_pdbqt):
-        raise DockingCalculationError(f"Receptor PDBQT not found: {receptor_pdbqt}")
-    if not os.path.isfile(ligand_pdbqt):
-        raise DockingCalculationError(f"Ligand PDBQT not found: {ligand_pdbqt}")
+    # Input validation layer
+    from autodock.validation_params import validate_docking_params
+    _params = validate_docking_params(
+        receptor_pdbqt, ligand_pdbqt, center, box_size,
+        exhaustiveness=exhaustiveness,
+        n_poses=n_poses,
+        energy_range=energy_range,
+        seed=seed,
+        timeout=timeout,
+    )
+    # Unpack validated values
+    receptor_pdbqt = _params["receptor_pdbqt"]
+    ligand_pdbqt = _params["ligand_pdbqt"]
+    center = _params["center"]
+    box_size = _params["box_size"]
+    exhaustiveness = _params["exhaustiveness"]
+    n_poses = _params["n_poses"]
+    energy_range = _params["energy_range"]
+    seed = _params["seed"]
+    timeout = _params["timeout"]
 
     name = compound_name or Path(ligand_pdbqt).stem
 
     logger.info(
         f"Docking {name}: center={center}, box={box_size}, "
-        f"exhaustiveness={exhaustiveness}, n_poses={n_poses}"
+        f"exhaustiveness={exhaustiveness}, n_poses={n_poses}, seed={seed}"
     )
 
     energies, poses = _run_vina_dock(
@@ -232,16 +266,42 @@ def dock_ligand(
         ensure_dir(output_dir)
         best_pose_path = os.path.join(output_dir, "docking_best.pdbqt")
         all_poses_path = os.path.join(output_dir, "docking_all_poses.pdbqt")
+        # Best pose: strip MODEL/ENDMDL/model-number so Vina can reload it for re-scoring
+        best_lines = poses[0].splitlines()
+        if best_lines and best_lines[0].startswith("MODEL"):
+            best_lines = best_lines[2:]   # skip "MODEL N" and the number line
+        if best_lines and best_lines[-1].startswith("ENDMDL"):
+            best_lines = best_lines[:-1]
+        best_clean = "\n".join(best_lines)
         with open(best_pose_path, "w") as fh:
-            fh.write(poses[0])
+            fh.write(best_clean)
         with open(all_poses_path, "w") as fh:
             fh.write("\n".join(poses))
         logger.info(f"Poses saved: {best_pose_path}, {all_poses_path}")
     else:
         # Temp files if no output_dir
         best_pose_path = tempfile.mktemp(suffix="_best.pdbqt")
+        best_lines = poses[0].splitlines()
+        if best_lines and best_lines[0].startswith("MODEL"):
+            best_lines = best_lines[2:]
+        if best_lines and best_lines[-1].startswith("ENDMDL"):
+            best_lines = best_lines[:-1]
+        best_clean = "\n".join(best_lines)
         with open(best_pose_path, "w") as fh:
-            fh.write(poses[0])
+            fh.write(best_clean)
+
+    # Pose clustering (publication-grade best practice)
+    from autodock.clustering import cluster_poses
+    clusters = cluster_poses(poses, energies, rmsd_threshold=2.0)
+
+    # Persist cluster representatives if output_dir provided
+    if output_dir and clusters:
+        for i, cluster in enumerate(clusters[:5], 1):
+            rep_idx = cluster["representative_index"]
+            rep_path = os.path.join(output_dir, f"cluster_{i}_representative.pdbqt")
+            with open(rep_path, "w") as fh:
+                fh.write(poses[rep_idx])
+            cluster["representative_path"] = rep_path
 
     # Consensus scoring
     all_scores, consensus = _consensus_score(
@@ -270,6 +330,9 @@ def dock_ligand(
         all_poses_pdbqt=all_poses_path,
         output_dir=output_dir,
         receptor_source=receptor_source,
+        pose_clusters=clusters,
+        n_clusters=len(clusters),
+        rmsd_clustering_threshold=2.0,
     )
     return result
 
@@ -326,7 +389,7 @@ def dock_ligand_multi_conformer(
             logger.debug(
                 f"Conformer {n_success}: {len(poses)} poses, best={energies[0][0]:.2f} kcal/mol"
             )
-        except Exception as exc:
+        except DockingCalculationError as exc:
             logger.warning(f"Conformer {conf_path} failed: {exc}")
             continue
 
@@ -342,12 +405,27 @@ def dock_ligand_multi_conformer(
         f"{len(all_poses_pool)} total poses, best={best_energy:.2f} kcal/mol"
     )
 
+    # Pose clustering across all conformers
+    from autodock.clustering import cluster_poses
+    all_energies = np.array([[e, 0.0, 0.0] for e, _ in all_poses_pool])
+    all_poses = [p for _, p in all_poses_pool]
+    clusters = cluster_poses(all_poses, all_energies, rmsd_threshold=2.0)
+
     # Persist
     out_dir = output_dir or os.path.join(os.path.dirname(conformer_pdbqts[0]), "multi_conformer_results")
     ensure_dir(out_dir)
     best_pose_path = os.path.join(out_dir, "best_pose.pdbqt")
     with open(best_pose_path, "w") as fh:
         fh.write(best_pose)
+
+    # Persist cluster representatives
+    if clusters:
+        for i, cluster in enumerate(clusters[:5], 1):
+            rep_idx = cluster["representative_index"]
+            rep_path = os.path.join(out_dir, f"cluster_{i}_representative.pdbqt")
+            with open(rep_path, "w") as fh:
+                fh.write(all_poses[rep_idx])
+            cluster["representative_path"] = rep_path
 
     # Consensus scoring on best pose
     all_scores, consensus = _consensus_score(
@@ -368,6 +446,9 @@ def dock_ligand_multi_conformer(
         consensus_affinity=consensus,
         best_pose_pdbqt=best_pose_path,
         output_dir=out_dir,
+        pose_clusters=clusters,
+        n_clusters=len(clusters),
+        rmsd_clustering_threshold=2.0,
     )
 
 
@@ -489,3 +570,376 @@ def virtual_screen(
         df.to_csv(csv_path, index=False, float_format="%.4f")
     logger.info(f"Virtual screening complete: {len(results)} compounds, results: {csv_path}")
     return results, csv_path
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Batch docking: multiple receptors × multiple ligands
+# ─────────────────────────────────────────────────────────────────────────────
+
+def batch_dock(
+    receptors: dict[str, str],
+    ligands: dict[str, str],
+    pockets: dict[str, dict[str, tuple[float, float, float]]],
+    exhaustiveness: int = VINA_DEFAULT_EXHAUSTIVENESS,
+    n_poses: int = VINA_DEFAULT_N_POSES,
+    energy_range: float = VINA_DEFAULT_ENERGY_RANGE,
+    seed: int | None = None,
+    timeout: int = VINA_DEFAULT_TIMEOUT,
+    output_dir: str = "./batch_docking_results",
+    n_workers: int = 1,
+) -> dict[str, list[DockingResult]]:
+    """
+    Perform pairwise docking across multiple receptors and ligands.
+
+    This is the recommended API for large-scale comparison studies,
+    cross-docking validation, and structure-activity relationship (SAR)
+    exploration across multiple protein conformations.
+
+    Args:
+        receptors: Mapping of receptor_name → receptor_pdbqt_path.
+        ligands: Mapping of ligand_name → ligand_pdbqt_path.
+        pockets: Mapping of receptor_name → {"center": (x,y,z), "box_size": (sx,sy,sz)}.
+        exhaustiveness: Search thoroughness per docking job.
+        n_poses: Poses to generate per job.
+        energy_range: Energy range above best (kcal/mol).
+        seed: Random seed for reproducibility.
+        timeout: Wall-clock timeout per job (seconds).
+        output_dir: Root directory for all results.
+        n_workers: Parallel workers. -1 = all CPU cores.
+
+    Returns:
+        Dictionary mapping receptor_name → list of DockingResult (one per ligand).
+        Failed dockings are represented by DockingResult with best_affinity=None.
+
+    Raises:
+        DockingCalculationError: If no receptor/ligand files are valid.
+        ValueError: If pocket definitions are missing for any receptor.
+    """
+    import time
+
+    if not receptors or not ligands:
+        raise DockingCalculationError("At least one receptor and one ligand required.")
+
+    # Validate files and pockets
+    for name, path in receptors.items():
+        if not os.path.isfile(path):
+            raise DockingCalculationError(f"Receptor file not found: {path} ({name})")
+        if name not in pockets:
+            raise ValueError(f"Pocket definition missing for receptor: {name}")
+        pocket = pockets[name]
+        if "center" not in pocket or "box_size" not in pocket:
+            raise ValueError(f"Pocket for {name} must contain 'center' and 'box_size'")
+
+    for name, path in ligands.items():
+        if not os.path.isfile(path):
+            raise DockingCalculationError(f"Ligand file not found: {path} ({name})")
+
+    ensure_dir(output_dir)
+
+    # Build work list: one item per receptor-ligand pair
+    base_seed = _get_vina_seed(seed)
+    work_items: list[tuple[str, str, str, str, dict, int]] = []
+    pair_idx = 0
+    for rec_name, rec_path in receptors.items():
+        for lig_name, lig_path in ligands.items():
+            pair_seed = base_seed + pair_idx if seed is None else base_seed
+            work_items.append((rec_name, rec_path, lig_name, lig_path, pockets[rec_name], pair_seed))
+            pair_idx += 1
+
+    logger.info(
+        f"Batch docking: {len(receptors)} receptors × {len(ligands)} ligands = "
+        f"{len(work_items)} jobs, seed={base_seed}"
+    )
+
+    def _dock_one(item: tuple) -> tuple[str, DockingResult]:
+        rec_name, rec_path, lig_name, lig_path, pocket, job_seed = item
+        center = pocket["center"]
+        box_size = pocket["box_size"]
+        job_out = os.path.join(output_dir, rec_name, lig_name)
+        ensure_dir(job_out)
+        t0 = time.perf_counter()
+        try:
+            result = dock_ligand(
+                rec_path, lig_path, center, box_size,
+                exhaustiveness=exhaustiveness,
+                n_poses=n_poses,
+                energy_range=energy_range,
+                seed=job_seed,
+                timeout=timeout,
+                output_dir=job_out,
+                compound_name=lig_name,
+            )
+            result.runtime_seconds = round(time.perf_counter() - t0, 2)
+            logger.info(f"[{rec_name} × {lig_name}] {result.best_affinity:.2f} kcal/mol")
+            return rec_name, result
+        except DockingCalculationError as exc:
+            logger.error(f"[{rec_name} × {lig_name}] failed: {exc}")
+            fail_result = DockingResult(
+                compound_name=lig_name,
+                receptor=rec_path,
+                center=center,
+                box_size=box_size,
+                seed=job_seed,
+                best_affinity=None,
+                output_dir=job_out,
+            )
+            fail_result.runtime_seconds = round(time.perf_counter() - t0, 2)
+            return rec_name, fail_result
+
+    # Execute
+    if n_workers == 1:
+        raw_results = [_dock_one(item) for item in work_items]
+    else:
+        if n_workers == -1:
+            import multiprocessing
+            n_workers = multiprocessing.cpu_count()
+        from concurrent.futures import ProcessPoolExecutor, as_completed
+        raw_results = [None] * len(work_items)
+        with ProcessPoolExecutor(max_workers=n_workers) as executor:
+            futures = {executor.submit(_dock_one, item): i for i, item in enumerate(work_items)}
+            for future in as_completed(futures):
+                idx = futures[future]
+                try:
+                    raw_results[idx] = future.result()
+                except Exception as exc:
+                    rec_name, _, lig_name, _, _, _ = work_items[idx]
+                    logger.error(f"[{rec_name} × {lig_name}] worker crashed: {exc}")
+                    raw_results[idx] = (
+                        rec_name,
+                        DockingResult(
+                            compound_name=lig_name,
+                            receptor=receptors[rec_name],
+                            center=pockets[rec_name]["center"],
+                            box_size=pockets[rec_name]["box_size"],
+                            best_affinity=None,
+                        ),
+                    )
+
+    # Organize by receptor
+    results_by_receptor: dict[str, list[DockingResult]] = {name: [] for name in receptors}
+    for rec_name, result in raw_results:
+        results_by_receptor[rec_name].append(result)
+
+    # Export master CSV
+    try:
+        import pandas as pd
+        rows = []
+        for rec_name, res_list in results_by_receptor.items():
+            for r in res_list:
+                row = r.to_dataframe_row()
+                row["receptor_name"] = rec_name
+                rows.append(row)
+        if rows:
+            df = pd.DataFrame(rows)
+            csv_path = os.path.join(output_dir, "batch_docking_results.csv")
+            df.to_csv(csv_path, index=False, float_format="%.4f")
+            logger.info(f"Batch results CSV: {csv_path}")
+    except Exception as exc:
+        logger.warning(f"Failed to write batch CSV: {exc}")
+
+    return results_by_receptor
+
+
+def dock_ensemble(
+    receptor_pdbqt: str,
+    ligand_pdbqt: str,
+    center: tuple[float, float, float],
+    box_size: tuple[float, float, float],
+    n_repeats: int = 10,
+    exhaustiveness: int = VINA_DEFAULT_EXHAUSTIVENESS,
+    n_poses: int = VINA_DEFAULT_N_POSES,
+    energy_range: float = VINA_DEFAULT_ENERGY_RANGE,
+    seed: int | None = None,
+    timeout: int = VINA_DEFAULT_TIMEOUT,
+    output_dir: str | None = None,
+    compound_name: str | None = None,
+    receptor_pdb: str | None = None,
+) -> dict[str, Any]:
+    """
+    Run repeated docking with independent seeds for ensemble statistics.
+
+    This is the publication-grade protocol for assessing docking
+    reproducibility and pose stability.  N independent runs with
+    different random seeds are executed; the resulting poses are
+    clustered and statistical metrics (mean, std, CV, RMSD) are
+    computed to assign a confidence level.
+
+    Args:
+        receptor_pdbqt, ligand_pdbqt, center, box_size: Standard docking params.
+        n_repeats: Number of independent docking runs (default 10).
+        exhaustiveness, n_poses, energy_range, timeout: Vina parameters.
+        seed: Base random seed.  Each repeat uses seed + i.
+        output_dir: Root directory for all repeat outputs.
+        compound_name, receptor_pdb: Provenance.
+
+    Returns:
+        Dictionary with keys:
+            - repeats: list[DockingResult]
+            - ensemble_best_affinity_mean, _std, _min, _max, _cv
+            - ensemble_consensus_affinity_mean
+            - pose_stability_rmsd_mean, _std, _max
+            - n_clusters: int
+            - confidence: "high" | "moderate" | "low"
+            - recommendation: str
+    """
+    if n_repeats < 2:
+        raise ValueError("n_repeats must be >= 2 for ensemble statistics.")
+
+    base_seed = _get_vina_seed(seed)
+    name = compound_name or Path(ligand_pdbqt).stem
+    logger.info(
+        f"Ensemble docking: {name}, {n_repeats} repeats, base_seed={base_seed}"
+    )
+
+    repeats: list[DockingResult] = []
+    for i in range(n_repeats):
+        repeat_seed = base_seed + i
+        repeat_out = None
+        if output_dir:
+            repeat_out = os.path.join(output_dir, f"repeat_{i + 1}")
+            ensure_dir(repeat_out)
+
+        import time as _time
+        t0 = _time.perf_counter()
+        try:
+            result = dock_ligand(
+                receptor_pdbqt, ligand_pdbqt, center, box_size,
+                exhaustiveness=exhaustiveness,
+                n_poses=n_poses,
+                energy_range=energy_range,
+                seed=repeat_seed,
+                timeout=timeout,
+                output_dir=repeat_out,
+                compound_name=f"{name}_repeat{i + 1}",
+                receptor_pdb=receptor_pdb,
+            )
+            result.runtime_seconds = round(
+                (_time.perf_counter() - t0), 2
+            )
+            repeats.append(result)
+            logger.info(
+                f"Repeat {i + 1}/{n_repeats}: affinity={result.best_affinity:.3f} kcal/mol"
+            )
+        except DockingCalculationError as exc:
+            logger.error(f"Repeat {i + 1}/{n_repeats} failed: {exc}")
+            # Append a placeholder so statistics can still be computed
+            repeats.append(
+                DockingResult(
+                    compound_name=f"{name}_repeat{i + 1}",
+                    receptor=receptor_pdbqt,
+                    center=center,
+                    box_size=box_size,
+                    seed=repeat_seed,
+                    best_affinity=None,
+                    output_dir=repeat_out,
+                )
+            )
+
+    valid_repeats = [r for r in repeats if r.best_affinity is not None]
+    if len(valid_repeats) < 2:
+        raise DockingCalculationError(
+            f"Fewer than 2 successful repeats ({len(valid_repeats)}/{n_repeats}). "
+            "Cannot compute ensemble statistics."
+        )
+
+    # ── Energy statistics ───────────────────────────────────────────
+    affinities = np.array([r.best_affinity for r in valid_repeats])
+    consensus_affinities = np.array([
+        r.consensus_affinity for r in valid_repeats
+        if r.consensus_affinity is not None
+    ])
+
+    energy_mean = float(np.mean(affinities))
+    energy_std = float(np.std(affinities, ddof=1))
+    energy_cv = abs(energy_std / energy_mean) if energy_mean != 0 else 0.0
+
+    # ── Pose stability: RMSD between best poses of each repeat ──────
+    best_pose_paths = []
+    for r in valid_repeats:
+        if r.best_pose_pdbqt and os.path.isfile(r.best_pose_pdbqt):
+            best_pose_paths.append(r.best_pose_pdbqt)
+
+    from autodock.validation import compute_rmsd, compute_rmsd_coordinate_based
+
+    rmsd_values: list[float] = []
+    n_paths = len(best_pose_paths)
+    for i in range(n_paths):
+        for j in range(i + 1, n_paths):
+            rmsd = compute_rmsd(best_pose_paths[i], best_pose_paths[j])
+            if rmsd is None or rmsd == 0.0:
+                rmsd = compute_rmsd_coordinate_based(
+                    best_pose_paths[i], best_pose_paths[j]
+                )
+            if rmsd is not None:
+                rmsd_values.append(rmsd)
+
+    if rmsd_values:
+        rmsd_mean = float(np.mean(rmsd_values))
+        rmsd_std = float(np.std(rmsd_values, ddof=1))
+        rmsd_max = float(np.max(rmsd_values))
+    else:
+        rmsd_mean = rmsd_std = rmsd_max = None
+
+    # ── Clustering of all best poses ────────────────────────────────
+    from autodock.clustering import cluster_poses
+    pose_strings = []
+    pose_energies_list = []
+    for r in valid_repeats:
+        if r.best_pose_pdbqt and os.path.isfile(r.best_pose_pdbqt):
+            with open(r.best_pose_pdbqt) as fh:
+                pose_strings.append(fh.read())
+            pose_energies_list.append(r.best_affinity)
+    pose_energies = np.array(pose_energies_list).reshape(-1, 1) if pose_energies_list else np.array([])
+    cluster_summary = cluster_poses(
+        pose_strings, pose_energies, rmsd_threshold=2.0,
+    )
+    n_clusters = len(cluster_summary)
+
+    # ── Confidence assessment ───────────────────────────────────────
+    if energy_cv < 0.05 and (rmsd_mean is not None and rmsd_mean < 1.0):
+        confidence = "high"
+        recommendation = (
+            "Docking result is highly reproducible. "
+            "The reported affinity and pose can be trusted for publication."
+        )
+    elif energy_cv < 0.10 and (rmsd_mean is not None and rmsd_mean < 2.0):
+        confidence = "moderate"
+        recommendation = (
+            "Docking result is moderately reproducible. "
+            "Consider increasing exhaustiveness or verifying with MD."
+        )
+    else:
+        confidence = "low"
+        recommendation = (
+            "Docking result shows poor reproducibility. "
+            "The binding mode may be ambiguous; inspect cluster representatives."
+        )
+
+    summary = {
+        "repeats": repeats,
+        "n_repeats": n_repeats,
+        "n_successful": len(valid_repeats),
+        "ensemble_best_affinity_mean": energy_mean,
+        "ensemble_best_affinity_std": energy_std,
+        "ensemble_best_affinity_min": float(np.min(affinities)),
+        "ensemble_best_affinity_max": float(np.max(affinities)),
+        "ensemble_best_affinity_cv": energy_cv,
+        "ensemble_consensus_affinity_mean": (
+            float(np.mean(consensus_affinities))
+            if consensus_affinities.size > 0 else None
+        ),
+        "pose_stability_rmsd_mean": rmsd_mean,
+        "pose_stability_rmsd_std": rmsd_std,
+        "pose_stability_rmsd_max": rmsd_max,
+        "n_clusters": n_clusters,
+        "cluster_summary": cluster_summary,
+        "confidence": confidence,
+        "recommendation": recommendation,
+    }
+
+    logger.info(
+        f"Ensemble summary: mean={energy_mean:.3f} ± {energy_std:.3f} kcal/mol, "
+        f"CV={energy_cv:.3f}, RMSD={rmsd_mean:.2f} Å, "
+        f"clusters={n_clusters}, confidence={confidence}"
+    )
+    return summary

@@ -49,7 +49,7 @@ from autodock.utils import (
 )
 
 from autodock.preparation import prepare_receptor, prepare_ligand, prepare_ligand_conformers, find_top_pockets
-from autodock.docking import dock_ligand, dock_ligand_multi_conformer, virtual_screen
+from autodock.docking import dock_ligand, dock_ligand_multi_conformer, virtual_screen, batch_dock
 from autodock.validation import validate_pose_with_posebusters, compute_clash_score, compute_rmsd, compute_rmsd_to_crystal, run_redocking_validation
 from autodock.interactions import detect_interactions, detect_interactions_plip, detect_interactions_prolif
 from autodock.rendering import render_scene_pymol, render_interactions_2d, composite_summary
@@ -68,6 +68,7 @@ __all__ = [
     "dock_ligand",
     "dock_ligand_multi_conformer",
     "virtual_screen",
+    "batch_dock",
     "validate_pose_with_posebusters",
     "compute_clash_score",
     "compute_rmsd",

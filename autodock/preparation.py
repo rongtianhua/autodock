@@ -144,7 +144,9 @@ def prepare_receptor(
     mk_prep = MoleculePreparation(charge_model="gasteiger")
 
     try:
-        polymer = Polymer.from_pdb_string(pdb_content, templates, mk_prep)
+        polymer = Polymer.from_pdb_string(
+            pdb_content, templates, mk_prep, default_altloc="A"
+        )
     except Exception as exc:
         # Retry with allow_bad_res=True: removes unknown residues and continues
         logger.warning(
@@ -152,7 +154,7 @@ def prepare_receptor(
         )
         try:
             polymer = Polymer.from_pdb_string(
-                pdb_content, templates, mk_prep, allow_bad_res=True
+                pdb_content, templates, mk_prep, allow_bad_res=True, default_altloc="A"
             )
         except Exception as exc2:
             logger.error(f"Meeko preparation failed even with allow_bad_res: {exc2}")
