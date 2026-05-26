@@ -49,6 +49,7 @@ class TestRunVinaDock:
             exhaustiveness=8,
             n_poses=9,
             seed=42,
+            _use_subprocess=False,
         )
 
         assert energies.shape[0] == 2
@@ -78,6 +79,7 @@ class TestRunVinaDock:
                 (0, 0, 0),
                 (20, 20, 20),
                 timeout=1,
+                _use_subprocess=False,
             )
 
 
@@ -194,6 +196,7 @@ class TestDockLigandMultiConformer:
                 (0, 0, 0),
                 (20, 20, 20),
                 seed=42,
+                max_workers=1,  # sequential for mocked tests
             )
 
         assert result.best_affinity == -9.0

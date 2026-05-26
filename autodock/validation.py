@@ -152,9 +152,8 @@ def compute_clash_score(
         }
 
     rec_coords = np.array([(a["x"], a["y"], a["z"]) for a in rec_atoms])
-    np.array([(a["x"], a["y"], a["z"]) for a in lig_atoms])
 
-    # VDW radii (approximate, in Å)
+    # VDW radii (approximate, in Å) — Bondi radii for common bioorganic elements
     vdw = {
         "H": 1.2,
         "C": 1.7,
@@ -166,13 +165,24 @@ def compute_clash_score(
         "Cl": 1.75,
         "Br": 1.85,
         "I": 1.98,
+        "B": 1.85,
+        "Si": 2.1,
+        "Se": 1.9,
+        "Fe": 1.95,
+        "Zn": 1.39,
+        "Mg": 1.73,
+        "Ca": 1.76,
+        "Mn": 1.73,
+        "Cu": 1.4,
+        "Na": 1.02,
+        "K": 1.76,
     }
 
     clashes = []
     min_dists = []
     for la in lig_atoms:
         lig_pt = np.array([la["x"], la["y"], la["z"]])
-        lig_elem = la["element"][0].upper() if la["element"] else "C"
+        lig_elem = la["element"].strip().upper() if la["element"] else "C"
         lig_r = vdw.get(lig_elem, 1.7)
 
         dists = np.linalg.norm(rec_coords - lig_pt, axis=1)
@@ -182,7 +192,7 @@ def compute_clash_score(
         # Find closest receptor atom
         closest_idx = dists.argmin()
         rec_elem = (
-            rec_atoms[closest_idx]["element"][0].upper()
+            rec_atoms[closest_idx]["element"].strip().upper()
             if rec_atoms[closest_idx]["element"]
             else "C"
         )
@@ -423,6 +433,8 @@ def run_redocking_validation(
     seed: int | None = 42,
     output_dir: str = "./redock_validation",
     box_padding: float = 5.0,
+    ligand_strategy: str | None = None,
+    skip_consensus: bool = False,
 ) -> dict[str, Any]:
     """
     Validate docking protocol by redocking the co-crystallized ligand.
@@ -451,14 +463,15 @@ def run_redocking_validation(
         n_poses: Number of poses.
         output_dir: Working directory.
         box_padding: Extra padding (Å) around crystal ligand bounding box.
+        skip_consensus: If True, skip Vinardo consensus scoring (faster for benchmarks).
 
     Returns:
         Dict with rmsd, success flag, energies, and file paths.
     """
     from rdkit import Chem
 
-    from autodock.docking import dock_ligand
-    from autodock.preparation import find_top_pockets, prepare_ligand, prepare_receptor
+    from autodock.docking import dock_ligand, dock_ligand_multi_conformer
+    from autodock.preparation import find_top_pockets, prepare_ligand_adaptive, prepare_receptor
     from autodock.utils import (
         ensure_dir,
         extract_chain_from_pdb,
@@ -537,11 +550,24 @@ def run_redocking_validation(
     receptor_pdbqt = os.path.join(output_dir, "apo_receptor.pdbqt")
     prepare_receptor(apo_pdb, receptor_pdbqt, remove_water=False, remove_hetatms=False)
 
-    # ── 3. Prepare ligand ──────────────────────────────────────────────────
-    ligand_pdbqt = os.path.join(output_dir, "ligand.pdbqt")
+    # ── 3. Prepare ligand (adaptive multi-conformer) ───────────────────────
     if crystal_smiles is None:
         raise ValidationError("No SMILES available for ligand preparation")
-    prepare_ligand(crystal_smiles, ligand_pdbqt)
+
+    ligand_prep_result = prepare_ligand_adaptive(
+        crystal_smiles, output_dir, name="LIG", seed=seed
+    )
+    use_multi = isinstance(ligand_prep_result, list)
+    if use_multi:
+        conformer_pdbqts = ligand_prep_result
+        ligand_pdbqt = conformer_pdbqts[0]  # reference path for results
+        logger.info(
+            f"Adaptive prep returned {len(conformer_pdbqts)} conformer(s)"
+        )
+    else:
+        ligand_pdbqt = ligand_prep_result
+        conformer_pdbqts = None
+        logger.info("Adaptive prep returned single conformer")
 
     # ── 4. Define box from crystal ligand ──────────────────────────────────
     # Try ligand-centered pocket detection first
@@ -569,17 +595,32 @@ def run_redocking_validation(
     logger.info(f"Redocking box: center={center}, size={box_size}")
 
     # ── 5. Dock ────────────────────────────────────────────────────────────
-    result = dock_ligand(
-        receptor_pdbqt,
-        ligand_pdbqt,
-        center,
-        box_size,
-        exhaustiveness=exhaustiveness,
-        n_poses=n_poses,
-        seed=seed,
-        output_dir=output_dir,
-        compound_name="redock",
-    )
+    if use_multi:
+        result = dock_ligand_multi_conformer(
+            receptor_pdbqt,
+            conformer_pdbqts,
+            center,
+            box_size,
+            exhaustiveness=exhaustiveness,
+            n_poses=n_poses,
+            seed=seed,
+            output_dir=output_dir,
+            compound_name="redock",
+            skip_consensus=skip_consensus,
+        )
+    else:
+        result = dock_ligand(
+            receptor_pdbqt,
+            ligand_pdbqt,
+            center,
+            box_size,
+            exhaustiveness=exhaustiveness,
+            n_poses=n_poses,
+            seed=seed,
+            output_dir=output_dir,
+            compound_name="redock",
+            skip_consensus=skip_consensus,
+        )
 
     # ── 6. Compute RMSD ────────────────────────────────────────────────────
     rmsd = compute_rmsd_to_crystal(result.best_pose_pdbqt, crystal_ligand_pdb)

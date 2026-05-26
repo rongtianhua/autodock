@@ -182,10 +182,20 @@ class TestDockingResult:
             ],
         )
         assert r.n_hbonds == 2
-        assert r.n_pi_stacking == 1
+        assert r.n_pi_pi == 1
+        assert r.n_pi_cation == 0
         assert r.n_hydrophobic == 1
         summary = r.interaction_summary
-        assert summary == {"H-bond": 2, "π-π/π-cation": 1, "Hydrophobic": 1}
+        assert summary == {
+            "H-bond": 2,
+            "π-π": 1,
+            "π-cation": 0,
+            "Hydrophobic": 1,
+            "Salt bridge": 0,
+            "Halogen bond": 0,
+            "Water bridge": 0,
+            "Metal complex": 0,
+        }
 
     def test_method_label(self):
         r = core.DockingResult(

@@ -43,6 +43,7 @@ def prepare_receptor(
     remove_hetatms: bool = True,
     input_format: str = "auto",
     keep_residues: set[str] | None = None,
+    force: bool = False,
 ) -> str:
     """
     Prepare a protein structure for docking (PDB/mmCIF → PDBQT).
@@ -57,6 +58,7 @@ def prepare_receptor(
         remove_hetatms: Remove all HETATM records (keep only protein).
         input_format: 'auto' | 'pdb' | 'cif' | 'pdbx'.
         keep_residues: If provided, keep only these residue names.
+        force: If False and output_pdbqt already exists, skip preparation.
 
     Returns:
         Absolute path to the prepared PDBQT file.
@@ -66,6 +68,10 @@ def prepare_receptor(
     """
     if not os.path.isfile(pdb_file):
         raise PreparationError(f"Input file not found: {pdb_file}")
+
+    if not force and os.path.isfile(output_pdbqt):
+        logger.info(f"Receptor PDBQT already exists — skipping prep: {output_pdbqt}")
+        return os.path.abspath(output_pdbqt)
 
     # Step 1: Convert mmCIF → PDB if needed
     ext = os.path.splitext(pdb_file)[1].lower()
@@ -292,7 +298,17 @@ def prepare_ligand(
             logger.warning("RDKit embedding failed — falling back to Open Babel")
             return _prepare_ligand_with_obabel(smiles, output_pdbqt, name=name)
 
-    AllChem.MMFFOptimizeMolecule(mol)
+    # Optimize geometry: try MMFF first, then UFF for exotic elements (P, S+4, etc.)
+    mmff_ok = AllChem.MMFFOptimizeMolecule(mol, maxIters=500)
+    if mmff_ok == -1:
+        logger.debug("MMFF unsupported for this molecule — trying UFF")
+        uff_ok = AllChem.UFFOptimizeMolecule(mol, maxIters=500)
+        if uff_ok == -1:
+            logger.warning("RDKit force-field optimization failed — falling back to Open Babel")
+            return _prepare_ligand_with_obabel(smiles, output_pdbqt, name=name)
+    elif mmff_ok == 1:
+        logger.debug("MMFF did not fully converge (status=1) — accepting partial optimization")
+
     rdPartialCharges.ComputeGasteigerCharges(mol)
 
     # If Gasteiger produced NaN charges, skip Meeko and use Open Babel
@@ -420,24 +436,40 @@ def _generate_multi_conformers(
     mol,
     n_conformers: int = 50,
     seed: int = 42,
-    cluster_threshold: float = 1.0,
+    cluster_threshold: float | None = None,
 ) -> tuple:
     """
     Generate diverse conformers via RDKit EmbedMultipleConfs + RMSD clustering.
+
+    Dynamic threshold: high-flexibility ligands need larger RMSD cutoffs to
+    produce meaningful conformational families instead of every conformer
+    becoming its own cluster.
 
     Returns:
         (mol_with_conformers, list_of_representative_cids)
         The returned molecule has Hs and all conformers attached.
     """
     from rdkit import Chem
-    from rdkit.Chem import AllChem
+    from rdkit.Chem import AllChem, rdMolDescriptors
 
     mol_h = Chem.AddHs(mol, addCoords=True)
+    n_rot = rdMolDescriptors.CalcNumRotatableBonds(mol)
 
-    # 1. Generate multiple conformers
+    # Dynamic clustering threshold based on flexibility
+    if cluster_threshold is None:
+        if n_rot > 10:
+            cluster_threshold = 2.0
+        elif n_rot > 6:
+            cluster_threshold = 1.5
+        else:
+            cluster_threshold = 1.0
+
+    # 1. Generate multiple conformers with initial pruning for diversity
     params = AllChem.ETKDGv3()
     params.randomSeed = seed
     params.numThreads = 0  # use all CPU cores
+    # Prune similar conformers during embedding to save MMFF time
+    params.pruneRmsThresh = max(0.5, cluster_threshold * 0.5)
     cids = AllChem.EmbedMultipleConfs(mol_h, numConfs=n_conformers, params=params)
     if len(cids) == 0:
         return mol_h, []
@@ -446,7 +478,7 @@ def _generate_multi_conformers(
     results = AllChem.MMFFOptimizeMoleculeConfs(mol_h, numThreads=0)
     energies = {cid: results[i][1] for i, cid in enumerate(cids)}
 
-    # 3. RMSD-based clustering (greedy)
+    # 3. RMSD-based clustering (greedy) — energy-ranked lowest first
     sorted_cids = sorted(cids, key=lambda c: energies[c])
     representatives = []
     for cid in sorted_cids:
@@ -459,9 +491,18 @@ def _generate_multi_conformers(
         if is_unique:
             representatives.append(cid)
 
+    # 4. If every conformer became its own cluster, the threshold was too strict.
+    #    Fallback: return only the lowest-energy N representatives.
+    if len(representatives) == len(cids) and len(cids) > 10:
+        logger.debug(
+            f"No clustering occurred ({len(cids)} clusters) — "
+            f"falling back to top {min(len(cids), 10)} lowest-energy conformers"
+        )
+        representatives = sorted_cids[:min(len(cids), 10)]
+
     logger.debug(
         f"Conformer clustering: {len(cids)} generated → "
-        f"{len(representatives)} clusters (threshold={cluster_threshold} Å)"
+        f"{len(representatives)} clusters (threshold={cluster_threshold} Å, rot={n_rot})"
     )
     return mol_h, representatives
 
@@ -591,6 +632,10 @@ def prepare_ligand_adaptive(
     name: str = "LIG",
     seed: int = 42,
     strategy: str | None = None,
+    n_conformers_medium: int = 30,
+    max_reps_medium: int = 5,
+    n_conformers_complex: int = 100,
+    max_reps_complex: int = 10,
 ) -> str | list[str]:
     """
     Adaptive ligand preparation: auto-selects strategy based on molecular complexity.
@@ -601,6 +646,10 @@ def prepare_ligand_adaptive(
         name: Residue name.
         seed: Random seed.
         strategy: "simple", "medium", "complex", or None for auto-detection.
+        n_conformers_medium: Conformers to generate for medium ligands.
+        max_reps_medium: Max representatives for medium ligands.
+        n_conformers_complex: Conformers to generate for complex ligands.
+        max_reps_complex: Max representatives for complex ligands.
 
     Returns:
         Single PDBQT path for simple ligands, or list of paths for medium/complex.
@@ -616,27 +665,51 @@ def prepare_ligand_adaptive(
         logger.info(f"Adaptive ligand prep: complexity='{strategy}' for '{smiles[:40]}...'")
 
     if strategy == "simple":
+        # Simple: single conformer. If output_pdbqt is a directory, write ligand.pdbqt inside.
+        if os.path.isdir(output_pdbqt):
+            output_pdbqt = os.path.join(output_pdbqt, "ligand.pdbqt")
         return prepare_ligand(smiles, output_pdbqt, name=name, seed=seed)
 
+    # Medium/complex: output_pdbqt is treated as a directory
+    if os.path.isfile(output_pdbqt):
+        output_dir = os.path.dirname(output_pdbqt) or "."
+    else:
+        output_dir = output_pdbqt
+        ensure_dir(output_dir)
+
     if strategy == "medium":
-        # Medium: 5 representatives from 30 conformers
         return prepare_ligand_multi(
             smiles,
-            output_pdbqt,
+            output_dir,
             name=name,
             seed=seed,
-            n_conformers=30,
-            max_representatives=5,
+            n_conformers=n_conformers_medium,
+            max_representatives=max_reps_medium,
         )
 
-    # Complex: 10 representatives from 100 conformers
+    # Complex: cap representatives for very large ligands to keep docking tractable
+    n_heavy = mol.GetNumHeavyAtoms()
+    effective_max_reps = max_reps_complex
+
+    # Scheme C: >50 atoms — force single conformer to avoid Vina timeout/hang
+    if n_heavy > 50:
+        logger.info(
+            f"Very large ligand ({n_heavy} heavy atoms) — forcing single conformer to avoid Vina hang"
+        )
+        single_path = os.path.join(output_dir, "ligand.pdbqt")
+        return prepare_ligand(smiles, single_path, name=name, seed=seed)
+
+    if n_heavy > 45:
+        effective_max_reps = min(effective_max_reps, 2)
+        logger.info(f"Large ligand ({n_heavy} heavy atoms) — capping representatives to {effective_max_reps}")
+
     return prepare_ligand_multi(
         smiles,
-        output_pdbqt,
+        output_dir,
         name=name,
         seed=seed,
-        n_conformers=100,
-        max_representatives=10,
+        n_conformers=n_conformers_complex,
+        max_representatives=effective_max_reps,
     )
 
 

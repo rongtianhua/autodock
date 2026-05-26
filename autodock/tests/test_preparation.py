@@ -23,9 +23,10 @@ class TestPrepareReceptor:
     def test_cif_without_gemmi_raises(self, tmp_path):
         cif = tmp_path / "test.cif"
         cif.write_text("data_test\n")
+        out = tmp_path / "out.pdbqt"
         with patch.dict("sys.modules", {"gemmi": None}):
             with pytest.raises(PreparationError, match="gemmi"):
-                prep.prepare_receptor(str(cif), "out.pdbqt")
+                prep.prepare_receptor(str(cif), str(out))
 
     @patch("autodock.preparation.find_conda_tool")
     @patch("autodock.preparation.safe_subprocess")

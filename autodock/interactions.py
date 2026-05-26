@@ -11,6 +11,7 @@ import tempfile
 from typing import Any
 
 from autodock.core import _HAVE_MDANALYSIS, _HAVE_PLIP, _HAVE_PROLIF, VisualizationError, logger
+from autodock.utils import _AD4_ELEMENT_MAP
 
 # ─────────────────────────────────────────────────────────────────────────────
 # PLIP-based interaction detection (primary / authoritative)
@@ -97,7 +98,11 @@ def _build_complex_pdb(receptor_pdb: str, ligand_pdbqt: str, output_pdb: str) ->
             except ValueError:
                 continue
             atom_name = line[12:16].strip() if len(line) > 16 else "C"
-            elem = line[76:78].strip() if len(line) > 78 else atom_name[0]
+            # Use sanitized element: check PDBQT atom-type column first, then fallback
+            ad_type = line[77:79].strip() if len(line) > 78 else ""
+            elem = _AD4_ELEMENT_MAP.get(ad_type, ad_type)
+            if not elem:
+                elem = atom_name[0]
             new_line = (
                 f"HETATM{atom_num:5d} {atom_name:>4s} LIG A   1    "
                 f"{x:8.3f}{y:8.3f}{z:8.3f}  1.00  0.00          {elem:>2s}\n"

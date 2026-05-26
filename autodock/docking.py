@@ -8,6 +8,7 @@ with consensus scoring and structured result output.
 from __future__ import annotations
 
 import contextlib
+import multiprocessing
 import os
 import tempfile
 import threading
@@ -34,6 +35,85 @@ from autodock.utils import ensure_dir
 # ─────────────────────────────────────────────────────────────────────────────
 
 
+def _count_pdbqt_atoms(pdbqt_path: str) -> int:
+    """Count ATOM/HETATM lines in a PDBQT file."""
+    if not os.path.isfile(pdbqt_path):
+        return 0
+    count = 0
+    with open(pdbqt_path) as fh:
+        for line in fh:
+            if line.startswith(("ATOM  ", "HETATM")):
+                count += 1
+    return count
+
+
+def _auto_exhaustiveness(ligand_pdbqt: str, base_exhaustiveness: int) -> int:
+    """Reduce exhaustiveness for very large ligands to keep runtime tractable.
+
+    Vina internally scales search steps with ligand size/flexibility.
+    Large ligands + high exhaustiveness = combinatorial explosion.
+    """
+    n_atoms = _count_pdbqt_atoms(ligand_pdbqt)
+    if n_atoms > 55:
+        return max(4, base_exhaustiveness // 8)
+    if n_atoms > 45:
+        return max(8, base_exhaustiveness // 4)
+    if n_atoms > 35:
+        return max(16, base_exhaustiveness // 2)
+    return base_exhaustiveness
+
+
+def _vina_dock_worker(
+    args: tuple,
+    result_queue,
+) -> None:
+    """Worker function that runs in a separate process for true timeout control."""
+    (
+        receptor_pdbqt,
+        ligand_pdbqt,
+        center,
+        box_size,
+        exhaustiveness,
+        n_poses,
+        energy_range,
+        seed,
+        flex_receptor_pdbqt,
+    ) = args
+
+    try:
+        from vina import Vina
+
+        v = Vina(sf_name="vina", seed=_get_vina_seed(seed))
+        v.set_receptor(receptor_pdbqt)
+        if flex_receptor_pdbqt and os.path.isfile(flex_receptor_pdbqt):
+            v.set_flex(flex_receptor_pdbqt)
+        v.set_ligand_from_file(ligand_pdbqt)
+        v.compute_vina_maps(center=list(center), box_size=list(box_size))
+        v.dock(exhaustiveness=exhaustiveness, n_poses=n_poses, min_rmsd=1.0)
+
+        energies = v.energies(n_poses=n_poses, energy_range=energy_range)
+
+        # Extract poses as individual PDBQT strings
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".pdbqt", delete=False) as tf:
+            tmp_path = tf.name
+        try:
+            v.write_poses(tmp_path, n_poses=n_poses, energy_range=energy_range, overwrite=True)
+            with open(tmp_path) as fh:
+                pdbqt_str = fh.read()
+        finally:
+            os.unlink(tmp_path)
+
+        parts = pdbqt_str.split("MODEL ")
+        poses = []
+        for i, part in enumerate(parts[1:], start=1):
+            if part.strip():
+                poses.append(f"MODEL {i}\n{part}")
+
+        result_queue.put(("ok", energies, poses))
+    except Exception as exc:
+        result_queue.put(("error", str(exc), []))
+
+
 def _run_vina_dock(
     receptor_pdbqt: str,
     ligand_pdbqt: str,
@@ -44,9 +124,17 @@ def _run_vina_dock(
     energy_range: float = VINA_DEFAULT_ENERGY_RANGE,
     seed: int | None = None,
     timeout: int = VINA_DEFAULT_TIMEOUT,
+    auto_exhaustiveness: bool = True,
+    flex_receptor_pdbqt: str | None = None,
+    _use_subprocess: bool = True,
 ) -> tuple[np.ndarray, list[str]]:
     """
-    Run Vina docking and return (energies_array, pose_strings).
+    Run Vina docking in an isolated process with hard timeout via terminate/kill.
+
+    Args:
+        _use_subprocess: Internal flag. When False, run Vina in-thread (used by
+            unit tests that mock the Vina class, since mocks don't cross process
+            boundaries with spawn).
 
     Raises:
         DockingCalculationError: If docking fails or times out.
@@ -56,54 +144,118 @@ def _run_vina_dock(
             "vina Python package not available. Install: conda install -c conda-forge vina"
         )
 
-    from vina import Vina
+    if auto_exhaustiveness:
+        effective_exhaustiveness = _auto_exhaustiveness(ligand_pdbqt, exhaustiveness)
+        if effective_exhaustiveness != exhaustiveness:
+            logger.info(
+                f"Auto-adjusted exhaustiveness: {exhaustiveness} → {effective_exhaustiveness} "
+                f"({_count_pdbqt_atoms(ligand_pdbqt)} atoms)"
+            )
+            exhaustiveness = effective_exhaustiveness
 
-    v = Vina(sf_name="vina", seed=_get_vina_seed(seed))
-    v.set_receptor(receptor_pdbqt)
-    v.set_ligand_from_file(ligand_pdbqt)
-    v.compute_vina_maps(center=list(center), box_size=list(box_size))
+    # If we're already inside a multiprocessing child, run Vina directly.
+    # Nested subprocesses can deadlock or hang with Vina's C++ extension.
+    in_subprocess = multiprocessing.current_process().name != "MainProcess"
 
-    # Dock with wall-clock timeout (Vina C++ extension cannot be interrupted)
-    result_state: dict[str, Any] = {}
+    # In-thread fallback for mocked tests (mocks don't survive spawn)
+    if not _use_subprocess or in_subprocess:
+        from vina import Vina
 
-    def _worker() -> None:
-        try:
+        v = Vina(sf_name="vina", seed=_get_vina_seed(seed))
+        v.set_receptor(receptor_pdbqt)
+        if flex_receptor_pdbqt and os.path.isfile(flex_receptor_pdbqt):
+            v.set_flex(flex_receptor_pdbqt)
+        v.set_ligand_from_file(ligand_pdbqt)
+        v.compute_vina_maps(center=list(center), box_size=list(box_size))
+
+        if not _use_subprocess:
+            # Tests: use threading timeout for mocked Vina
+            result_state: dict[str, Any] = {}
+
+            def _worker() -> None:
+                try:
+                    v.dock(exhaustiveness=exhaustiveness, n_poses=n_poses, min_rmsd=1.0)
+                    result_state["done"] = True
+                except Exception as exc:
+                    result_state["error"] = str(exc)
+                    result_state["done"] = True
+
+            t = threading.Thread(target=_worker, daemon=False)
+            t.start()
+            t.join(timeout=timeout)
+            if t.is_alive():
+                raise DockingCalculationError(
+                    f"Docking timed out after {timeout}s. Try smaller search space or lower exhaustiveness."
+                )
+            if "error" in result_state:
+                raise DockingCalculationError(f"Docking failed: {result_state['error']}") from None
+        else:
+            # Already in a subprocess: run directly, timeout handled by parent
             v.dock(exhaustiveness=exhaustiveness, n_poses=n_poses, min_rmsd=1.0)
-            result_state["done"] = True
-        except Exception as exc:
-            result_state["error"] = str(exc)
-            result_state["done"] = True
 
-    t = threading.Thread(target=_worker, daemon=False)
-    t.start()
-    t.join(timeout=timeout)
-    if t.is_alive():
-        logger.error(f"Docking timed out after {timeout}s")
+        energies = v.energies(n_poses=n_poses, energy_range=energy_range)
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".pdbqt", delete=False) as tf:
+            tmp_path = tf.name
+        try:
+            v.write_poses(tmp_path, n_poses=n_poses, energy_range=energy_range, overwrite=True)
+            with open(tmp_path) as fh:
+                pdbqt_str = fh.read()
+        finally:
+            os.unlink(tmp_path)
+        parts = pdbqt_str.split("MODEL ")
+        poses = []
+        for i, part in enumerate(parts[1:], start=1):
+            if part.strip():
+                poses.append(f"MODEL {i}\n{part}")
+        return energies, poses
+
+    args = (
+        receptor_pdbqt,
+        ligand_pdbqt,
+        center,
+        box_size,
+        exhaustiveness,
+        n_poses,
+        energy_range,
+        seed,
+        flex_receptor_pdbqt,
+    )
+
+    # Use spawn context to avoid fork-safety issues with Vina C++ extension
+    ctx = multiprocessing.get_context("spawn")
+    result_queue = ctx.Queue()
+    p = ctx.Process(target=_vina_dock_worker, args=(args, result_queue))
+    p.start()
+    p.join(timeout=timeout)
+
+    if p.is_alive():
+        logger.error(f"Docking timed out after {timeout}s — terminating process {p.pid}")
+        p.terminate()
+        p.join(timeout=5)
+        if p.is_alive():
+            logger.error(f"Process {p.pid} still alive — force killing")
+            p.kill()
+            p.join(timeout=5)
         raise DockingCalculationError(
             f"Docking timed out after {timeout}s. Try smaller search space or lower exhaustiveness."
         )
-    if "error" in result_state:
-        raise DockingCalculationError(f"Docking failed: {result_state['error']}") from None
 
-    energies = v.energies(n_poses=n_poses, energy_range=energy_range)
+    if p.exitcode != 0:
+        raise DockingCalculationError(
+            f"Docking subprocess exited with code {p.exitcode}"
+        )
 
-    # Extract poses as individual PDBQT strings
-    with tempfile.NamedTemporaryFile(mode="w", suffix=".pdbqt", delete=False) as tf:
-        tmp_path = tf.name
     try:
-        v.write_poses(tmp_path, n_poses=n_poses, energy_range=energy_range, overwrite=True)
-        with open(tmp_path) as fh:
-            pdbqt_str = fh.read()
-    finally:
-        os.unlink(tmp_path)
+        status, payload1, payload2 = result_queue.get(timeout=30)
+    except Exception:
+        raise DockingCalculationError(
+            "Docking subprocess completed but result queue was empty"
+        ) from None
 
-    parts = pdbqt_str.split("MODEL ")
-    poses = []
-    for i, part in enumerate(parts[1:], start=1):
-        if part.strip():
-            poses.append(f"MODEL {i}\n{part}")
+    if status == "error":
+        raise DockingCalculationError(f"Docking failed: {payload1}") from None
 
-    return energies, poses
+    return payload1, payload2
 
 
 def _score_pose_with_sf(
@@ -124,7 +276,11 @@ def _score_pose_with_sf(
         # Strip them to a plain single-model PDBQT.
         with open(pose_pdbqt) as fh:
             lines = fh.readlines()
-        clean_lines = [line for line in lines if not line.startswith(("MODEL", "ENDMDL"))]
+        clean_lines = [
+            line for line in lines
+            if not line.startswith(("MODEL", "ENDMDL"))
+            and not line.strip().isdigit()
+        ]
         import tempfile
 
         with tempfile.NamedTemporaryFile(mode="w", suffix=".pdbqt", delete=False) as tf:
@@ -159,6 +315,9 @@ def _consensus_score(
         (all_scores_dict, consensus_affinity)
         consensus_affinity is the median of all successful scores.
     """
+    # Extensible scoring-function list.  Vina Python API currently supports
+    # "vina" and "vinardo".  Additional SFs (e.g. "ad4" via CLI, GNINA CNN
+    # scores, etc.) can be registered here or passed via config.
     all_scores: dict[str, float] = {"vina": vina_score}
     for sf in ("vinardo",):
         s = _score_pose_with_sf(receptor_pdbqt, pose_pdbqt, center, box_size, sf, seed)
@@ -169,7 +328,7 @@ def _consensus_score(
     if len(all_scores) > 1:
         median_e = sorted(all_scores.values())[len(all_scores) // 2]
         logger.info(
-            f"Consensus affinity: {median_e:.3f} kcal/mol " f"(median of {list(all_scores.keys())})"
+            f"Consensus affinity: {median_e:.3f} kcal/mol (median of {list(all_scores.keys())})"
         )
         return all_scores, median_e
     return all_scores, None
@@ -193,6 +352,7 @@ def dock_ligand(
     output_dir: str | None = None,
     compound_name: str | None = None,
     receptor_pdb: str | None = None,
+    skip_consensus: bool = False,
 ) -> DockingResult:
     """
     Dock a single ligand into a protein binding site.
@@ -210,6 +370,8 @@ def dock_ligand(
         output_dir: If provided, persist pose files here.
         compound_name: Name for result tracking.
         receptor_pdb: Original receptor PDB (for provenance).
+        skip_consensus: If True, skip the extra Vinardo consensus scoring step
+            (useful for bulk benchmarks where speed matters).
 
     Returns:
         DockingResult with scores, file paths, and metadata.
@@ -309,10 +471,14 @@ def dock_ligand(
                 fh.write(poses[rep_idx])
             cluster["representative_path"] = rep_path
 
-    # Consensus scoring
-    all_scores, consensus = _consensus_score(
-        receptor_pdbqt, best_pose_path, center, box_size, best_affinity, seed
-    )
+    # Consensus scoring (optional — skip for speed in bulk benchmarks)
+    if skip_consensus:
+        all_scores = {"vina": best_affinity}
+        consensus = None
+    else:
+        all_scores, consensus = _consensus_score(
+            receptor_pdbqt, best_pose_path, center, box_size, best_affinity, seed
+        )
 
     # Receptor source detection
     receptor_source = None
@@ -344,6 +510,73 @@ def dock_ligand(
     return result
 
 
+def _dock_conformer_worker(
+    args: tuple,
+    result_queue=None,
+) -> tuple[list[tuple[float, str]], int] | None:
+    """Worker for parallel multi-conformer docking."""
+    (
+        receptor_pdbqt,
+        conf_path,
+        center,
+        box_size,
+        exhaustiveness,
+        n_poses,
+        energy_range,
+        seed,
+        timeout,
+    ) = args
+    result = _dock_conformer_core(
+        receptor_pdbqt,
+        conf_path,
+        center,
+        box_size,
+        exhaustiveness,
+        n_poses,
+        energy_range,
+        seed,
+        timeout,
+    )
+    if result_queue is not None:
+        result_queue.put(result)
+    return result
+
+
+def _dock_conformer_core(
+    receptor_pdbqt: str,
+    conf_path: str,
+    center: tuple[float, float, float],
+    box_size: tuple[float, float, float],
+    exhaustiveness: int,
+    n_poses: int,
+    energy_range: float,
+    seed: int | None,
+    timeout: int,
+) -> tuple[list[tuple[float, str]], int]:
+    """Core docking logic for a single conformer."""
+    if not os.path.isfile(conf_path):
+        return [], 0
+    try:
+        energies, poses = _run_vina_dock(
+            receptor_pdbqt,
+            conf_path,
+            center,
+            box_size,
+            exhaustiveness=exhaustiveness,
+            n_poses=n_poses,
+            energy_range=energy_range,
+            seed=seed,
+            timeout=timeout,
+        )
+        pool = []
+        for i, pose in enumerate(poses):
+            if i < energies.shape[0]:
+                pool.append((float(energies[i][0]), pose))
+        return pool, 1
+    except DockingCalculationError:
+        return [], 0
+
+
 def dock_ligand_multi_conformer(
     receptor_pdbqt: str,
     conformer_pdbqts: list[str],
@@ -356,15 +589,19 @@ def dock_ligand_multi_conformer(
     timeout: int = VINA_DEFAULT_TIMEOUT,
     output_dir: str | None = None,
     compound_name: str | None = None,
+    skip_consensus: bool = False,
+    max_workers: int = -1,
 ) -> DockingResult:
     """
     Dock multiple ligand conformers and return the globally best pose.
 
-    Each conformer is docked independently; all poses are pooled and ranked.
-    This is the recommended protocol for publication-quality docking.
+    Each conformer is docked independently in parallel; all poses are pooled
+    and ranked. This is the recommended protocol for publication-quality docking.
 
     Args:
         conformer_pdbqts: List of prepared ligand conformer PDBQT files.
+        skip_consensus: If True, skip the extra Vinardo consensus scoring step.
+        max_workers: Parallel workers for conformer docking (-1 = all CPUs).
         ... (other args same as dock_ligand)
 
     Returns:
@@ -376,32 +613,91 @@ def dock_ligand_multi_conformer(
     all_poses_pool: list[tuple[float, str]] = []
     n_success = 0
 
-    for conf_path in conformer_pdbqts:
-        if not os.path.isfile(conf_path):
-            logger.warning(f"Conformer file not found: {conf_path}")
-            continue
-        try:
-            energies, poses = _run_vina_dock(
-                receptor_pdbqt,
-                conf_path,
-                center,
-                box_size,
-                exhaustiveness=exhaustiveness,
-                n_poses=n_poses,
-                energy_range=energy_range,
-                seed=seed,
-                timeout=timeout,
+    # Parallelize conformer docking using direct subprocesses.
+    # Each conformer runs in its own top-level subprocess; _run_vina_dock
+    # detects it's already in a child and runs Vina directly (no nesting).
+    if max_workers == -1:
+        max_workers = min(multiprocessing.cpu_count(), len(conformer_pdbqts))
+    else:
+        max_workers = min(max_workers, len(conformer_pdbqts))
+
+    work_items = [
+        (
+            receptor_pdbqt,
+            conf_path,
+            center,
+            box_size,
+            exhaustiveness,
+            n_poses,
+            energy_range,
+            seed,
+            timeout,
+        )
+        for conf_path in conformer_pdbqts
+    ]
+
+    if max_workers > 1:
+        ctx = multiprocessing.get_context("spawn")
+        result_queue = ctx.Queue()
+        processes: list[multiprocessing.Process] = []
+
+        for item in work_items:
+            p = ctx.Process(target=_dock_conformer_worker, args=(item, result_queue))
+            p.start()
+            processes.append(p)
+
+        # Collect results as processes finish (with timeout)
+        finished = 0
+        start = __import__("time").time()
+        while finished < len(processes):
+            # Check for completed processes
+            for p in processes:
+                if p.is_alive():
+                    continue
+                # Process finished — try to get result
+                try:
+                    pool, ok = result_queue.get(timeout=1)
+                    all_poses_pool.extend(pool)
+                    n_success += ok
+                    if ok:
+                        best_e = min(e for e, _ in pool)
+                        logger.debug(
+                            f"Conformer done: {len(pool)} poses, best={best_e:.2f} kcal/mol"
+                        )
+                except Exception:
+                    logger.warning("Conformer process finished but result queue was empty")
+                finished += 1
+
+            # Check global timeout
+            elapsed = __import__("time").time() - start
+            if elapsed > timeout * len(processes):
+                logger.error(f"Global multi-conformer timeout after {elapsed:.0f}s")
+                break
+
+            __import__("time").sleep(0.5)
+
+        # Terminate any still-running processes
+        for p in processes:
+            if p.is_alive():
+                p.terminate()
+                p.join(timeout=3)
+                if p.is_alive():
+                    p.kill()
+                    p.join(timeout=3)
+    else:
+        # Sequential fallback
+        for item in work_items:
+            pool, ok = _dock_conformer_core(
+                item[0], item[1], item[2], item[3], item[4],
+                item[5], item[6], item[7], item[8],
             )
-            for i, pose in enumerate(poses):
-                if i < energies.shape[0]:
-                    all_poses_pool.append((float(energies[i][0]), pose))
-            n_success += 1
-            logger.debug(
-                f"Conformer {n_success}: {len(poses)} poses, best={energies[0][0]:.2f} kcal/mol"
-            )
-        except DockingCalculationError as exc:
-            logger.warning(f"Conformer {conf_path} failed: {exc}")
-            continue
+            all_poses_pool.extend(pool)
+            n_success += ok
+            if ok:
+                best_e = min(e for e, _ in pool)
+                logger.debug(
+                    f"Conformer done: {len(pool)} poses, best={best_e:.2f} kcal/mol"
+                )
 
     if not all_poses_pool:
         raise DockingCalculationError("All conformers failed to dock.")
@@ -418,7 +714,8 @@ def dock_ligand_multi_conformer(
     # Pose clustering across all conformers
     from autodock.clustering import cluster_poses
 
-    all_energies = np.array([[e, 0.0, 0.0] for e, _ in all_poses_pool])
+    # Build a Vina-compatible N×5 energy array (cluster_poses only uses column 0)
+    all_energies = np.array([[e, 0.0, 0.0, 0.0, 0.0] for e, _ in all_poses_pool])
     all_poses = [p for _, p in all_poses_pool]
     clusters = cluster_poses(all_poses, all_energies, rmsd_threshold=2.0)
 
@@ -428,8 +725,15 @@ def dock_ligand_multi_conformer(
     )
     ensure_dir(out_dir)
     best_pose_path = os.path.join(out_dir, "best_pose.pdbqt")
+    # Strip MODEL/ENDMDL/model-number so Vina can reload it for re-scoring
+    best_lines = best_pose.splitlines()
+    if best_lines and best_lines[0].startswith("MODEL"):
+        best_lines = best_lines[2:]  # skip "MODEL N" and the number line
+    if best_lines and best_lines[-1].startswith("ENDMDL"):
+        best_lines = best_lines[:-1]
+    best_clean = "\n".join(best_lines)
     with open(best_pose_path, "w") as fh:
-        fh.write(best_pose)
+        fh.write(best_clean)
 
     # Persist cluster representatives
     if clusters:
@@ -440,10 +744,14 @@ def dock_ligand_multi_conformer(
                 fh.write(all_poses[rep_idx])
             cluster["representative_path"] = rep_path
 
-    # Consensus scoring on best pose
-    all_scores, consensus = _consensus_score(
-        receptor_pdbqt, best_pose_path, center, box_size, best_energy, seed
-    )
+    # Consensus scoring (optional)
+    if skip_consensus:
+        all_scores = {"vina": best_energy}
+        consensus = None
+    else:
+        all_scores, consensus = _consensus_score(
+            receptor_pdbqt, best_pose_path, center, box_size, best_energy, seed
+        )
 
     return DockingResult(
         compound_name=compound_name or Path(conformer_pdbqts[0]).stem,

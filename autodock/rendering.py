@@ -397,7 +397,10 @@ def render_interactions_2d(
                 highlight_atom_colors[rdkit_idx] = rgb
 
     # ── Draw molecule with highlights ─────────────────────────────────────────
-    drawer = Draw.MolDraw2DCairo(width, height)
+    # Scale canvas by DPI for publication-quality output (RDKit Cairo works in px)
+    canvas_w = int(width * dpi / 100)
+    canvas_h = int(height * dpi / 100)
+    drawer = Draw.MolDraw2DCairo(canvas_w, canvas_h)
     drawer.drawOptions().highlightRadius = 0.25
     drawer.drawOptions().clearBackground = True
 
@@ -416,12 +419,25 @@ def render_interactions_2d(
     draw = ImageDraw.Draw(img)
 
     # ── Fonts ─────────────────────────────────────────────────────────────────
-    try:
-        font = ImageFont.truetype("/System/Library/Fonts/Helvetica.ttc", 16)
-        ImageFont.truetype("/System/Library/Fonts/Helvetica.ttc", 12)
-    except Exception:
-        font = ImageFont.load_default()
-        ImageFont.load_default()
+    def _load_font(size: int):
+        """Cross-platform font loader with sensible fallbacks."""
+        candidates = [
+            "/System/Library/Fonts/Helvetica.ttc",      # macOS
+            "/System/Library/Fonts/HelveticaNeue.ttc",  # macOS alt
+            "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",  # Linux
+            "/usr/share/fonts/TTF/DejaVuSans.ttf",      # Linux alt
+            "C:/Windows/Fonts/arial.ttf",               # Windows
+            "C:/Windows/Fonts/segoeui.ttf",             # Windows alt
+        ]
+        for path in candidates:
+            if os.path.isfile(path):
+                try:
+                    return ImageFont.truetype(path, size)
+                except Exception:
+                    continue
+        return ImageFont.load_default()
+
+    font = _load_font(16)
 
     # ── Draw residue labels near atoms ────────────────────────────────────────
     # Sort groups so that labels with fewer atoms (more specific) are placed first

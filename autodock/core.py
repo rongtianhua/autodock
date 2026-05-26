@@ -452,8 +452,13 @@ class DockingResult:
     # ── Internal cached aggregates ───────────────────────────────────
     _interactions_computed: bool = field(default=False, repr=False)
     _n_hbonds: int = field(default=0, repr=False)
-    _n_pi: int = field(default=0, repr=False)
+    _n_pi_pi: int = field(default=0, repr=False)
+    _n_pi_cation: int = field(default=0, repr=False)
     _n_hydrophobic: int = field(default=0, repr=False)
+    _n_saltbridge: int = field(default=0, repr=False)
+    _n_halogen: int = field(default=0, repr=False)
+    _n_waterbridge: int = field(default=0, repr=False)
+    _n_metal: int = field(default=0, repr=False)
 
     def __post_init__(self):
         for attr in ("center", "box_size"):
@@ -469,16 +474,46 @@ class DockingResult:
         return self._n_hbonds
 
     @property
-    def n_pi_stacking(self) -> int:
+    def n_pi_pi(self) -> int:
         if not self._interactions_computed:
             self._aggregate_interactions()
-        return self._n_pi
+        return self._n_pi_pi
+
+    @property
+    def n_pi_cation(self) -> int:
+        if not self._interactions_computed:
+            self._aggregate_interactions()
+        return self._n_pi_cation
 
     @property
     def n_hydrophobic(self) -> int:
         if not self._interactions_computed:
             self._aggregate_interactions()
         return self._n_hydrophobic
+
+    @property
+    def n_salt_bridges(self) -> int:
+        if not self._interactions_computed:
+            self._aggregate_interactions()
+        return self._n_saltbridge
+
+    @property
+    def n_halogen_bonds(self) -> int:
+        if not self._interactions_computed:
+            self._aggregate_interactions()
+        return self._n_halogen
+
+    @property
+    def n_water_bridges(self) -> int:
+        if not self._interactions_computed:
+            self._aggregate_interactions()
+        return self._n_waterbridge
+
+    @property
+    def n_metal_complexes(self) -> int:
+        if not self._interactions_computed:
+            self._aggregate_interactions()
+        return self._n_metal
 
     @property
     def method_label(self) -> str:
@@ -495,22 +530,32 @@ class DockingResult:
     def interaction_summary(self) -> dict[str, int]:
         return {
             "H-bond": self.n_hbonds,
-            "π-π/π-cation": self.n_pi_stacking,
+            "π-π": self.n_pi_pi,
+            "π-cation": self.n_pi_cation,
             "Hydrophobic": self.n_hydrophobic,
+            "Salt bridge": self.n_salt_bridges,
+            "Halogen bond": self.n_halogen_bonds,
+            "Water bridge": self.n_water_bridges,
+            "Metal complex": self.n_metal_complexes,
         }
 
     # ── Private helpers ──────────────────────────────────────────────
     def _aggregate_interactions(self) -> None:
         self._n_hbonds = sum(1 for i in self.interactions if i.get("type") == "H-bond")
-        self._n_pi = sum(1 for i in self.interactions if i.get("type") in ("π-π", "π-cation"))
+        self._n_pi_pi = sum(1 for i in self.interactions if i.get("type") == "π-π")
+        self._n_pi_cation = sum(1 for i in self.interactions if i.get("type") == "π-cation")
         self._n_hydrophobic = sum(1 for i in self.interactions if i.get("type") == "Hydrophobic")
+        self._n_saltbridge = sum(1 for i in self.interactions if i.get("type") == "Salt bridge")
+        self._n_halogen = sum(1 for i in self.interactions if i.get("type") == "Halogen bond")
+        self._n_waterbridge = sum(1 for i in self.interactions if i.get("type") == "Water bridge")
+        self._n_metal = sum(1 for i in self.interactions if i.get("type") == "Metal complex")
         self._interactions_computed = True
 
     # ── Serialisation ────────────────────────────────────────────────
     def to_dict(self) -> dict[str, Any]:
         d = asdict(self)
         # strip private cached fields
-        for key in ("_n_hbonds", "_n_pi", "_n_hydrophobic", "_interactions_computed"):
+        for key in ("_n_hbonds", "_n_pi_pi", "_n_pi_cation", "_n_hydrophobic", "_n_saltbridge", "_n_halogen", "_n_waterbridge", "_n_metal", "_interactions_computed"):
             d.pop(key, None)
         if self.receptor_source:
             d["receptor_source_label"] = _RECEPTOR_SOURCE_LABELS.get(
@@ -533,8 +578,13 @@ class DockingResult:
             "pre_dock_score": self.pre_dock_score,
             "score_improvement": self.score_improvement,
             "n_hbonds": self.n_hbonds,
-            "n_pi_stacking": self.n_pi_stacking,
+            "n_pi_pi": self.n_pi_pi,
+            "n_pi_cation": self.n_pi_cation,
             "n_hydrophobic": self.n_hydrophobic,
+            "n_salt_bridges": self.n_salt_bridges,
+            "n_halogen_bonds": self.n_halogen_bonds,
+            "n_water_bridges": self.n_water_bridges,
+            "n_metal_complexes": self.n_metal_complexes,
             "posebusters_pass": self.posebusters_pass,
             "clash_score_A": self.clash_score,
             "clash_acceptable": self.clash_acceptable,

@@ -183,6 +183,37 @@ def generate_pdf_report(
         story.append(val_table)
     story.append(Spacer(1, 0.5 * cm))
 
+    # Pose clusters
+    if result.pose_clusters:
+        story.append(Paragraph("<b>Pose Clusters</b>", styles["Heading2"]))
+        cluster_data = [["Cluster", "Rep. energy (kcal/mol)", "Size", "RMSD threshold (Å)"]]
+        for i, c in enumerate(result.pose_clusters[:5], 1):
+            cluster_data.append([
+                str(i),
+                f"{c.get('representative_energy', 0):.3f}",
+                str(c.get('size', 0)),
+                f"{result.rmsd_clustering_threshold:.1f}",
+            ])
+        cl_table = Table(cluster_data, colWidths=[3 * cm, 5 * cm, 3 * cm, 5 * cm])
+        cl_table.setStyle(
+            TableStyle(
+                [
+                    ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#2a9d8f")),
+                    ("TEXTCOLOR", (0, 0), (-1, 0), colors.whitesmoke),
+                    ("ALIGN", (0, 0), (-1, -1), "LEFT"),
+                    ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+                    ("FONTSIZE", (0, 0), (-1, 0), 11),
+                    ("BOTTOMPADDING", (0, 0), (-1, 0), 10),
+                    ("BACKGROUND", (0, 1), (-1, -1), colors.HexColor("#f5f5f5")),
+                    ("GRID", (0, 0), (-1, -1), 0.5, colors.grey),
+                    ("LEFTPADDING", (0, 0), (-1, -1), 8),
+                    ("RIGHTPADDING", (0, 0), (-1, -1), 8),
+                ]
+            )
+        )
+        story.append(cl_table)
+        story.append(Spacer(1, 0.5 * cm))
+
     # Interactions
     story.append(Paragraph("<b>Interactions</b>", styles["Heading2"]))
     summary = result.interaction_summary
@@ -209,6 +240,47 @@ def generate_pdf_report(
             )
         )
         story.append(intx_table)
+
+    # Detailed interaction list (top 10)
+    if result.interactions:
+        story.append(Spacer(1, 0.3 * cm))
+        story.append(Paragraph("<i>Top interactions</i>", styles["Normal"]))
+        detail_data = [["Type", "Residue", "Distance (Å)"]]
+        for inter in result.interactions[:10]:
+            detail_data.append([
+                inter.get("type", ""),
+                f"{inter.get('resn', '')}{inter.get('resi', '')}.{inter.get('chain', '')}",
+                f"{inter.get('distance', 0):.2f}" if inter.get("distance") is not None else "N/A",
+            ])
+        det_table = Table(detail_data, colWidths=[5 * cm, 6 * cm, 5 * cm])
+        det_table.setStyle(
+            TableStyle(
+                [
+                    ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#6c5ce7")),
+                    ("TEXTCOLOR", (0, 0), (-1, 0), colors.whitesmoke),
+                    ("ALIGN", (0, 0), (-1, -1), "LEFT"),
+                    ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+                    ("FONTSIZE", (0, 0), (-1, 0), 10),
+                    ("BOTTOMPADDING", (0, 0), (-1, 0), 8),
+                    ("BACKGROUND", (0, 1), (-1, -1), colors.HexColor("#f5f5f5")),
+                    ("GRID", (0, 0), (-1, -1), 0.5, colors.grey),
+                    ("LEFTPADDING", (0, 0), (-1, -1), 6),
+                    ("RIGHTPADDING", (0, 0), (-1, -1), 6),
+                ]
+            )
+        )
+        story.append(det_table)
+
+    # Runtime / provenance
+    if result.runtime_seconds is not None:
+        story.append(Spacer(1, 0.5 * cm))
+        story.append(
+            Paragraph(
+                f"<i>Runtime: {result.runtime_seconds:.1f} s | "
+                f"Timestamp: {result.timestamp}</i>",
+                styles["Normal"],
+            )
+        )
 
     # Figures
     if figure_paths:
