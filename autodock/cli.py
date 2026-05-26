@@ -57,16 +57,62 @@ def cmd_init(args: argparse.Namespace) -> int:
 
 
 def cmd_fetch(args: argparse.Namespace) -> int:
-    """Fetch a PDB structure or ligand."""
-    from autodock.utils import download_ligand_sdf_from_pdb, download_pdb, ensure_dir
+    """Fetch a structure or compound from public databases."""
+    from autodock.fetchers import (
+        download_alphafold,
+        download_ligand_sdf_from_pdb,
+        download_pdb,
+        download_swissmodel,
+        fetch_chembl_sdf,
+        fetch_chembl_smiles,
+        fetch_pubchem_sdf,
+        fetch_pubchem_smiles,
+        fetch_uniprot_fasta,
+    )
+    from autodock.utils import ensure_dir
 
     outdir = ensure_dir(args.outdir)
+    fid = args.id.strip()
+
     if args.type == "pdb":
-        path = download_pdb(args.id, str(outdir))
-        print(f"✅ Downloaded: {path}")
+        path = download_pdb(fid, str(outdir), format=args.format or "pdb")
+        print(f"✅ Downloaded PDB: {path}")
+    elif args.type == "cif":
+        path = download_pdb(fid, str(outdir), format="cif")
+        print(f"✅ Downloaded mmCIF: {path}")
     elif args.type == "ligand":
-        path = download_ligand_sdf_from_pdb(args.id, str(outdir))
-        print(f"✅ Downloaded: {path}")
+        path = download_ligand_sdf_from_pdb(fid, str(outdir))
+        print(f"✅ Downloaded ligand SDF: {path}")
+    elif args.type == "alphafold":
+        path = download_alphafold(fid, str(outdir), format=args.format or "pdb")
+        print(f"✅ Downloaded AlphaFold: {path}")
+    elif args.type == "swissmodel":
+        path = download_swissmodel(fid, str(outdir))
+        print(f"✅ Downloaded SWISS-MODEL: {path}")
+    elif args.type == "uniprot":
+        path = os.path.join(outdir, f"{fid}.fasta")
+        fetch_uniprot_fasta(fid, path)
+        print(f"✅ Downloaded UniProt FASTA: {path}")
+    elif args.type == "pubchem":
+        smiles = fetch_pubchem_smiles(fid)
+        print(f"✅ PubChem SMILES: {smiles}")
+        if args.format == "sdf":
+            import pubchempy as pcp
+            compounds = pcp.get_compounds(fid, "name")
+            if compounds:
+                path = os.path.join(outdir, f"{fid}.sdf")
+                fetch_pubchem_sdf(compounds[0].cid, path)
+                print(f"✅ Downloaded PubChem SDF: {path}")
+    elif args.type == "chembl":
+        smiles = fetch_chembl_smiles(fid)
+        print(f"✅ ChEMBL SMILES: {smiles}")
+        if args.format == "sdf":
+            path = os.path.join(outdir, f"{fid}.sdf")
+            fetch_chembl_sdf(fid, path)
+            print(f"✅ Downloaded ChEMBL SDF: {path}")
+    else:
+        print(f"❌ Unknown fetch type: {args.type}")
+        return 1
     return 0
 
 
@@ -413,6 +459,7 @@ def cmd_ensemble_dock(args: argparse.Namespace) -> int:
 def cmd_virtual_screen(args: argparse.Namespace) -> int:
     """Run virtual screening against a receptor."""
     from autodock.docking import virtual_screen
+    from autodock.fetchers import read_sdf_library
     from autodock.preparation import find_top_pockets, prepare_receptor
     from autodock.utils import download_pdb, ensure_dir
 
@@ -434,15 +481,25 @@ def cmd_virtual_screen(args: argparse.Namespace) -> int:
     box_size = pockets[0]["box_size"]
 
     # Read compound library
-    library = {}
-    with open(args.library) as fh:
-        for line in fh:
-            line = line.strip()
-            if not line or line.startswith("#"):
-                continue
-            parts = line.split(None, 1)
-            if len(parts) == 2:
-                library[parts[0]] = parts[1]
+    library: dict[str, str] = {}
+    lib_path = args.library
+    lib_format = (args.library_format or "auto").lower()
+    if lib_format == "auto":
+        lib_format = "sdf" if lib_path.lower().endswith(".sdf") else "tsv"
+
+    if lib_format == "sdf":
+        library = read_sdf_library(lib_path)
+        print(f"  Loaded {len(library)} compounds from SDF: {lib_path}")
+    else:
+        with open(lib_path) as fh:
+            for line in fh:
+                line = line.strip()
+                if not line or line.startswith("#"):
+                    continue
+                parts = line.split(None, 1)
+                if len(parts) == 2:
+                    library[parts[0]] = parts[1]
+        print(f"  Loaded {len(library)} compounds from TSV: {lib_path}")
 
     print(f"Screening {len(library)} compounds against {receptor_name}...")
     results, csv_path = virtual_screen(
@@ -670,9 +727,30 @@ def build_parser() -> argparse.ArgumentParser:
     p_init.set_defaults(func=cmd_init)
 
     # fetch
-    p_fetch = subparsers.add_parser("fetch", help="Download structure")
-    p_fetch.add_argument("type", choices=["pdb", "ligand"])
-    p_fetch.add_argument("id", help="PDB ID or ligand code")
+    p_fetch = subparsers.add_parser(
+        "fetch", help="Download structure or compound from public databases"
+    )
+    p_fetch.add_argument(
+        "type",
+        choices=[
+            "pdb",
+            "cif",
+            "ligand",
+            "alphafold",
+            "swissmodel",
+            "uniprot",
+            "pubchem",
+            "chembl",
+        ],
+        help="Database / source type",
+    )
+    p_fetch.add_argument("id", help="Identifier (PDB ID, UniProt ID, compound name, etc.)")
+    p_fetch.add_argument(
+        "--format",
+        choices=["pdb", "cif", "sdf", "fasta"],
+        default=None,
+        help="File format override (where applicable)",
+    )
     p_fetch.add_argument("-o", "--outdir", default=".")
     p_fetch.set_defaults(func=cmd_fetch)
 
@@ -810,7 +888,15 @@ def build_parser() -> argparse.ArgumentParser:
     # virtual-screen
     p_vs = subparsers.add_parser("virtual-screen", help="Screen compound library")
     p_vs.add_argument("--receptor", required=True, help="PDB ID (e.g. 6LU7)")
-    p_vs.add_argument("--library", required=True, help="TSV/txt file: 'name SMILES' per line")
+    p_vs.add_argument(
+        "--library", required=True, help="Compound library file (TSV 'name SMILES' or SDF)"
+    )
+    p_vs.add_argument(
+        "--library-format",
+        choices=["auto", "tsv", "sdf"],
+        default="auto",
+        help="Library file format (default: auto-detect from extension)",
+    )
     p_vs.add_argument("--outdir", default="./vs_results")
     p_vs.add_argument("--exhaustiveness", type=int, default=16)
     p_vs.add_argument("--n-poses", type=int, default=3)

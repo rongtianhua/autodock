@@ -181,8 +181,9 @@ project:
   log_level: "INFO"
 
 receptor:
-  source: "pdb"          # pdb | alphafold | file
-  pdb_id: "6LU7"
+  source: "pdb"          # pdb | alphafold | swissmodel | file
+  pdb_id: "6LU7"         # 4-character PDB code (for source=pdb)
+  uniprot_id: null       # UniProt accession (for source=alphafold or swissmodel)
   chain: "A"
   remove_water: true
   remove_hetatms: true
@@ -198,9 +199,10 @@ pocket:
   padding: 5.0
 
 ligands:
-  source: "file"
-  file: "./ligands.sdf"
-  format: "sdf"
+  source: "file"         # file | pubchem | chembl | smiles
+  file: "./ligands.sdf"  # Path to library file
+  format: "sdf"          # sdf | tsv | smiles (for source=file)
+  compound_id: null      # Compound name/ID (for source=pubchem/chembl)
   enumerate_tautomers: true
   enumerate_protonation: true
   ph_range: 1.5
