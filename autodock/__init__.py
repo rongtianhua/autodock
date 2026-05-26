@@ -40,7 +40,9 @@ from autodock.interactions import (
 from autodock.preparation import (
     find_top_pockets,
     prepare_ligand,
+    prepare_ligand_adaptive,
     prepare_ligand_conformers,
+    prepare_ligand_multi,
     prepare_receptor,
 )
 from autodock.rendering import composite_summary, render_interactions_2d, render_scene_pymol
@@ -87,6 +89,8 @@ __all__ = [
     "write_default_config",
     "prepare_receptor",
     "prepare_ligand",
+    "prepare_ligand_multi",
+    "prepare_ligand_adaptive",
     "prepare_ligand_conformers",
     "find_top_pockets",
     "dock_ligand",

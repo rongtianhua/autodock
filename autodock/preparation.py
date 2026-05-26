@@ -371,6 +371,276 @@ def prepare_ligand_conformers(
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Adaptive multi-conformer ligand preparation
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+def _classify_ligand_complexity(mol) -> str:
+    """
+    Classify ligand structural complexity to choose preparation strategy.
+
+    Heuristics tuned on the 20-target benchmark set:
+        - simple  : ETKDGv3 single-conformer is usually sufficient
+        - medium  : benefits from 5-rep multi-conformer docking
+        - complex : needs 10-rep multi-conformer or external tools
+
+    Returns:
+        "simple", "medium", or "complex"
+    """
+    from rdkit import Chem
+
+    n_heavy = mol.GetNumHeavyAtoms()
+    n_rings = mol.GetRingInfo().NumRings()
+    rot_bonds = Chem.rdMolDescriptors.CalcNumRotatableBonds(mol)
+
+    # Chiral centers restrict accessible conformational space;
+    # many chirals = harder for single-conformer generation
+    n_chiral = len(Chem.FindMolChiralCenters(mol, includeUnassigned=True))
+
+    # Macrocycles are inherently hard for distance-geometry methods
+    ring_info = mol.GetRingInfo()
+    has_macrocycle = any(len(r) > 12 for r in ring_info.AtomRings())
+
+    # Fused / bridged systems
+    n_spiro = Chem.rdMolDescriptors.CalcNumSpiroAtoms(mol)
+    n_bridge = Chem.rdMolDescriptors.CalcNumBridgeheadAtoms(mol)
+
+    # Complex: macrocycles, very large, very flexible, or many fused rings
+    if has_macrocycle or n_heavy > 40 or rot_bonds > 12 or n_rings > 3 or n_spiro + n_bridge > 1:
+        return "complex"
+
+    # Medium: moderate size/flexibility or significant chirality
+    if rot_bonds > 6 or n_rings > 2 or n_heavy > 28 or n_chiral > 3:
+        return "medium"
+
+    return "simple"
+
+
+def _generate_multi_conformers(
+    mol,
+    n_conformers: int = 50,
+    seed: int = 42,
+    cluster_threshold: float = 1.0,
+) -> tuple:
+    """
+    Generate diverse conformers via RDKit EmbedMultipleConfs + RMSD clustering.
+
+    Returns:
+        (mol_with_conformers, list_of_representative_cids)
+        The returned molecule has Hs and all conformers attached.
+    """
+    from rdkit import Chem
+    from rdkit.Chem import AllChem
+
+    mol_h = Chem.AddHs(mol, addCoords=True)
+
+    # 1. Generate multiple conformers
+    params = AllChem.ETKDGv3()
+    params.randomSeed = seed
+    params.numThreads = 0  # use all CPU cores
+    cids = AllChem.EmbedMultipleConfs(mol_h, numConfs=n_conformers, params=params)
+    if len(cids) == 0:
+        return mol_h, []
+
+    # 2. MMFF optimize all conformers
+    results = AllChem.MMFFOptimizeMoleculeConfs(mol_h, numThreads=0)
+    energies = {cid: results[i][1] for i, cid in enumerate(cids)}
+
+    # 3. RMSD-based clustering (greedy)
+    sorted_cids = sorted(cids, key=lambda c: energies[c])
+    representatives = []
+    for cid in sorted_cids:
+        is_unique = True
+        for rep_cid in representatives:
+            rms = AllChem.GetConformerRMS(mol_h, cid, rep_cid, prealigned=False)
+            if rms < cluster_threshold:
+                is_unique = False
+                break
+        if is_unique:
+            representatives.append(cid)
+
+    logger.debug(
+        f"Conformer clustering: {len(cids)} generated → "
+        f"{len(representatives)} clusters (threshold={cluster_threshold} Å)"
+    )
+    return mol_h, representatives
+
+
+def prepare_ligand_multi(
+    smiles: str,
+    output_dir: str,
+    name: str = "LIG",
+    seed: int = 42,
+    n_conformers: int = 50,
+    max_representatives: int = 5,
+) -> list[str]:
+    """
+    Prepare a ligand with multi-conformer sampling for flexible molecules.
+
+    Workflow:
+        1. Generate N conformers with ETKDGv3
+        2. MMFF optimize all
+        3. RMSD cluster (threshold 1.0 Å)
+        4. Select lowest-energy representative per cluster
+        5. Export each representative to PDBQT via Meeko
+
+    Args:
+        smiles: SMILES string.
+        output_dir: Directory for output PDBQT files.
+        name: Residue name.
+        seed: Random seed.
+        n_conformers: Number of conformers to generate before clustering.
+        max_representatives: Maximum number of cluster representatives to keep.
+
+    Returns:
+        List of PDBQT file paths (one per cluster).
+    """
+    from meeko import MoleculePreparation, PDBQTWriterLegacy
+    from rdkit import Chem
+    from rdkit.Chem import rdPartialCharges
+
+    mol = Chem.MolFromSmiles(smiles)
+    if mol is None:
+        raise PreparationError(f"Could not parse SMILES: {smiles}")
+
+    # Generate & cluster conformers
+    mol_h, rep_cids = _generate_multi_conformers(mol, n_conformers=n_conformers, seed=seed)
+    if not rep_cids:
+        logger.warning("Multi-conformer generation failed — falling back to single conformer")
+        single_path = os.path.join(output_dir, "conformer_0.pdbqt")
+        prepare_ligand(smiles, single_path, name=name, seed=seed)
+        return [single_path]
+
+    # Limit representatives
+    rep_cids = rep_cids[:max_representatives]
+
+    ensure_dir(output_dir)
+    paths = []
+    safe_name = (name or "LIG")[:3]
+
+    for idx, cid in enumerate(rep_cids):
+        # Create a fresh molecule with only this conformer
+        mol_single = Chem.Mol(mol_h)
+        conf = mol_h.GetConformer(cid)
+        # Copy coordinates
+        from rdkit import Geometry
+
+        new_conf = Chem.Conformer(mol_single.GetNumAtoms())
+        new_conf.SetId(0)
+        for i in range(mol_single.GetNumAtoms()):
+            pos = conf.GetAtomPosition(i)
+            new_conf.SetAtomPosition(i, Geometry.Point3D(pos.x, pos.y, pos.z))
+        mol_single.RemoveAllConformers()
+        mol_single.AddConformer(new_conf)
+
+        # Gasteiger charges
+        rdPartialCharges.ComputeGasteigerCharges(mol_single)
+        if _has_nan_charges(mol_single):
+            logger.warning(f"Rep {idx}: NaN charges — trying Open Babel for this conformer")
+            # Fallback: write SMILES, use obabel with a different seed
+            ob_path = os.path.join(output_dir, f"conformer_{idx}.pdbqt")
+            _prepare_ligand_with_obabel(smiles, ob_path, name=name)
+            paths.append(ob_path)
+            continue
+
+        # Meeko
+        params_mk = MoleculePreparation(charge_model="gasteiger")
+        try:
+            mol_setup = params_mk.prepare(mol_single)
+        except Exception as exc:
+            logger.warning(f"Rep {idx}: Meeko failed ({exc}) — Open Babel fallback")
+            ob_path = os.path.join(output_dir, f"conformer_{idx}.pdbqt")
+            _prepare_ligand_with_obabel(smiles, ob_path, name=name)
+            paths.append(ob_path)
+            continue
+
+        setup = mol_setup[0] if isinstance(mol_setup, list) else mol_setup
+        pdbqt_str, success, err = PDBQTWriterLegacy.write_string(setup)
+        if not success:
+            logger.warning(f"Rep {idx}: PDBQT write failed ({err}) — Open Babel fallback")
+            ob_path = os.path.join(output_dir, f"conformer_{idx}.pdbqt")
+            _prepare_ligand_with_obabel(smiles, ob_path, name=name)
+            paths.append(ob_path)
+            continue
+
+        # Rename residue if needed
+        if safe_name != "LIG":
+            lines = pdbqt_str.splitlines()
+            renamed = []
+            for line in lines:
+                if line.startswith(("ATOM  ", "HETATM")):
+                    line = line[:17] + f"{safe_name:>3}" + line[20:]
+                renamed.append(line)
+            pdbqt_str = "\n".join(renamed)
+
+        out_path = os.path.join(output_dir, f"conformer_{idx}.pdbqt")
+        with open(out_path, "w") as fh:
+            fh.write(pdbqt_str)
+        paths.append(out_path)
+
+    logger.info(
+        f"Multi-conformer prep: {len(rep_cids)} representatives → "
+        f"{len(paths)} PDBQT files in {output_dir}"
+    )
+    return paths
+
+
+def prepare_ligand_adaptive(
+    smiles: str,
+    output_pdbqt: str,
+    name: str = "LIG",
+    seed: int = 42,
+    strategy: str | None = None,
+) -> str | list[str]:
+    """
+    Adaptive ligand preparation: auto-selects strategy based on molecular complexity.
+
+    Args:
+        smiles: SMILES string.
+        output_pdbqt: Output PDBQT file path (for single) OR directory (for multi).
+        name: Residue name.
+        seed: Random seed.
+        strategy: "simple", "medium", "complex", or None for auto-detection.
+
+    Returns:
+        Single PDBQT path for simple ligands, or list of paths for medium/complex.
+    """
+    from rdkit import Chem
+
+    mol = Chem.MolFromSmiles(smiles)
+    if mol is None:
+        raise PreparationError(f"Could not parse SMILES: {smiles}")
+
+    if strategy is None:
+        strategy = _classify_ligand_complexity(mol)
+        logger.info(f"Adaptive ligand prep: complexity='{strategy}' for '{smiles[:40]}...'")
+
+    if strategy == "simple":
+        return prepare_ligand(smiles, output_pdbqt, name=name, seed=seed)
+
+    if strategy == "medium":
+        # Medium: 5 representatives from 30 conformers
+        return prepare_ligand_multi(
+            smiles,
+            output_pdbqt,
+            name=name,
+            seed=seed,
+            n_conformers=30,
+            max_representatives=5,
+        )
+
+    # Complex: 10 representatives from 100 conformers
+    return prepare_ligand_multi(
+        smiles,
+        output_pdbqt,
+        name=name,
+        seed=seed,
+        n_conformers=100,
+        max_representatives=10,
+    )
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Binding Site Detection (fpocket + P2Rank)
 # ─────────────────────────────────────────────────────────────────────────────
 

@@ -251,3 +251,81 @@ class TestFindTopPockets:
         pockets = prep.find_top_pockets(str(pdb), ligand_pdb=str(lig))
         assert len(pockets) >= 1
         assert pockets[0]["center"] == (5.0, 5.0, 5.0)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Adaptive / Multi-conformer Ligand Preparation
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+@pytest.mark.skipif(
+    not __import__("autodock.core", fromlist=["_HAVE_RDKIT"])._HAVE_RDKIT,
+    reason="RDKit not available",
+)
+class TestClassifyLigandComplexity:
+    def test_ethanol_is_simple(self):
+        from rdkit import Chem
+
+        mol = Chem.MolFromSmiles("CCO")
+        assert prep._classify_ligand_complexity(mol) == "simple"
+
+    def test_ibuprofen_is_simple(self):
+        from rdkit import Chem
+
+        mol = Chem.MolFromSmiles("CC(C)Cc1ccc(C(C)C(=O)O)cc1")
+        assert prep._classify_ligand_complexity(mol) == "simple"
+
+    def test_oseltamivir_is_medium(self):
+        """2HU4 ligand G39 — multiple chiral centers."""
+        from rdkit import Chem
+
+        mol = Chem.MolFromSmiles("CCC(CC)O[C@@H]1CC(C(O)O)C[C@H](N)[C@H]1NC(C)O")
+        assert prep._classify_ligand_complexity(mol) == "medium"
+
+    def test_large_ppar_ligand_is_complex(self):
+        """1GWX ligand 433 — large, flexible, many rings."""
+        from rdkit import Chem
+
+        mol = Chem.MolFromSmiles(
+            "CC(C)(OC1CCC(CCCN(CCC2C(Cl)CCC[C@@H]2F)[C@@H](O)NC2CCCC(Cl)C2Cl)CC1)C(O)O"
+        )
+        assert prep._classify_ligand_complexity(mol) == "complex"
+
+
+@pytest.mark.skipif(
+    not __import__("autodock.core", fromlist=["_HAVE_RDKIT"])._HAVE_RDKIT,
+    reason="RDKit not available",
+)
+class TestPrepareLigandAdaptive:
+    def test_simple_ligand_returns_single_path(self, tmp_path):
+        out = tmp_path / "lig.pdbqt"
+        result = prep.prepare_ligand_adaptive("CCO", str(out), strategy="simple", seed=42)
+        assert isinstance(result, str)
+        assert Path(result).exists()
+
+    def test_medium_ligand_returns_multiple_paths(self, tmp_path):
+        out_dir = tmp_path / "conformers"
+        result = prep.prepare_ligand_adaptive(
+            "CCC(CC)O[C@@H]1CC(C(O)O)C[C@H](N)[C@H]1NC(C)O",
+            str(out_dir),
+            strategy="medium",
+            seed=42,
+        )
+        assert isinstance(result, list)
+        assert len(result) >= 2
+        for p in result:
+            assert Path(p).exists()
+
+    def test_auto_detects_simple(self, tmp_path):
+        out = tmp_path / "lig.pdbqt"
+        result = prep.prepare_ligand_adaptive("CCO", str(out), seed=42)
+        assert isinstance(result, str)
+
+    def test_auto_detects_medium(self, tmp_path):
+        out_dir = tmp_path / "conformers"
+        result = prep.prepare_ligand_adaptive(
+            "CCC(CC)O[C@@H]1CC(C(O)O)C[C@H](N)[C@H]1NC(C)O",
+            str(out_dir),
+            seed=42,
+        )
+        assert isinstance(result, list)
