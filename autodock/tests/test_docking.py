@@ -1,4 +1,5 @@
 """Tests for autodock.docking — mock-based unit tests for docking logic."""
+
 from __future__ import annotations
 
 import os
@@ -41,8 +42,13 @@ class TestRunVinaDock:
         mock_vina.write_poses.side_effect = mock_write_poses
 
         energies, poses = docking._run_vina_dock(
-            "rec.pdbqt", "lig.pdbqt", (0, 0, 0), (20, 20, 20),
-            exhaustiveness=8, n_poses=9, seed=42,
+            "rec.pdbqt",
+            "lig.pdbqt",
+            (0, 0, 0),
+            (20, 20, 20),
+            exhaustiveness=8,
+            n_poses=9,
+            seed=42,
         )
 
         assert energies.shape[0] == 2
@@ -55,6 +61,7 @@ class TestRunVinaDock:
     @patch("vina.Vina")
     def test_timeout_raises(self, mock_vina_cls):
         import threading
+
         mock_vina = MagicMock()
         mock_vina_cls.return_value = mock_vina
 
@@ -66,7 +73,10 @@ class TestRunVinaDock:
 
         with pytest.raises(DockingCalculationError, match="timed out"):
             docking._run_vina_dock(
-                "rec.pdbqt", "lig.pdbqt", (0, 0, 0), (20, 20, 20),
+                "rec.pdbqt",
+                "lig.pdbqt",
+                (0, 0, 0),
+                (20, 20, 20),
                 timeout=1,
             )
 
@@ -76,7 +86,12 @@ class TestConsensusScore:
     def test_single_score(self, mock_score):
         mock_score.return_value = None
         all_scores, consensus = docking._consensus_score(
-            "rec.pdbqt", "pose.pdbqt", (0, 0, 0), (20, 20, 20), -8.0, seed=42,
+            "rec.pdbqt",
+            "pose.pdbqt",
+            (0, 0, 0),
+            (20, 20, 20),
+            -8.0,
+            seed=42,
         )
         assert all_scores == {"vina": -8.0}
         assert consensus is None
@@ -86,7 +101,12 @@ class TestConsensusScore:
         # First call returns vinardo score
         mock_score.return_value = -7.5
         all_scores, consensus = docking._consensus_score(
-            "rec.pdbqt", "pose.pdbqt", (0, 0, 0), (20, 20, 20), -8.0, seed=42,
+            "rec.pdbqt",
+            "pose.pdbqt",
+            (0, 0, 0),
+            (20, 20, 20),
+            -8.0,
+            seed=42,
         )
         assert "vinardo" in all_scores
         assert consensus == -7.5  # median of [-8.0, -7.5]
@@ -108,8 +128,12 @@ class TestDockLigand:
         with patch("autodock.docking._consensus_score") as mock_consensus:
             mock_consensus.return_value = ({"vina": -8.0}, None)
             result = docking.dock_ligand(
-                str(rec), str(lig), (0, 0, 0), (20, 20, 20),
-                seed=42, output_dir=str(tmp_path / "out"),
+                str(rec),
+                str(lig),
+                (0, 0, 0),
+                (20, 20, 20),
+                seed=42,
+                output_dir=str(tmp_path / "out"),
             )
 
         assert isinstance(result, DockingResult)
@@ -134,6 +158,7 @@ class TestDockLigand:
 
     def test_invalid_params_raises(self, tmp_path):
         from autodock.core import ConfigurationError
+
         rec = tmp_path / "rec.pdbqt"
         rec.write_text("ATOM      1  N   SER A   1      0.000   0.000   0.000\n")
         lig = tmp_path / "lig.pdbqt"
@@ -164,8 +189,11 @@ class TestDockLigandMultiConformer:
         with patch("autodock.docking._consensus_score") as mock_consensus:
             mock_consensus.return_value = ({"vina": -9.0}, None)
             result = docking.dock_ligand_multi_conformer(
-                str(rec), [str(conf1), str(conf2)],
-                (0, 0, 0), (20, 20, 20), seed=42,
+                str(rec),
+                [str(conf1), str(conf2)],
+                (0, 0, 0),
+                (20, 20, 20),
+                seed=42,
             )
 
         assert result.best_affinity == -9.0
@@ -200,8 +228,13 @@ class TestVirtualScreen:
         mock_prep.return_value = None
 
         results, csv_path = docking.virtual_screen(
-            str(rec), library, (0, 0, 0), (20, 20, 20),
-            output_dir=outdir, n_workers=1, seed=42,
+            str(rec),
+            library,
+            (0, 0, 0),
+            (20, 20, 20),
+            output_dir=outdir,
+            n_workers=1,
+            seed=42,
         )
 
         assert len(results) == 2
@@ -212,7 +245,11 @@ class TestVirtualScreen:
         rec = tmp_path / "rec.pdbqt"
         rec.write_text("ATOM      1  N   SER A   1      0.000   0.000   0.000\n")
         results, csv_path = docking.virtual_screen(
-            str(rec), {}, (0, 0, 0), (20, 20, 20), output_dir=str(tmp_path / "vs"),
+            str(rec),
+            {},
+            (0, 0, 0),
+            (20, 20, 20),
+            output_dir=str(tmp_path / "vs"),
         )
         assert results == []
 
@@ -254,7 +291,12 @@ class TestBatchDock:
 
         outdir = str(tmp_path / "batch")
         results = docking.batch_dock(
-            receptors, ligands, pockets, seed=42, output_dir=outdir, n_workers=1,
+            receptors,
+            ligands,
+            pockets,
+            seed=42,
+            output_dir=outdir,
+            n_workers=1,
         )
 
         assert set(results.keys()) == {"rec1", "rec2"}
@@ -271,7 +313,9 @@ class TestBatchDock:
 
         with pytest.raises(ValueError, match="missing"):
             docking.batch_dock(
-                {"rec": str(rec)}, {"lig": str(lig)}, {},
+                {"rec": str(rec)},
+                {"lig": str(lig)},
+                {},
             )
 
     def test_missing_receptor_file_raises(self, tmp_path):
@@ -279,7 +323,8 @@ class TestBatchDock:
         lig.write_text("ATOM      1  C   LIG A   1      1.000   2.000   3.000\n")
         with pytest.raises(DockingCalculationError):
             docking.batch_dock(
-                {"rec": "missing.pdbqt"}, {"lig": str(lig)},
+                {"rec": "missing.pdbqt"},
+                {"lig": str(lig)},
                 {"rec": {"center": (0, 0, 0), "box_size": (20, 20, 20)}},
             )
 
@@ -297,9 +342,7 @@ class TestDockEnsemble:
         for i in range(3):
             pf = tmp_path / f"pose_{i}.pdbqt"
             x = 1.0 + i * 0.1
-            pf.write_text(
-                f"ATOM      1  C   LIG A   1      {x:.3f}   2.000   3.000\n"
-            )
+            pf.write_text(f"ATOM      1  C   LIG A   1      {x:.3f}   2.000   3.000\n")
             pose_files.append(str(pf))
 
         def make_result(rec_path, lig_path, center, box, **kwargs):
@@ -317,8 +360,13 @@ class TestDockEnsemble:
         mock_dock.side_effect = make_result
 
         summary = docking.dock_ensemble(
-            str(rec), str(lig), (0, 0, 0), (20, 20, 20),
-            n_repeats=3, seed=42, output_dir=str(tmp_path / "ensemble"),
+            str(rec),
+            str(lig),
+            (0, 0, 0),
+            (20, 20, 20),
+            n_repeats=3,
+            seed=42,
+            output_dir=str(tmp_path / "ensemble"),
         )
 
         assert summary["n_repeats"] == 3
@@ -336,7 +384,11 @@ class TestDockEnsemble:
         lig.write_text("ATOM      1  C   LIG A   1      1.000   2.000   3.000\n")
         with pytest.raises(ValueError, match="n_repeats"):
             docking.dock_ensemble(
-                str(rec), str(lig), (0, 0, 0), (20, 20, 20), n_repeats=1,
+                str(rec),
+                str(lig),
+                (0, 0, 0),
+                (20, 20, 20),
+                n_repeats=1,
             )
 
     @patch("autodock.docking.dock_ligand")
@@ -350,5 +402,9 @@ class TestDockEnsemble:
 
         with pytest.raises(DockingCalculationError, match="Fewer than 2"):
             docking.dock_ensemble(
-                str(rec), str(lig), (0, 0, 0), (20, 20, 20), n_repeats=3,
+                str(rec),
+                str(lig),
+                (0, 0, 0),
+                (20, 20, 20),
+                n_repeats=3,
             )

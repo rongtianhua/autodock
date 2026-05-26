@@ -1,4 +1,5 @@
 """Tests for autodock.config — YAML loading, defaults, validation."""
+
 from __future__ import annotations
 
 import pytest
@@ -36,6 +37,7 @@ class TestLoadConfig:
 class TestValidate:
     def test_exhaustiveness_warning(self, caplog):
         import logging
+
         cfg = {"docking": {"exhaustiveness": 4}}
         with caplog.at_level(logging.WARNING):
             config._validate(cfg)
@@ -43,6 +45,7 @@ class TestValidate:
 
     def test_num_modes_warning(self, caplog):
         import logging
+
         cfg = {"docking": {"num_modes": 5}}
         with caplog.at_level(logging.WARNING):
             config._validate(cfg)
@@ -50,6 +53,7 @@ class TestValidate:
 
     def test_posebusters_disabled_warning(self, caplog):
         import logging
+
         cfg = {"validation": {"posebusters": False}}
         with caplog.at_level(logging.WARNING):
             config._validate(cfg)

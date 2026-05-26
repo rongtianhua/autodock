@@ -137,6 +137,8 @@ exclude_lines = [
 [tool.ruff]
 target-version = "py310"
 line-length = 100
+
+[tool.ruff.lint]
 select = [
     "E",   # pycodestyle errors
     "W",   # pycodestyle warnings
@@ -150,9 +152,17 @@ select = [
 ]
 ignore = [
     "E501",  # line too long (handled by formatter)
+    "B904",  # exception chaining — verbose for this codebase; enable later
+    "N806",  # variable names in function (math notation: P, Q, R, H, etc.)
+    "N803",  # argument names (math notation)
+    "N802",  # function naming (test methods with descriptive names)
+    "N813",  # camelcase imports (MDAnalysis as mda is idiomatic)
+    "SIM117", # nested with statements (sometimes clearer)
+    "SIM115", # context manager for files (false positives with try/finally + delete=False)
+    "B023",   # loop variable in closure (only 2 instances, not bugs)
 ]
 
-[tool.ruff.per-file-ignores]
+[tool.ruff.lint.per-file-ignores]
 "autodock/tests/*" = ["S101"]
 
 # ─────────────────────────────────────────────────────────────────────────────

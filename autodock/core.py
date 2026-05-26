@@ -4,56 +4,75 @@ autodock.core — Core infrastructure for publication-grade molecular docking.
 Exception hierarchy, structured logging, DockingResult dataclass,
 environment auto-discovery, and shared constants.
 """
+
 from __future__ import annotations
 
+import logging
 import os
 import shutil
 import subprocess
-import logging
-import warnings
-from dataclasses import dataclass, field, asdict
+from dataclasses import asdict, dataclass, field
 from datetime import datetime
 from typing import Any
+
+import numpy as np
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Exception Hierarchy
 # ─────────────────────────────────────────────────────────────────────────────
 
+
 class DockingError(Exception):
     """Base exception for all autodock errors."""
+
     pass
+
 
 class StructureFetchError(DockingError):
     """Failed to fetch protein/ligand structure from remote source."""
+
     pass
+
 
 class PreparationError(DockingError):
     """Failed to prepare receptor or ligand (PDBQT generation failed)."""
+
     pass
+
 
 class DockingCalculationError(DockingError):
     """AutoDock Vina docking failed (no poses, timeout, etc.)."""
+
     pass
+
 
 class VisualizationError(DockingError):
     """Rendering / interaction detection failed."""
+
     pass
+
 
 class ValidationError(DockingError):
     """Redocking validation or clash / RMSD computation failed."""
+
     pass
 
 
 class MDError(DockingError):
     """Molecular dynamics simulation or analysis failed."""
+
     pass
+
 
 class DataSourceError(DockingError):
     """External database query failed (BindingDB, ZINC, etc.)."""
+
     pass
+
 
 class ConfigurationError(DockingError):
     """Invalid configuration file or parameter."""
+
     pass
 
 
@@ -61,8 +80,10 @@ class ConfigurationError(DockingError):
 # Structured Logger
 # ─────────────────────────────────────────────────────────────────────────────
 
+
 class _AutodockFormatter(logging.Formatter):
     """Compact formatter: [autodock] LEVEL: message"""
+
     def format(self, record: logging.LogRecord) -> str:
         level = record.levelname[0] if record.levelname != "DEBUG" else "D"
         return f"[autodock] {level}: {record.getMessage()}"
@@ -87,10 +108,12 @@ if not autodock_logger.handlers:
             mode="a",
         )
         _file_handler.setLevel(logging.DEBUG)
-        _file_handler.setFormatter(logging.Formatter(
-            "%(asctime)s [%(levelname)s] %(name)s: %(message)s",
-            datefmt="%Y-%m-%d %H:%M:%S",
-        ))
+        _file_handler.setFormatter(
+            logging.Formatter(
+                "%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+                datefmt="%Y-%m-%d %H:%M:%S",
+            )
+        )
         autodock_logger.addHandler(_file_handler)
     except (OSError, PermissionError):
         pass  # Cannot write to home directory log path
@@ -113,7 +136,6 @@ def set_log_level(level: int | str) -> None:
 # Vina seed helper
 # ─────────────────────────────────────────────────────────────────────────────
 
-import random
 
 # Default deterministic seed for publication-grade reproducibility
 DEFAULT_SEED: int = 42
@@ -163,7 +185,9 @@ def find_java() -> str | None:
     try:
         result = subprocess.run(
             ["/usr/libexec/java_home", "--failfast"],
-            capture_output=True, text=True, timeout=5,
+            capture_output=True,
+            text=True,
+            timeout=5,
         )
         if result.returncode == 0:
             java_home = result.stdout.strip()
@@ -181,10 +205,12 @@ def find_p2rank() -> str | None:
     """
     candidates = []
     if CONDA_PREFIX:
-        candidates.extend([
-            os.path.join(CONDA_PREFIX, "opt", "p2rank_2.5.1", "prank"),
-            os.path.join(CONDA_PREFIX, "bin", "prank"),
-        ])
+        candidates.extend(
+            [
+                os.path.join(CONDA_PREFIX, "opt", "p2rank_2.5.1", "prank"),
+                os.path.join(CONDA_PREFIX, "bin", "prank"),
+            ]
+        )
     candidates.append(shutil.which("prank"))
     for c in candidates:
         if c and os.path.isfile(c) and os.access(c, os.X_OK):
@@ -248,6 +274,7 @@ def safe_subprocess(
 # Optional-dependency feature flags (probed at import time)
 # ─────────────────────────────────────────────────────────────────────────────
 
+
 def _probe(module_name: str) -> bool:
     try:
         __import__(module_name)
@@ -310,10 +337,15 @@ def print_environment_status() -> None:
         print(f"  {status}  {label:<20s}  {val if val else 'NOT FOUND'}")
     print("=" * 55)
 
-    core_ok = all([
-        st["vina_python"], st["rdkit"], st["meeko"],
-        st["vina_cli"], st["openbabel"],
-    ])
+    core_ok = all(
+        [
+            st["vina_python"],
+            st["rdkit"],
+            st["meeko"],
+            st["vina_cli"],
+            st["openbabel"],
+        ]
+    )
     if core_ok:
         print("✅  Core dependencies ready — docking pipeline available.")
     else:
@@ -340,7 +372,7 @@ def detect_receptor_source(pdb_path: str) -> str | None:
     if not os.path.isfile(pdb_path):
         return None
     try:
-        with open(pdb_path, "r") as fh:
+        with open(pdb_path) as fh:
             text = fh.read(5000)
     except Exception:
         return None
@@ -363,6 +395,7 @@ class DockingResult:
 
     Use `.to_dict()` for JSON serialization, `.to_dataframe_row()` for CSV.
     """
+
     # ── Identity ─────────────────────────────────────────────────────
     compound_name: str
     receptor: str
@@ -377,21 +410,21 @@ class DockingResult:
     seed: int | None = None
 
     # ── Scores ───────────────────────────────────────────────────────
-    best_affinity: float | None = None          # kcal/mol (more negative = tighter)
+    best_affinity: float | None = None  # kcal/mol (more negative = tighter)
     scoring_functions: list[str] = field(default_factory=lambda: ["vina"])
     all_scores: dict[str, float] = field(default_factory=dict)
-    consensus_affinity: float | None = None     # median of all_scores
+    consensus_affinity: float | None = None  # median of all_scores
     pre_dock_score: float | None = None
     score_improvement: float | None = None
 
     # ── Validation ───────────────────────────────────────────────────
-    rmsd_from_crystal: float | None = None      # Å
+    rmsd_from_crystal: float | None = None  # Å
     protocol_valid: bool | None = None
     redocking_threshold: float | None = None
 
     # ── Pose quality ─────────────────────────────────────────────────
     posebusters_pass: bool | None = None
-    clash_score: float | None = None            # Å overlap
+    clash_score: float | None = None  # Å overlap
     clash_acceptable: bool | None = None
 
     # ── Pose clustering ──────────────────────────────────────────────
@@ -468,16 +501,9 @@ class DockingResult:
 
     # ── Private helpers ──────────────────────────────────────────────
     def _aggregate_interactions(self) -> None:
-        self._n_hbonds = sum(
-            1 for i in self.interactions if i.get("type") == "H-bond"
-        )
-        self._n_pi = sum(
-            1 for i in self.interactions
-            if i.get("type") in ("π-π", "π-cation")
-        )
-        self._n_hydrophobic = sum(
-            1 for i in self.interactions if i.get("type") == "Hydrophobic"
-        )
+        self._n_hbonds = sum(1 for i in self.interactions if i.get("type") == "H-bond")
+        self._n_pi = sum(1 for i in self.interactions if i.get("type") in ("π-π", "π-cation"))
+        self._n_hydrophobic = sum(1 for i in self.interactions if i.get("type") == "Hydrophobic")
         self._interactions_computed = True
 
     # ── Serialisation ────────────────────────────────────────────────
@@ -498,8 +524,9 @@ class DockingResult:
             "compound": self.compound_name,
             "receptor": os.path.basename(self.receptor) if self.receptor else None,
             "receptor_source": self.receptor_source,
-            "receptor_source_label": _RECEPTOR_SOURCE_LABELS.get(self.receptor_source)
-            if self.receptor_source else None,
+            "receptor_source_label": (
+                _RECEPTOR_SOURCE_LABELS.get(self.receptor_source) if self.receptor_source else None
+            ),
             "best_affinity_kcal_mol": self.best_affinity,
             "consensus_affinity": self.consensus_affinity,
             "scoring_functions": ",".join(self.scoring_functions),
@@ -529,7 +556,6 @@ class DockingResult:
             "all_poses_pdbqt": self.all_poses_pdbqt,
             "method": self.method_label,
         }
-
 
 
 def build_docking_result(
@@ -598,9 +624,27 @@ _SKIP_WATER: set[str] = {"HOH", "WAT", "H2O", "DOD", "TIP", "SOL"}
 
 # Common crystallographic additives — only skip when they cause preparation failures
 _SKIP_ADDITIVES: set[str] = {
-    "PJE", "02J", "010", "03U", "03T", "02K", "02L",
-    "SO4", "PO4", "GOL", "EDO", "ACT", "PEG", "MES",
-    "NAG", "MAN", "FUC", "GAL", "SIA", "NGA", "GLC",
+    "PJE",
+    "02J",
+    "010",
+    "03U",
+    "03T",
+    "02K",
+    "02L",
+    "SO4",
+    "PO4",
+    "GOL",
+    "EDO",
+    "ACT",
+    "PEG",
+    "MES",
+    "NAG",
+    "MAN",
+    "FUC",
+    "GAL",
+    "SIA",
+    "NGA",
+    "GLC",
 }
 
 # Combined skip set for backward compat

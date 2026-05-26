@@ -1,8 +1,8 @@
 """Tests for autodock.clustering — pose clustering logic."""
+
 from __future__ import annotations
 
 import numpy as np
-import pytest
 
 from autodock import clustering
 
@@ -21,7 +21,9 @@ class TestClusterPoses:
 
     def test_two_identical_poses_one_cluster(self):
         # Identical poses should fall into the same cluster
-        atom_line = "ATOM      1  C   LIG A   1      0.000   0.000   0.000  1.00  0.00           C  \n"
+        atom_line = (
+            "ATOM      1  C   LIG A   1      0.000   0.000   0.000  1.00  0.00           C  \n"
+        )
         poses = [
             f"MODEL 1\n{atom_line}ENDMDL\n",
             f"MODEL 1\n{atom_line}ENDMDL\n",
@@ -52,7 +54,9 @@ class TestClusterPoses:
         assert clusters[1]["size"] == 1
 
     def test_representative_is_lowest_energy(self):
-        atom_line = "ATOM      1  C   LIG A   1      0.000   0.000   0.000  1.00  0.00           C  \n"
+        atom_line = (
+            "ATOM      1  C   LIG A   1      0.000   0.000   0.000  1.00  0.00           C  \n"
+        )
         poses = [
             f"MODEL 1\n{atom_line}ENDMDL\n",
             f"MODEL 1\n{atom_line}ENDMDL\n",

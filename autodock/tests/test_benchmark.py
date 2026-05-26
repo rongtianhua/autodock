@@ -1,9 +1,8 @@
 """Tests for autodock.benchmark — redocking benchmark logic."""
+
 from __future__ import annotations
 
-from unittest.mock import MagicMock, patch
-
-import pytest
+from unittest.mock import patch
 
 from autodock import benchmark as bm
 
@@ -69,9 +68,27 @@ class TestRunRedockingBenchmark:
         # Direct test of stats compilation logic via mocked _run_single_benchmark
         with patch("autodock.benchmark._run_single_benchmark") as mock_run:
             mock_run.side_effect = [
-                {"pdb_id": "1A", "family": "kinase", "success": True, "rmsd": 1.0, "best_affinity": -8.0},
-                {"pdb_id": "1B", "family": "kinase", "success": True, "rmsd": 2.0, "best_affinity": -7.5},
-                {"pdb_id": "1C", "family": "protease", "success": False, "rmsd": None, "error": "fail"},
+                {
+                    "pdb_id": "1A",
+                    "family": "kinase",
+                    "success": True,
+                    "rmsd": 1.0,
+                    "best_affinity": -8.0,
+                },
+                {
+                    "pdb_id": "1B",
+                    "family": "kinase",
+                    "success": True,
+                    "rmsd": 2.0,
+                    "best_affinity": -7.5,
+                },
+                {
+                    "pdb_id": "1C",
+                    "family": "protease",
+                    "success": False,
+                    "rmsd": None,
+                    "error": "fail",
+                },
             ]
             summary = bm.run_redocking_benchmark(
                 targets=[

@@ -11,16 +11,16 @@ Requirements:
     - mdanalysis (optional, for analysis)
     - numpy
 """
+
 from __future__ import annotations
 
 import os
-from pathlib import Path
 from typing import Any
 
 import numpy as np
 
-from autodock.core import logger, MDError
-from autodock.utils import ensure_dir, _sanitize_pdbqt_for_rdkit
+from autodock.core import MDError, logger
+from autodock.utils import _sanitize_pdbqt_for_rdkit, ensure_dir
 
 
 def _pdbqt_to_pdb(pdbqt_path: str, output_pdb: str) -> str:
@@ -37,12 +37,12 @@ def _pdbqt_to_pdb(pdbqt_path: str, output_pdb: str) -> str:
 
 def _merge_receptor_ligand_pdb(receptor_pdb: str, ligand_pdb: str, output_pdb: str) -> str:
     """Concatenate receptor and ligand PDB files into a single complex PDB."""
-    with open(receptor_pdb, "r") as f:
-        rec_lines = [l for l in f if l.startswith(("ATOM  ", "HETATM", "TER   ", "END"))]
-    with open(ligand_pdb, "r") as f:
-        lig_lines = [l for l in f if l.startswith(("ATOM  ", "HETATM", "TER   "))]
+    with open(receptor_pdb) as f:
+        rec_lines = [line for line in f if line.startswith(("ATOM  ", "HETATM", "TER   ", "END"))]
+    with open(ligand_pdb) as f:
+        lig_lines = [line for line in f if line.startswith(("ATOM  ", "HETATM", "TER   "))]
 
-    rec_lines = [l for l in rec_lines if not l.startswith("END")]
+    rec_lines = [line for line in rec_lines if not line.startswith("END")]
 
     with open(output_pdb, "w") as f:
         f.writelines(rec_lines)
@@ -113,11 +113,45 @@ def run_md_stability(
 
     # 3. Identify ligand residues
     standard_residues = {
-        "ALA", "ARG", "ASN", "ASP", "CYS", "GLN", "GLU", "GLY",
-        "HIS", "ILE", "LEU", "LYS", "MET", "PHE", "PRO", "SER",
-        "THR", "TRP", "TYR", "VAL", "HID", "HIE", "HIP", "CYX",
-        "ASH", "GLH", "LYN", "HOH", "WAT", "H2O", "NA", "CL",
-        "K", "CA", "MG", "ZN", "SOL", "DOD", "TIP",
+        "ALA",
+        "ARG",
+        "ASN",
+        "ASP",
+        "CYS",
+        "GLN",
+        "GLU",
+        "GLY",
+        "HIS",
+        "ILE",
+        "LEU",
+        "LYS",
+        "MET",
+        "PHE",
+        "PRO",
+        "SER",
+        "THR",
+        "TRP",
+        "TYR",
+        "VAL",
+        "HID",
+        "HIE",
+        "HIP",
+        "CYX",
+        "ASH",
+        "GLH",
+        "LYN",
+        "HOH",
+        "WAT",
+        "H2O",
+        "NA",
+        "CL",
+        "K",
+        "CA",
+        "MG",
+        "ZN",
+        "SOL",
+        "DOD",
+        "TIP",
     }
     ligand_residues = [r for r in modeller.topology.residues() if r.name not in standard_residues]
     if not ligand_residues:
@@ -163,7 +197,9 @@ def run_md_stability(
         )
     except ImportError:
         # Fallback to basic force field without small-molecule support
-        logger.warning("openmmforcefields not available — using basic Amber FF (ligand may not be parameterized)")
+        logger.warning(
+            "openmmforcefields not available — using basic Amber FF (ligand may not be parameterized)"
+        )
         if solvent_model == "explicit":
             forcefield = app.ForceField("amber/protein.ff14SB.xml", "amber/tip3p_standard.xml")
             nonbonded_method = app.PME
@@ -237,7 +273,9 @@ def run_md_stability(
     # 10. NPT equilibration
     if npt_steps > 0 and solvent_model == "explicit":
         logger.info(f"NPT equilibration ({npt_steps} steps, {npt_steps * dt_fs / 1e6:.2f} ns)...")
-        system.addForce(openmm.MonteCarloBarostat(pressure_bar * unit.bar, temperature_k * unit.kelvin))
+        system.addForce(
+            openmm.MonteCarloBarostat(pressure_bar * unit.bar, temperature_k * unit.kelvin)
+        )
         simulation.context.reinitialize(preserveState=True)
         simulation.step(npt_steps)
 
@@ -295,7 +333,7 @@ def analyze_md_trajectory(
     """
     try:
         import MDAnalysis as mda
-        from MDAnalysis.analysis import rms, align
+        from MDAnalysis.analysis import align, rms
     except ImportError:
         logger.warning("MDAnalysis not available — skipping trajectory analysis")
         return {}
@@ -304,7 +342,11 @@ def analyze_md_trajectory(
 
     protein = u.select_atoms("protein")
     ca = u.select_atoms("protein and name CA")
-    ligand = u.select_atoms(" or ".join(f"resname {r}" for r in ligand_resnames)) if ligand_resnames else None
+    ligand = (
+        u.select_atoms(" or ".join(f"resname {r}" for r in ligand_resnames))
+        if ligand_resnames
+        else None
+    )
     if ligand is None or len(ligand) == 0:
         ligand = u.select_atoms("not protein and not water and not resname NA CL K CA MG ZN")
 
@@ -349,6 +391,7 @@ def analyze_md_trajectory(
     if ligand is not None and len(ligand) > 0 and len(protein) > 0:
         try:
             from MDAnalysis.analysis import hydrogenbonds
+
             hbonds = hydrogenbonds.HydrogenBondAnalysis(
                 universe=u,
                 donors_sel="protein",

@@ -2,39 +2,39 @@
 autodock.preparation — Receptor / ligand preparation and binding-site detection.
 ==============================================================================
 """
+
 from __future__ import annotations
 
+import contextlib
 import os
 import re
 import shutil
 import tempfile
-from pathlib import Path
 from typing import Any
 
 import numpy as np
 
 from autodock.core import (
-    logger,
-    PreparationError,
-    safe_subprocess,
-    find_conda_tool,
-    find_p2rank,
-    find_java,
-    _SKIP_WATER,
-    _SKIP_ADDITIVES,
-    _POCKET_MIN_DIM,
+    _DRUGGABILITY_THRESHOLD,
+    _P2RANK_PROB_THRESHOLD,
     _POCKET_MAX_DIM,
     _POCKET_MAX_VOLUME,
     _POCKET_MIN_DEPTH,
-    _P2RANK_PROB_THRESHOLD,
-    _DRUGGABILITY_THRESHOLD,
+    _POCKET_MIN_DIM,
+    _SKIP_ADDITIVES,
+    _SKIP_WATER,
+    PreparationError,
+    find_conda_tool,
+    find_p2rank,
+    logger,
+    safe_subprocess,
 )
-from autodock.utils import ensure_dir, filter_pdb_lines, compute_bounding_box, obabel_convert
-
+from autodock.utils import ensure_dir, obabel_convert
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Receptor Preparation
 # ─────────────────────────────────────────────────────────────────────────────
+
 
 def prepare_receptor(
     pdb_file: str,
@@ -87,7 +87,7 @@ def prepare_receptor(
         except Exception as exc:
             raise PreparationError(f"CIF parsing failed: {exc}")
     else:
-        with open(pdb_file, "r") as fh:
+        with open(pdb_file) as fh:
             pdb_content = fh.read()
 
     # Step 2: Filter waters / hetatms
@@ -118,10 +118,8 @@ def prepare_receptor(
         with open(tmp_pdb, "w") as fh:
             fh.writelines(filtered)
         pdb_content = "".join(filtered)
-        try:
+        with contextlib.suppress(Exception):
             os.remove(tmp_pdb)
-        except Exception:
-            pass
 
     # Step 3: Remove known problematic additives that crash Meeko
     lines = pdb_content.splitlines()
@@ -144,26 +142,26 @@ def prepare_receptor(
     mk_prep = MoleculePreparation(charge_model="gasteiger")
 
     try:
-        polymer = Polymer.from_pdb_string(
-            pdb_content, templates, mk_prep, default_altloc="A"
-        )
-    except Exception as exc:
+        polymer = Polymer.from_pdb_string(pdb_content, templates, mk_prep, default_altloc="A")
+    except Exception:
         # Retry with allow_bad_res=True: removes unknown residues and continues
-        logger.warning(
-            f"Some residues failed template matching — retrying with allow_bad_res=True"
-        )
+        logger.warning("Some residues failed template matching — retrying with allow_bad_res=True")
         try:
             polymer = Polymer.from_pdb_string(
                 pdb_content, templates, mk_prep, allow_bad_res=True, default_altloc="A"
             )
         except Exception as exc2:
-            logger.error(f"Meeko preparation failed even with allow_bad_res: {exc2}")
-            raise PreparationError(f"Receptor preparation failed: {exc2}")
+            logger.error(
+                f"Meeko preparation failed even with allow_bad_res: {exc2} — "
+                f"falling back to Open Babel"
+            )
+            return _prepare_receptor_with_obabel(pdb_file, output_pdbqt)
 
     try:
         rigid_pdbqt, _ = PDBQTWriterLegacy.write_from_polymer(polymer)
     except Exception as exc:
-        raise PreparationError(f"PDBQT writing failed: {exc}")
+        logger.error(f"PDBQT writing failed: {exc} — falling back to Open Babel")
+        return _prepare_receptor_with_obabel(pdb_file, output_pdbqt)
 
     ensure_dir(os.path.dirname(output_pdbqt) or ".")
     with open(output_pdbqt, "w") as fh:
@@ -173,9 +171,82 @@ def prepare_receptor(
     return os.path.abspath(output_pdbqt)
 
 
+def _prepare_receptor_with_obabel(pdb_file: str, output_pdbqt: str) -> str:
+    """Fallback receptor preparation using Open Babel."""
+    success = obabel_convert(
+        pdb_file,
+        output_pdbqt,
+        in_format="pdb",
+        out_format="pdbqt",
+        options=["-xr"],  # rigid receptor (no rotatable bonds)
+        timeout=300,
+    )
+    if not success:
+        raise PreparationError("Open Babel receptor preparation failed")
+    logger.info(f"Receptor prepared (Open Babel fallback): {output_pdbqt}")
+    return os.path.abspath(output_pdbqt)
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Ligand Preparation
 # ─────────────────────────────────────────────────────────────────────────────
+
+
+def _has_nan_charges(mol) -> bool:
+    """Check if any atom has a NaN Gasteiger charge."""
+    for atom in mol.GetAtoms():
+        try:
+            c = atom.GetDoubleProp("_GasteigerCharge")
+            if c != c:  # NaN check
+                return True
+        except KeyError:
+            return True
+    return False
+
+
+def _prepare_ligand_with_obabel(smiles: str, output_pdbqt: str, name: str = "LIG") -> str:
+    """Fallback ligand preparation using Open Babel (SMILES → PDBQT)."""
+    from autodock.utils import write_temp_file
+
+    tmp_smi = write_temp_file(smiles, ".smi")
+    tmp_pdbqt = tmp_smi.replace(".smi", "_obabel.pdbqt")
+    try:
+        success = obabel_convert(
+            tmp_smi,
+            tmp_pdbqt,
+            in_format="smi",
+            out_format="pdbqt",
+            options=["-p", "7.4", "--gen3d"],
+            timeout=120,
+        )
+        if not success:
+            raise PreparationError("Open Babel ligand preparation failed")
+
+        with open(tmp_pdbqt) as fh:
+            pdbqt_str = fh.read()
+    finally:
+        for p in (tmp_smi, tmp_pdbqt):
+            with contextlib.suppress(Exception):
+                os.remove(p)
+
+    # Inject residue name
+    safe_name = (name or "LIG")[:3]
+    if safe_name != "LIG":
+        lines = pdbqt_str.splitlines()
+        renamed = []
+        for line in lines:
+            if line.startswith(("ATOM  ", "HETATM")):
+                line = line[:17] + f"{safe_name:>3}" + line[20:]
+            renamed.append(line)
+        pdbqt_str = "\n".join(renamed)
+
+    ensure_dir(os.path.dirname(output_pdbqt) or ".")
+    with open(output_pdbqt, "w") as fh:
+        fh.write(pdbqt_str)
+
+    logger.info(f"Ligand prepared (Open Babel fallback): {output_pdbqt}")
+    return os.path.abspath(output_pdbqt)
+
 
 def prepare_ligand(
     smiles: str,
@@ -187,6 +258,8 @@ def prepare_ligand(
     Prepare a ligand for docking (SMILES → PDBQT).
 
     Uses RDKit ETKDGv3 for 3D conformer + Meeko for PDBQT export.
+    Falls back to Open Babel if Gasteiger charge calculation fails
+    (e.g. for phosphorylated ligands such as 5GP in 1C9K).
 
     Args:
         smiles: SMILES string.
@@ -198,9 +271,9 @@ def prepare_ligand(
         Absolute path to the prepared PDBQT file.
     """
     try:
+        from meeko import MoleculePreparation, PDBQTWriterLegacy
         from rdkit import Chem
         from rdkit.Chem import AllChem, rdPartialCharges
-        from meeko import MoleculePreparation, PDBQTWriterLegacy
     except ImportError as exc:
         raise PreparationError(f"Required package missing: {exc}")
 
@@ -216,17 +289,36 @@ def prepare_ligand(
         logger.warning(f"ETKDGv3 embedding returned {embed_ok} — trying fallback")
         embed_ok2 = AllChem.EmbedMolecule(mol, randomSeed=seed)
         if embed_ok2 != 0:
-            raise PreparationError("Failed to generate 3D conformer for ligand.")
+            logger.warning("RDKit embedding failed — falling back to Open Babel")
+            return _prepare_ligand_with_obabel(smiles, output_pdbqt, name=name)
 
     AllChem.MMFFOptimizeMolecule(mol)
     rdPartialCharges.ComputeGasteigerCharges(mol)
 
+    # If Gasteiger produced NaN charges, skip Meeko and use Open Babel
+    if _has_nan_charges(mol):
+        logger.warning(
+            "Gasteiger charges contain NaN — falling back to Open Babel ligand preparation"
+        )
+        return _prepare_ligand_with_obabel(smiles, output_pdbqt, name=name)
+
     params_mk = MoleculePreparation(charge_model="gasteiger")
-    mol_setup = params_mk.prepare(mol)
+    try:
+        mol_setup = params_mk.prepare(mol)
+    except Exception as exc:
+        err_str = str(exc)
+        if "non finite charge" in err_str or "charge" in err_str.lower():
+            logger.warning(f"Meeko charge failure ({exc}) — falling back to Open Babel")
+            return _prepare_ligand_with_obabel(smiles, output_pdbqt, name=name)
+        raise PreparationError(f"Meeko ligand prep failed: {exc}")
+
     setup = mol_setup[0] if isinstance(mol_setup, list) else mol_setup
 
     pdbqt_str, success, err = PDBQTWriterLegacy.write_string(setup)
     if not success:
+        if "non finite charge" in err or "charge" in err.lower():
+            logger.warning("Meeko PDBQT write charge failure — falling back to Open Babel")
+            return _prepare_ligand_with_obabel(smiles, output_pdbqt, name=name)
         raise PreparationError(f"Meeko ligand prep failed: {err}")
 
     # Inject residue name if requested (PDB format: cols 18-20 = resname, max 3 chars)
@@ -282,7 +374,10 @@ def prepare_ligand_conformers(
 # Binding Site Detection (fpocket + P2Rank)
 # ─────────────────────────────────────────────────────────────────────────────
 
-def _compute_box_size(dims: tuple[float, float, float], padding: float = 5.0) -> tuple[float, float, float]:
+
+def _compute_box_size(
+    dims: tuple[float, float, float], padding: float = 5.0
+) -> tuple[float, float, float]:
     """Compute Vina docking box size from pocket dimensions + padding."""
     box = []
     for d in dims:
@@ -294,7 +389,7 @@ def _compute_box_size(dims: tuple[float, float, float], padding: float = 5.0) ->
 
 def _prepare_pdb_for_fpocket(pdb_in: str, pdb_out: str) -> None:
     """Strip waters and keep only ATOM/HETATM for fpocket."""
-    with open(pdb_in, "r") as fin, open(pdb_out, "w") as fout:
+    with open(pdb_in) as fin, open(pdb_out, "w") as fout:
         for line in fin:
             if line.startswith(("ATOM  ", "HETATM")):
                 resn = line[17:20].strip()
@@ -307,7 +402,8 @@ def _parse_fpocket_info(info_path: str) -> list[dict[str, Any]]:
     pockets = []
     if not os.path.exists(info_path):
         return pockets
-    text = open(info_path).read()
+    with open(info_path) as fh:
+        text = fh.read()
     blocks = re.split(r"(?=Pocket \d+ :)", text)
     for block in blocks:
         m = re.match(r"Pocket (\d+) :", block)
@@ -344,11 +440,13 @@ def _parse_fpocket_info(info_path: str) -> list[dict[str, Any]]:
                 for line in f:
                     if line.startswith(("ATOM", "HETATM")):
                         try:
-                            coords.append([
-                                float(line[30:38]),
-                                float(line[38:46]),
-                                float(line[46:54]),
-                            ])
+                            coords.append(
+                                [
+                                    float(line[30:38]),
+                                    float(line[38:46]),
+                                    float(line[46:54]),
+                                ]
+                            )
                         except ValueError:
                             continue
             if coords:
@@ -357,17 +455,19 @@ def _parse_fpocket_info(info_path: str) -> list[dict[str, Any]]:
                 dims = tuple((ca.max(axis=0) - ca.min(axis=0)).tolist())
 
         if center:
-            pockets.append({
-                "num": pocket_num,
-                "druggability": druggability if druggability is not None else 0.0,
-                "volume": volume,
-                "depth": depth,
-                "openings": openings,
-                "n_apolar": n_apolar,
-                "n_polar": n_polar,
-                "center": center,
-                "dims": dims if dims else (20.0, 20.0, 20.0),
-            })
+            pockets.append(
+                {
+                    "num": pocket_num,
+                    "druggability": druggability if druggability is not None else 0.0,
+                    "volume": volume,
+                    "depth": depth,
+                    "openings": openings,
+                    "n_apolar": n_apolar,
+                    "n_polar": n_polar,
+                    "center": center,
+                    "dims": dims if dims else (20.0, 20.0, 20.0),
+                }
+            )
     return pockets
 
 
@@ -476,40 +576,49 @@ def find_top_pockets(
         # Gold standard: center on known ligand
         try:
             from rdkit import Chem
+
             mol = Chem.MolFromPDBFile(ligand_pdb)
             if mol is None:
                 raise ValueError("Could not parse ligand PDB")
             conf = mol.GetConformer()
-            coords = np.array([
-                [conf.GetAtomPosition(i).x, conf.GetAtomPosition(i).y, conf.GetAtomPosition(i).z]
-                for i in range(mol.GetNumAtoms())
-            ])
+            coords = np.array(
+                [
+                    [
+                        conf.GetAtomPosition(i).x,
+                        conf.GetAtomPosition(i).y,
+                        conf.GetAtomPosition(i).z,
+                    ]
+                    for i in range(mol.GetNumAtoms())
+                ]
+            )
             center = tuple(coords.mean(axis=0).tolist())
             dims = tuple((coords.max(axis=0) - coords.min(axis=0)).tolist())
             box_size = _compute_box_size(dims, padding)
             logger.info(f"Binding site from ligand: center={center}, box={box_size}")
-            return [{
-                "center": center,
-                "box_size": box_size,
-                "druggability": None,
-                "p2rank_prob": None,
-                "pocket_num": None,
-                "pocket_source": "crystal_ligand",
-                "volume": None,
-                "depth": None,
-                "openings": None,
-                "n_apolar": None,
-                "n_polar": None,
-            }]
+            return [
+                {
+                    "center": center,
+                    "box_size": box_size,
+                    "druggability": None,
+                    "p2rank_prob": None,
+                    "pocket_num": None,
+                    "pocket_source": "crystal_ligand",
+                    "volume": None,
+                    "depth": None,
+                    "openings": None,
+                    "n_apolar": None,
+                    "n_polar": None,
+                }
+            ]
         except Exception as exc:
-            logger.warning(f"Ligand-centered pocket detection failed: {exc}. Falling back to fpocket.")
+            logger.warning(
+                f"Ligand-centered pocket detection failed: {exc}. Falling back to fpocket."
+            )
 
     # fpocket detection
     fpocket_bin = find_conda_tool("fpocket")
     if not fpocket_bin:
-        raise PreparationError(
-            "fpocket not found. Install: conda install -c conda-forge fpocket"
-        )
+        raise PreparationError("fpocket not found. Install: conda install -c conda-forge fpocket")
 
     prep_pdb = tempfile.mktemp(suffix="_prep.pdb")
     _prepare_pdb_for_fpocket(receptor_pdb, prep_pdb)
@@ -522,9 +631,13 @@ def find_top_pockets(
     try:
         success, _, stderr = safe_subprocess(
             [
-                fpocket_bin, "-f", prep_pdb_abs,
-                "-m", str(fpocket_min_alpha),
-                "-M", str(fpocket_max_alpha),
+                fpocket_bin,
+                "-f",
+                prep_pdb_abs,
+                "-m",
+                str(fpocket_min_alpha),
+                "-M",
+                str(fpocket_max_alpha),
             ],
             timeout=120,
             cwd=prep_dir,
@@ -579,19 +692,21 @@ def find_top_pockets(
             prob = p2rank_probs.get(p["num"], None) if p2rank_probs else None
             center = p["center"]
             box_size = _compute_box_size(p["dims"], padding)
-            result.append({
-                "center": center,
-                "box_size": box_size,
-                "druggability": p["druggability"],
-                "p2rank_prob": prob,
-                "pocket_num": p["num"],
-                "pocket_source": "fpocket",
-                "volume": p.get("volume"),
-                "depth": p.get("depth"),
-                "openings": p.get("openings"),
-                "n_apolar": p.get("n_apolar"),
-                "n_polar": p.get("n_polar"),
-            })
+            result.append(
+                {
+                    "center": center,
+                    "box_size": box_size,
+                    "druggability": p["druggability"],
+                    "p2rank_prob": prob,
+                    "pocket_num": p["num"],
+                    "pocket_source": "fpocket",
+                    "volume": p.get("volume"),
+                    "depth": p.get("depth"),
+                    "openings": p.get("openings"),
+                    "n_apolar": p.get("n_apolar"),
+                    "n_polar": p.get("n_polar"),
+                }
+            )
             if len(result) >= max_pockets:
                 break
 

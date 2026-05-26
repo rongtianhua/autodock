@@ -2,21 +2,19 @@
 autodock.cli — Command-line interface for the docking pipeline.
 ===============================================================
 """
+
 from __future__ import annotations
 
 import argparse
 import logging
 import os
-import sys
-from pathlib import Path
 
+from autodock.config import write_default_config
 from autodock.core import (
     logger,
-    set_log_level,
     print_environment_status,
-    get_environment_status,
+    set_log_level,
 )
-from autodock.config import load_config, write_default_config
 
 
 def _add_common_args(parser: argparse.ArgumentParser) -> None:
@@ -36,10 +34,12 @@ def _setup_logging(args: argparse.Namespace) -> None:
     if args.log_file:
         fh = logging.FileHandler(args.log_file, mode="a")
         fh.setLevel(logging.DEBUG)
-        fh.setFormatter(logging.Formatter(
-            "%(asctime)s [%(levelname)s] %(name)s: %(message)s",
-            datefmt="%Y-%m-%d %H:%M:%S",
-        ))
+        fh.setFormatter(
+            logging.Formatter(
+                "%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+                datefmt="%Y-%m-%d %H:%M:%S",
+            )
+        )
         logger.addHandler(fh)
 
 
@@ -58,7 +58,7 @@ def cmd_init(args: argparse.Namespace) -> int:
 
 def cmd_fetch(args: argparse.Namespace) -> int:
     """Fetch a PDB structure or ligand."""
-    from autodock.utils import download_pdb, download_ligand_sdf_from_pdb, ensure_dir
+    from autodock.utils import download_ligand_sdf_from_pdb, download_pdb, ensure_dir
 
     outdir = ensure_dir(args.outdir)
     if args.type == "pdb":
@@ -76,7 +76,8 @@ def cmd_prepare_receptor(args: argparse.Namespace) -> int:
 
     output = args.output or args.pdb.replace(".pdb", ".pdbqt")
     prepare_receptor(
-        args.pdb, output,
+        args.pdb,
+        output,
         remove_water=not args.keep_waters,
         remove_hetatms=args.remove_hetatms,
     )
@@ -170,12 +171,12 @@ def cmd_validate(args: argparse.Namespace) -> int:
         box_padding=args.box_padding,
     )
 
-    rmsd = result['rmsd']
+    rmsd = result["rmsd"]
     rmsd_str = f"{rmsd:.2f} Å" if rmsd is not None else "N/A"
-    success = result['success']
+    success = result["success"]
 
     print(f"\n{'='*50}")
-    print(f"🔬  Redocking Validation")
+    print("🔬  Redocking Validation")
     print(f"{'='*50}")
     print(f"  RMSD:          {rmsd_str}")
     print(f"  Threshold:     {result['threshold']} Å")
@@ -188,7 +189,7 @@ def cmd_validate(args: argparse.Namespace) -> int:
 def cmd_analyze(args: argparse.Namespace) -> int:
     """Detect interactions and render figures."""
     from autodock.interactions import detect_interactions
-    from autodock.rendering import render_scene_pymol, render_interactions_2d
+    from autodock.rendering import render_interactions_2d, render_scene_pymol
 
     intx = detect_interactions(args.receptor, args.ligand, method="plip")
 
@@ -202,11 +203,17 @@ def cmd_analyze(args: argparse.Namespace) -> int:
         diagram_png = os.path.join(args.output_dir, "interactions_2d.png")
 
         render_scene_pymol(
-            args.receptor, args.ligand, scene_png,
-            scene="interaction", interactions=intx,
+            args.receptor,
+            args.ligand,
+            scene_png,
+            scene="interaction",
+            interactions=intx,
         )
         render_interactions_2d(
-            args.receptor, args.ligand, intx, diagram_png,
+            args.receptor,
+            args.ligand,
+            intx,
+            diagram_png,
         )
         print(f"\n🖼️  Figures saved to {args.output_dir}")
 
@@ -215,7 +222,6 @@ def cmd_analyze(args: argparse.Namespace) -> int:
 
 def cmd_report(args: argparse.Namespace) -> int:
     """Generate PDF/Excel report."""
-    from autodock.reporting import generate_pdf_report
 
     # For now, a simplified report from a config file
     # In full pipeline, this reads result pickles / JSON
@@ -244,7 +250,7 @@ def cmd_posebusters_eval(args: argparse.Namespace) -> int:
     print(f"  Total targets:      {summary['n_total']}")
     print(f"  Successful:         {summary['n_success']}")
     print(f"  Success rate:       {summary['success_rate']*100:.1f}%")
-    if summary['median_rmsd'] is not None:
+    if summary["median_rmsd"] is not None:
         print(f"  Median RMSD:        {summary['median_rmsd']:.2f} Å")
     print(f"  PoseBusters pass:   {summary['posebusters_pass_count']}/{summary['n_success']}")
     print(f"  PoseBusters rate:   {summary['posebusters_pass_rate']*100:.1f}%")
@@ -257,11 +263,12 @@ def cmd_posebusters_eval(args: argparse.Namespace) -> int:
 def cmd_benchmark_redock(args: argparse.Namespace) -> int:
     """Run redocking benchmark on a standard target set."""
     import json
+
     from autodock.benchmark import run_redocking_benchmark
 
     targets = None
     if args.targets:
-        with open(args.targets, "r") as fh:
+        with open(args.targets) as fh:
             targets = json.load(fh)
 
     summary = run_redocking_benchmark(
@@ -279,15 +286,19 @@ def cmd_benchmark_redock(args: argparse.Namespace) -> int:
     print(f"  Total targets:     {summary['n_total']}")
     print(f"  Successful:        {summary['n_success']}")
     print(f"  Success rate:      {summary['success_rate']*100:.1f}%")
-    if summary['median_rmsd'] is not None:
+    if summary["median_rmsd"] is not None:
         print(f"  Median RMSD:       {summary['median_rmsd']:.2f} Å")
         print(f"  Mean RMSD:         {summary['mean_rmsd']:.2f} Å ± {summary['rmsd_std']:.2f}")
-    print(f"\n  By family:")
+    print("\n  By family:")
     for fam, stats in summary.get("by_family", {}).items():
-        print(f"    {fam:20s}  {stats['n_success']}/{stats['n_total']}  ({stats['success_rate']*100:.1f}%)  mean={stats['mean_rmsd']:.2f}Å" if stats['mean_rmsd'] else f"    {fam:20s}  {stats['n_success']}/{stats['n_total']}")
+        print(
+            f"    {fam:20s}  {stats['n_success']}/{stats['n_total']}  ({stats['success_rate']*100:.1f}%)  mean={stats['mean_rmsd']:.2f}Å"
+            if stats["mean_rmsd"]
+            else f"    {fam:20s}  {stats['n_success']}/{stats['n_total']}"
+        )
     print(f"{'='*55}")
     print(f"  JSON: {summary['json_path']}")
-    if summary.get('csv_path'):
+    if summary.get("csv_path"):
         print(f"  CSV:  {summary['csv_path']}")
     print(f"{'='*55}")
     return 0
@@ -296,10 +307,11 @@ def cmd_benchmark_redock(args: argparse.Namespace) -> int:
 def cmd_batch_dock(args: argparse.Namespace) -> int:
     """Run batch docking across multiple receptors and ligands."""
     import json
+
     from autodock.docking import batch_dock
 
     # Load pocket definitions
-    with open(args.pockets, "r") as fh:
+    with open(args.pockets) as fh:
         pockets_raw = json.load(fh)
 
     pockets: dict[str, dict[str, tuple[float, float, float]]] = {}
@@ -321,7 +333,9 @@ def cmd_batch_dock(args: argparse.Namespace) -> int:
         ligands[name] = path
 
     results = batch_dock(
-        receptors, ligands, pockets,
+        receptors,
+        ligands,
+        pockets,
         exhaustiveness=args.exhaustiveness,
         n_poses=args.n_poses,
         seed=args.seed,
@@ -376,11 +390,17 @@ def cmd_ensemble_dock(args: argparse.Namespace) -> int:
     print(f"🧬  Ensemble Docking Complete: {args.name or args.ligand}")
     print(f"{'='*60}")
     print(f"  Repeats:          {summary['n_repeats']} ({summary['n_successful']} successful)")
-    print(f"  Best affinity:    {summary['ensemble_best_affinity_mean']:.3f} ± {summary['ensemble_best_affinity_std']:.3f} kcal/mol")
-    print(f"  Range:            {summary['ensemble_best_affinity_min']:.3f} → {summary['ensemble_best_affinity_max']:.3f} kcal/mol")
+    print(
+        f"  Best affinity:    {summary['ensemble_best_affinity_mean']:.3f} ± {summary['ensemble_best_affinity_std']:.3f} kcal/mol"
+    )
+    print(
+        f"  Range:            {summary['ensemble_best_affinity_min']:.3f} → {summary['ensemble_best_affinity_max']:.3f} kcal/mol"
+    )
     print(f"  CV:               {summary['ensemble_best_affinity_cv']:.3f}")
-    if summary['pose_stability_rmsd_mean'] is not None:
-        print(f"  Pose RMSD:        {summary['pose_stability_rmsd_mean']:.2f} ± {summary['pose_stability_rmsd_std']:.2f} Å")
+    if summary["pose_stability_rmsd_mean"] is not None:
+        print(
+            f"  Pose RMSD:        {summary['pose_stability_rmsd_mean']:.2f} ± {summary['pose_stability_rmsd_std']:.2f} Å"
+        )
     print(f"  Clusters:         {summary['n_clusters']}")
     print(f"  Confidence:       {summary['confidence'].upper()}")
     print(f"  Recommendation:   {summary['recommendation']}")
@@ -393,7 +413,7 @@ def cmd_ensemble_dock(args: argparse.Namespace) -> int:
 def cmd_virtual_screen(args: argparse.Namespace) -> int:
     """Run virtual screening against a receptor."""
     from autodock.docking import virtual_screen
-    from autodock.preparation import prepare_receptor, find_top_pockets
+    from autodock.preparation import find_top_pockets, prepare_receptor
     from autodock.utils import download_pdb, ensure_dir
 
     outdir = ensure_dir(args.outdir)
@@ -415,7 +435,7 @@ def cmd_virtual_screen(args: argparse.Namespace) -> int:
 
     # Read compound library
     library = {}
-    with open(args.library, "r") as fh:
+    with open(args.library) as fh:
         for line in fh:
             line = line.strip()
             if not line or line.startswith("#"):
@@ -426,7 +446,10 @@ def cmd_virtual_screen(args: argparse.Namespace) -> int:
 
     print(f"Screening {len(library)} compounds against {receptor_name}...")
     results, csv_path = virtual_screen(
-        receptor_pdbqt, library, center, box_size,
+        receptor_pdbqt,
+        library,
+        center,
+        box_size,
         output_dir=outdir,
         exhaustiveness=args.exhaustiveness,
         n_poses=args.n_poses,
@@ -444,7 +467,7 @@ def cmd_virtual_screen(args: argparse.Namespace) -> int:
         [r for r in results if r.best_affinity is not None],
         key=lambda r: r.best_affinity or 999,
     )
-    print(f"\n  Top 10 hits:")
+    print("\n  Top 10 hits:")
     for r in sorted_results[:10]:
         print(f"    {r.compound_name:20s}  {r.best_affinity:8.3f} kcal/mol")
     print(f"{'='*50}")
@@ -471,11 +494,13 @@ def cmd_md(args: argparse.Namespace) -> int:
     print(f"{'='*50}")
     print(f"  Trajectory:     {result.get('trajectory')}")
     print(f"  Final structure: {result.get('final_structure')}")
-    if 'ligand_rmsd_mean' in result:
-        print(f"  Ligand RMSD:    {result['ligand_rmsd_mean']:.2f} ± {result.get('ligand_rmsd_std', 0):.2f} Å")
-    if 'receptor_ca_rmsd_mean' in result:
+    if "ligand_rmsd_mean" in result:
+        print(
+            f"  Ligand RMSD:    {result['ligand_rmsd_mean']:.2f} ± {result.get('ligand_rmsd_std', 0):.2f} Å"
+        )
+    if "receptor_ca_rmsd_mean" in result:
         print(f"  Receptor RMSD:  {result['receptor_ca_rmsd_mean']:.2f} Å")
-    if 'n_hbonds_mean' in result:
+    if "n_hbonds_mean" in result:
         print(f"  Avg H-bonds:    {result['n_hbonds_mean']:.1f}")
     print(f"{'='*50}")
     return 0
@@ -483,12 +508,12 @@ def cmd_md(args: argparse.Namespace) -> int:
 
 def cmd_run(args: argparse.Namespace) -> int:
     """Full end-to-end pipeline: fetch → prepare → dock → analyze → report."""
-    from autodock.utils import download_pdb, ensure_dir
-    from autodock.preparation import prepare_receptor, prepare_ligand, find_top_pockets
     from autodock.docking import dock_ligand
     from autodock.interactions import detect_interactions
-    from autodock.rendering import render_scene_pymol, render_interactions_2d, composite_summary
-    from autodock.reporting import generate_pdf_report, generate_csv_report
+    from autodock.preparation import find_top_pockets, prepare_ligand, prepare_receptor
+    from autodock.rendering import composite_summary, render_interactions_2d, render_scene_pymol
+    from autodock.reporting import generate_csv_report, generate_pdf_report
+    from autodock.utils import download_pdb, ensure_dir
 
     outdir = ensure_dir(args.outdir)
     receptor_name = args.receptor.upper()
@@ -514,6 +539,7 @@ def cmd_run(args: argparse.Namespace) -> int:
     # Try to get ligand SMILES from PubChem
     try:
         import pubchempy as pcp
+
         compounds = pcp.get_compounds(ligand_name, "name")
         if compounds:
             smiles = compounds[0].canonical_smiles
@@ -540,7 +566,10 @@ def cmd_run(args: argparse.Namespace) -> int:
     print("🧬  Step 4: Docking")
     print("=" * 55)
     result = dock_ligand(
-        receptor_pdbqt, ligand_pdbqt, center, box_size,
+        receptor_pdbqt,
+        ligand_pdbqt,
+        center,
+        box_size,
         exhaustiveness=args.exhaustiveness,
         n_poses=args.n_poses,
         output_dir=outdir,
@@ -567,8 +596,17 @@ def cmd_run(args: argparse.Namespace) -> int:
         diagram_2d = os.path.join(outdir, "fig_2d.png")
 
         render_scene_pymol(receptor_pdb, result.best_pose_pdbqt, scene_complex, scene="complex")
-        render_scene_pymol(receptor_pdb, result.best_pose_pdbqt, scene_pocket, scene="pocket", center=center)
-        render_scene_pymol(receptor_pdb, result.best_pose_pdbqt, scene_intx, scene="interaction", center=center, interactions=intx)
+        render_scene_pymol(
+            receptor_pdb, result.best_pose_pdbqt, scene_pocket, scene="pocket", center=center
+        )
+        render_scene_pymol(
+            receptor_pdb,
+            result.best_pose_pdbqt,
+            scene_intx,
+            scene="interaction",
+            center=center,
+            interactions=intx,
+        )
         render_interactions_2d(receptor_pdb, result.best_pose_pdbqt, intx, diagram_2d)
 
         composite = os.path.join(outdir, "fig_composite.png")
@@ -678,9 +716,15 @@ def build_parser() -> argparse.ArgumentParser:
     # validate
     p_val = subparsers.add_parser("validate", help="Redocking validation")
     p_val.add_argument("holo_pdb", help="Holo PDB with co-crystal ligand")
-    p_val.add_argument("--ligand-resname", default=None, help="Residue name of ligand (HETATM mode)")
-    p_val.add_argument("--chain-id", default=None, help="Chain ID to extract (e.g., 'C' for 6LU7 N3)")
-    p_val.add_argument("--ligand-smiles", default=None, help="Optional SMILES for ligand preparation")
+    p_val.add_argument(
+        "--ligand-resname", default=None, help="Residue name of ligand (HETATM mode)"
+    )
+    p_val.add_argument(
+        "--chain-id", default=None, help="Chain ID to extract (e.g., 'C' for 6LU7 N3)"
+    )
+    p_val.add_argument(
+        "--ligand-smiles", default=None, help="Optional SMILES for ligand preparation"
+    )
     p_val.add_argument("--exhaustiveness", type=int, default=32)
     p_val.add_argument("--n-poses", type=int, default=20)
     p_val.add_argument("--seed", type=int, default=42)
@@ -701,13 +745,17 @@ def build_parser() -> argparse.ArgumentParser:
     p_report.set_defaults(func=cmd_report)
 
     # benchmark-redock
-    p_bench = subparsers.add_parser("benchmark-redock", help="Run redocking benchmark on standard target set")
+    p_bench = subparsers.add_parser(
+        "benchmark-redock", help="Run redocking benchmark on standard target set"
+    )
     p_bench.add_argument("--outdir", default="./benchmark_results")
     p_bench.add_argument("--exhaustiveness", type=int, default=32)
     p_bench.add_argument("--n-poses", type=int, default=20)
     p_bench.add_argument("--seed", type=int, default=42)
     p_bench.add_argument("--workers", type=int, default=1)
-    p_bench.add_argument("--targets", type=str, default=None, help="JSON file with custom target list")
+    p_bench.add_argument(
+        "--targets", type=str, default=None, help="JSON file with custom target list"
+    )
     p_bench.set_defaults(func=cmd_benchmark_redock)
 
     # posebusters-eval
@@ -718,14 +766,20 @@ def build_parser() -> argparse.ArgumentParser:
     p_pb.add_argument("--n-poses", type=int, default=20)
     p_pb.add_argument("--seed", type=int, default=42)
     p_pb.add_argument("--workers", type=int, default=1)
-    p_pb.add_argument("--max-targets", type=int, default=None, help="Limit to first N targets for quick tests")
+    p_pb.add_argument(
+        "--max-targets", type=int, default=None, help="Limit to first N targets for quick tests"
+    )
     p_pb.set_defaults(func=cmd_posebusters_eval)
 
     # batch-dock
-    p_batch = subparsers.add_parser("batch-dock", help="Multi-receptor × multi-ligand batch docking")
+    p_batch = subparsers.add_parser(
+        "batch-dock", help="Multi-receptor × multi-ligand batch docking"
+    )
     p_batch.add_argument("--receptors", nargs="+", required=True, help="Receptor PDBQT files")
     p_batch.add_argument("--ligands", nargs="+", required=True, help="Ligand PDBQT files")
-    p_batch.add_argument("--pockets", required=True, help="JSON file with pocket definitions per receptor")
+    p_batch.add_argument(
+        "--pockets", required=True, help="JSON file with pocket definitions per receptor"
+    )
     p_batch.add_argument("--exhaustiveness", type=int, default=32)
     p_batch.add_argument("--n-poses", type=int, default=20)
     p_batch.add_argument("--seed", type=int, default=42)
@@ -734,11 +788,17 @@ def build_parser() -> argparse.ArgumentParser:
     p_batch.set_defaults(func=cmd_batch_dock)
 
     # ensemble-dock
-    p_ensemble = subparsers.add_parser("ensemble-dock", help="Repeated docking with ensemble statistics")
+    p_ensemble = subparsers.add_parser(
+        "ensemble-dock", help="Repeated docking with ensemble statistics"
+    )
     p_ensemble.add_argument("receptor", help="Receptor PDBQT")
     p_ensemble.add_argument("ligand", help="Ligand PDBQT")
-    p_ensemble.add_argument("--center", type=float, nargs=3, default=None, help="Box center (x y z)")
-    p_ensemble.add_argument("--box-size", type=float, nargs=3, default=[20.0, 20.0, 20.0], help="Box dimensions (x y z)")
+    p_ensemble.add_argument(
+        "--center", type=float, nargs=3, default=None, help="Box center (x y z)"
+    )
+    p_ensemble.add_argument(
+        "--box-size", type=float, nargs=3, default=[20.0, 20.0, 20.0], help="Box dimensions (x y z)"
+    )
     p_ensemble.add_argument("--n-repeats", type=int, default=10, help="Number of independent runs")
     p_ensemble.add_argument("--exhaustiveness", type=int, default=32)
     p_ensemble.add_argument("--n-poses", type=int, default=20)
@@ -763,7 +823,9 @@ def build_parser() -> argparse.ArgumentParser:
     p_md.add_argument("--receptor", required=True, help="Receptor PDB file")
     p_md.add_argument("--ligand", required=True, help="Docked ligand PDBQT file")
     p_md.add_argument("--outdir", default="./md_results")
-    p_md.add_argument("--steps", type=int, default=500_000, help="Production steps (default 500k = 1 ns)")
+    p_md.add_argument(
+        "--steps", type=int, default=500_000, help="Production steps (default 500k = 1 ns)"
+    )
     p_md.add_argument("--dt", type=float, default=2.0, help="Timestep (fs)")
     p_md.add_argument("--temperature", type=float, default=300.0, help="Temperature (K)")
     p_md.add_argument("--solvent", choices=["implicit", "explicit"], default="implicit")
@@ -802,5 +864,6 @@ def main(argv: list[str] | None = None) -> int:
         logger.error(f"Command failed: {exc}")
         if args.verbose:
             import traceback
+
             traceback.print_exc()
         return 1

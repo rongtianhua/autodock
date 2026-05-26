@@ -53,9 +53,13 @@ benchmark_results/
 benchmark_results_v1/
 pb_test/
 quick_benchmark_test/
+quick_benchmark_*/
+exhaustiveness_test_*/
 out.pdbqt
 coverage.xml
 .coverage
+posebusters_data/
+benchmark_summary_combined.*
 
 # Project metadata (generated)
 PUBLICATION_READINESS_REPORT.md

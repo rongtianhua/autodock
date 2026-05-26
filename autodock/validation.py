@@ -3,6 +3,7 @@ autodock.validation — Pose validation and quality control.
 ==========================================================
 PoseBusters checks, clash detection, RMSD calculation, and redocking validation.
 """
+
 from __future__ import annotations
 
 import os
@@ -12,21 +13,23 @@ from typing import Any
 import numpy as np
 
 from autodock.core import (
-    logger,
-    ValidationError,
     _HAVE_RDKIT,
-    REDocking_RMSD_THRESHOLD,
     CLASH_THRESHOLD_EXPLICIT_H,
+    REDocking_RMSD_THRESHOLD,
+    ValidationError,
+    logger,
 )
 from autodock.utils import (
-    read_pdb_atoms, extract_ligand_from_pdb, compute_bounding_box_from_pdbqt,
     _sanitize_pdbqt_for_rdkit,
+    compute_bounding_box,
+    extract_ligand_from_pdb,
+    read_pdb_atoms,
 )
-
 
 # ─────────────────────────────────────────────────────────────────────────────
 # PoseBusters Validation
 # ─────────────────────────────────────────────────────────────────────────────
+
 
 def validate_pose_with_posebusters(
     pose_pdbqt: str,
@@ -56,7 +59,6 @@ def validate_pose_with_posebusters(
 
     # Convert PDBQT → temporary SDF because PoseBusters only accepts
     # .sdf, .mol, .mol2, or .pdb and needs bond information for chemistry checks.
-    import tempfile
     from rdkit import Chem
 
     sanitized_pdb = _sanitize_pdbqt_for_rdkit(pose_pdbqt)
@@ -121,6 +123,7 @@ def validate_pose_with_posebusters(
 # Clash Detection
 # ─────────────────────────────────────────────────────────────────────────────
 
+
 def compute_clash_score(
     pose_pdbqt: str,
     receptor_pdb: str,
@@ -149,13 +152,20 @@ def compute_clash_score(
         }
 
     rec_coords = np.array([(a["x"], a["y"], a["z"]) for a in rec_atoms])
-    lig_coords = np.array([(a["x"], a["y"], a["z"]) for a in lig_atoms])
+    np.array([(a["x"], a["y"], a["z"]) for a in lig_atoms])
 
     # VDW radii (approximate, in Å)
     vdw = {
-        "H": 1.2, "C": 1.7, "N": 1.55, "O": 1.52,
-        "S": 1.8, "P": 1.8, "F": 1.47, "Cl": 1.75,
-        "Br": 1.85, "I": 1.98,
+        "H": 1.2,
+        "C": 1.7,
+        "N": 1.55,
+        "O": 1.52,
+        "S": 1.8,
+        "P": 1.8,
+        "F": 1.47,
+        "Cl": 1.75,
+        "Br": 1.85,
+        "I": 1.98,
     }
 
     clashes = []
@@ -171,7 +181,11 @@ def compute_clash_score(
 
         # Find closest receptor atom
         closest_idx = dists.argmin()
-        rec_elem = rec_atoms[closest_idx]["element"][0].upper() if rec_atoms[closest_idx]["element"] else "C"
+        rec_elem = (
+            rec_atoms[closest_idx]["element"][0].upper()
+            if rec_atoms[closest_idx]["element"]
+            else "C"
+        )
         rec_r = vdw.get(rec_elem, 1.7)
         sum_r = lig_r + rec_r
 
@@ -202,6 +216,7 @@ def compute_clash_score(
 # ─────────────────────────────────────────────────────────────────────────────
 # RMSD Calculation
 # ─────────────────────────────────────────────────────────────────────────────
+
 
 def compute_rmsd(
     pose1_pdbqt: str,
@@ -310,10 +325,12 @@ def compute_rmsd_coordinate_based(
 
     def _get_coords_elems(mol):
         conf = mol.GetConformer()
-        coords = np.array([
-            [conf.GetAtomPosition(i).x, conf.GetAtomPosition(i).y, conf.GetAtomPosition(i).z]
-            for i in range(mol.GetNumAtoms())
-        ])
+        coords = np.array(
+            [
+                [conf.GetAtomPosition(i).x, conf.GetAtomPosition(i).y, conf.GetAtomPosition(i).z]
+                for i in range(mol.GetNumAtoms())
+            ]
+        )
         elems = [mol.GetAtomWithIdx(i).GetSymbol() for i in range(mol.GetNumAtoms())]
         return coords, elems
 
@@ -395,6 +412,7 @@ def compute_rmsd_to_crystal(
 # Redocking Validation
 # ─────────────────────────────────────────────────────────────────────────────
 
+
 def run_redocking_validation(
     holo_pdb: str,
     ligand_resname: str | None = None,
@@ -437,16 +455,15 @@ def run_redocking_validation(
     Returns:
         Dict with rmsd, success flag, energies, and file paths.
     """
-    from autodock.preparation import prepare_receptor, prepare_ligand, find_top_pockets
+    from rdkit import Chem
+
     from autodock.docking import dock_ligand
+    from autodock.preparation import find_top_pockets, prepare_ligand, prepare_receptor
     from autodock.utils import (
-        extract_ligand_from_pdb,
+        ensure_dir,
         extract_chain_from_pdb,
         pdb_chain_to_smiles,
-        filter_pdb_lines,
-        ensure_dir,
     )
-    from rdkit import Chem
 
     ensure_dir(output_dir)
 
@@ -462,7 +479,9 @@ def run_redocking_validation(
         # Try RDKit direct read
         crystal_mol = Chem.MolFromPDBFile(crystal_ligand_pdb, removeHs=False)
         if crystal_mol is None:
-            logger.warning(f"RDKit could not parse chain '{chain_id}' directly; trying obabel SMILES")
+            logger.warning(
+                f"RDKit could not parse chain '{chain_id}' directly; trying obabel SMILES"
+            )
 
         # Derive SMILES if not provided
         if crystal_smiles is None:
@@ -482,6 +501,7 @@ def run_redocking_validation(
         crystal_smiles = Chem.MolToSmiles(crystal_mol)
         # Write PDB for RMSD reference
         from rdkit.Chem import rdmolfiles
+
         rdmolfiles.MolToPDBFile(crystal_mol, crystal_ligand_pdb)
     else:
         raise ValidationError("Either ligand_resname or chain_id must be provided")
@@ -489,7 +509,7 @@ def run_redocking_validation(
     # ── 2. Prepare apo receptor ────────────────────────────────────────────
     apo_pdb = os.path.join(output_dir, "apo_receptor.pdb")
 
-    with open(holo_pdb, "r") as fh:
+    with open(holo_pdb) as fh:
         lines = fh.readlines()
 
     filtered = []
@@ -525,7 +545,9 @@ def run_redocking_validation(
 
     # ── 4. Define box from crystal ligand ──────────────────────────────────
     # Try ligand-centered pocket detection first
-    pockets = find_top_pockets(apo_pdb, ligand_pdb=crystal_ligand_pdb, max_pockets=1, use_p2rank=False)
+    pockets = find_top_pockets(
+        apo_pdb, ligand_pdb=crystal_ligand_pdb, max_pockets=1, use_p2rank=False
+    )
 
     # Fallback: compute bounding box directly from crystal ligand PDB
     if not pockets:
@@ -548,7 +570,10 @@ def run_redocking_validation(
 
     # ── 5. Dock ────────────────────────────────────────────────────────────
     result = dock_ligand(
-        receptor_pdbqt, ligand_pdbqt, center, box_size,
+        receptor_pdbqt,
+        ligand_pdbqt,
+        center,
+        box_size,
         exhaustiveness=exhaustiveness,
         n_poses=n_poses,
         seed=seed,

@@ -4,8 +4,10 @@ autodock.docking — Molecular docking with AutoDock Vina.
 Single-ligand, multi-conformer, and virtual-screening workflows
 with consensus scoring and structured result output.
 """
+
 from __future__ import annotations
 
+import contextlib
 import os
 import tempfile
 import threading
@@ -15,23 +17,22 @@ from typing import Any
 import numpy as np
 
 from autodock.core import (
-    logger,
-    DockingCalculationError,
-    DockingResult,
-    build_docking_result,
     _HAVE_VINA,
-    _get_vina_seed,
+    VINA_DEFAULT_ENERGY_RANGE,
     VINA_DEFAULT_EXHAUSTIVENESS,
     VINA_DEFAULT_N_POSES,
-    VINA_DEFAULT_ENERGY_RANGE,
     VINA_DEFAULT_TIMEOUT,
+    DockingCalculationError,
+    DockingResult,
+    _get_vina_seed,
+    logger,
 )
 from autodock.utils import ensure_dir
-
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Low-level Vina wrappers
 # ─────────────────────────────────────────────────────────────────────────────
+
 
 def _run_vina_dock(
     receptor_pdbqt: str,
@@ -116,17 +117,16 @@ def _score_pose_with_sf(
     """Re-score a single pose with an alternative scoring function."""
     try:
         from vina import Vina
+
         v = Vina(sf_name=sf_name, seed=_get_vina_seed(seed))
         v.set_receptor(receptor_pdbqt)
         # Vina rejects PDBQT files containing MODEL/ENDMDL tags.
         # Strip them to a plain single-model PDBQT.
         with open(pose_pdbqt) as fh:
             lines = fh.readlines()
-        clean_lines = [
-            l for l in lines
-            if not l.startswith(("MODEL", "ENDMDL"))
-        ]
+        clean_lines = [line for line in lines if not line.startswith(("MODEL", "ENDMDL"))]
         import tempfile
+
         with tempfile.NamedTemporaryFile(mode="w", suffix=".pdbqt", delete=False) as tf:
             tf.writelines(clean_lines)
             tmp_pose = tf.name
@@ -137,10 +137,8 @@ def _score_pose_with_sf(
             total = float(score[0]) if hasattr(score, "__getitem__") else float(score)
             return total
         finally:
-            try:
+            with contextlib.suppress(OSError):
                 os.unlink(tmp_pose)
-            except OSError:
-                pass
     except (ImportError, RuntimeError, OSError) as exc:
         logger.debug(f"Re-scoring with {sf_name} failed: {exc}")
         return None
@@ -171,8 +169,7 @@ def _consensus_score(
     if len(all_scores) > 1:
         median_e = sorted(all_scores.values())[len(all_scores) // 2]
         logger.info(
-            f"Consensus affinity: {median_e:.3f} kcal/mol "
-            f"(median of {list(all_scores.keys())})"
+            f"Consensus affinity: {median_e:.3f} kcal/mol " f"(median of {list(all_scores.keys())})"
         )
         return all_scores, median_e
     return all_scores, None
@@ -181,6 +178,7 @@ def _consensus_score(
 # ─────────────────────────────────────────────────────────────────────────────
 # Public API: single-ligand docking
 # ─────────────────────────────────────────────────────────────────────────────
+
 
 def dock_ligand(
     receptor_pdbqt: str,
@@ -218,8 +216,12 @@ def dock_ligand(
     """
     # Input validation layer
     from autodock.validation_params import validate_docking_params
+
     _params = validate_docking_params(
-        receptor_pdbqt, ligand_pdbqt, center, box_size,
+        receptor_pdbqt,
+        ligand_pdbqt,
+        center,
+        box_size,
         exhaustiveness=exhaustiveness,
         n_poses=n_poses,
         energy_range=energy_range,
@@ -245,7 +247,10 @@ def dock_ligand(
     )
 
     energies, poses = _run_vina_dock(
-        receptor_pdbqt, ligand_pdbqt, center, box_size,
+        receptor_pdbqt,
+        ligand_pdbqt,
+        center,
+        box_size,
         exhaustiveness=exhaustiveness,
         n_poses=n_poses,
         energy_range=energy_range,
@@ -269,7 +274,7 @@ def dock_ligand(
         # Best pose: strip MODEL/ENDMDL/model-number so Vina can reload it for re-scoring
         best_lines = poses[0].splitlines()
         if best_lines and best_lines[0].startswith("MODEL"):
-            best_lines = best_lines[2:]   # skip "MODEL N" and the number line
+            best_lines = best_lines[2:]  # skip "MODEL N" and the number line
         if best_lines and best_lines[-1].startswith("ENDMDL"):
             best_lines = best_lines[:-1]
         best_clean = "\n".join(best_lines)
@@ -292,6 +297,7 @@ def dock_ligand(
 
     # Pose clustering (publication-grade best practice)
     from autodock.clustering import cluster_poses
+
     clusters = cluster_poses(poses, energies, rmsd_threshold=2.0)
 
     # Persist cluster representatives if output_dir provided
@@ -312,6 +318,7 @@ def dock_ligand(
     receptor_source = None
     if receptor_pdb and os.path.isfile(receptor_pdb):
         from autodock.core import detect_receptor_source
+
         receptor_source = detect_receptor_source(receptor_pdb)
 
     result = DockingResult(
@@ -375,7 +382,10 @@ def dock_ligand_multi_conformer(
             continue
         try:
             energies, poses = _run_vina_dock(
-                receptor_pdbqt, conf_path, center, box_size,
+                receptor_pdbqt,
+                conf_path,
+                center,
+                box_size,
                 exhaustiveness=exhaustiveness,
                 n_poses=n_poses,
                 energy_range=energy_range,
@@ -407,12 +417,15 @@ def dock_ligand_multi_conformer(
 
     # Pose clustering across all conformers
     from autodock.clustering import cluster_poses
+
     all_energies = np.array([[e, 0.0, 0.0] for e, _ in all_poses_pool])
     all_poses = [p for _, p in all_poses_pool]
     clusters = cluster_poses(all_poses, all_energies, rmsd_threshold=2.0)
 
     # Persist
-    out_dir = output_dir or os.path.join(os.path.dirname(conformer_pdbqts[0]), "multi_conformer_results")
+    out_dir = output_dir or os.path.join(
+        os.path.dirname(conformer_pdbqts[0]), "multi_conformer_results"
+    )
     ensure_dir(out_dir)
     best_pose_path = os.path.join(out_dir, "best_pose.pdbqt")
     with open(best_pose_path, "w") as fh:
@@ -456,11 +469,22 @@ def dock_ligand_multi_conformer(
 # Virtual Screening
 # ─────────────────────────────────────────────────────────────────────────────
 
+
 def _dock_single_compound(
     args: tuple,
 ) -> DockingResult:
     """Worker function for parallel virtual screening."""
-    name, smiles, receptor_pdbqt, center, box_size, output_dir, exhaustiveness, n_poses, compound_seed = args
+    (
+        name,
+        smiles,
+        receptor_pdbqt,
+        center,
+        box_size,
+        output_dir,
+        exhaustiveness,
+        n_poses,
+        compound_seed,
+    ) = args
 
     from autodock.preparation import prepare_ligand
 
@@ -468,7 +492,10 @@ def _dock_single_compound(
     try:
         prepare_ligand(smiles, ligand_pdbqt, name=name, seed=compound_seed)
         result = dock_ligand(
-            receptor_pdbqt, ligand_pdbqt, center, box_size,
+            receptor_pdbqt,
+            ligand_pdbqt,
+            center,
+            box_size,
             exhaustiveness=exhaustiveness,
             n_poses=n_poses,
             seed=compound_seed,
@@ -527,27 +554,50 @@ def virtual_screen(
         results: list[DockingResult] = []
         for idx, (name, smiles) in enumerate(items):
             compound_seed = (base_seed + idx) if seed is None else base_seed
-            args = (name, smiles, receptor_pdbqt, center, box_size, output_dir,
-                    exhaustiveness, n_poses, compound_seed)
+            args = (
+                name,
+                smiles,
+                receptor_pdbqt,
+                center,
+                box_size,
+                output_dir,
+                exhaustiveness,
+                n_poses,
+                compound_seed,
+            )
             results.append(_dock_single_compound(args))
     else:
         # Parallel execution
         if n_workers == -1:
             import multiprocessing
+
             n_workers = multiprocessing.cpu_count()
 
         work_items = []
         for idx, (name, smiles) in enumerate(items):
             compound_seed = (base_seed + idx) if seed is None else base_seed
-            work_items.append((name, smiles, receptor_pdbqt, center, box_size, output_dir,
-                               exhaustiveness, n_poses, compound_seed))
+            work_items.append(
+                (
+                    name,
+                    smiles,
+                    receptor_pdbqt,
+                    center,
+                    box_size,
+                    output_dir,
+                    exhaustiveness,
+                    n_poses,
+                    compound_seed,
+                )
+            )
 
         from concurrent.futures import ProcessPoolExecutor, as_completed
 
         logger.info(f"Starting parallel virtual screening with {n_workers} workers")
         results = [None] * len(work_items)
         with ProcessPoolExecutor(max_workers=n_workers) as executor:
-            futures = {executor.submit(_dock_single_compound, item): i for i, item in enumerate(work_items)}
+            futures = {
+                executor.submit(_dock_single_compound, item): i for i, item in enumerate(work_items)
+            }
             for future in as_completed(futures):
                 idx = futures[future]
                 try:
@@ -575,6 +625,7 @@ def virtual_screen(
 # ─────────────────────────────────────────────────────────────────────────────
 # Batch docking: multiple receptors × multiple ligands
 # ─────────────────────────────────────────────────────────────────────────────
+
 
 def batch_dock(
     receptors: dict[str, str],
@@ -643,7 +694,9 @@ def batch_dock(
     for rec_name, rec_path in receptors.items():
         for lig_name, lig_path in ligands.items():
             pair_seed = base_seed + pair_idx if seed is None else base_seed
-            work_items.append((rec_name, rec_path, lig_name, lig_path, pockets[rec_name], pair_seed))
+            work_items.append(
+                (rec_name, rec_path, lig_name, lig_path, pockets[rec_name], pair_seed)
+            )
             pair_idx += 1
 
     logger.info(
@@ -660,7 +713,10 @@ def batch_dock(
         t0 = time.perf_counter()
         try:
             result = dock_ligand(
-                rec_path, lig_path, center, box_size,
+                rec_path,
+                lig_path,
+                center,
+                box_size,
                 exhaustiveness=exhaustiveness,
                 n_poses=n_poses,
                 energy_range=energy_range,
@@ -692,8 +748,10 @@ def batch_dock(
     else:
         if n_workers == -1:
             import multiprocessing
+
             n_workers = multiprocessing.cpu_count()
         from concurrent.futures import ProcessPoolExecutor, as_completed
+
         raw_results = [None] * len(work_items)
         with ProcessPoolExecutor(max_workers=n_workers) as executor:
             futures = {executor.submit(_dock_one, item): i for i, item in enumerate(work_items)}
@@ -723,6 +781,7 @@ def batch_dock(
     # Export master CSV
     try:
         import pandas as pd
+
         rows = []
         for rec_name, res_list in results_by_receptor.items():
             for r in res_list:
@@ -787,9 +846,7 @@ def dock_ensemble(
 
     base_seed = _get_vina_seed(seed)
     name = compound_name or Path(ligand_pdbqt).stem
-    logger.info(
-        f"Ensemble docking: {name}, {n_repeats} repeats, base_seed={base_seed}"
-    )
+    logger.info(f"Ensemble docking: {name}, {n_repeats} repeats, base_seed={base_seed}")
 
     repeats: list[DockingResult] = []
     for i in range(n_repeats):
@@ -800,10 +857,14 @@ def dock_ensemble(
             ensure_dir(repeat_out)
 
         import time as _time
+
         t0 = _time.perf_counter()
         try:
             result = dock_ligand(
-                receptor_pdbqt, ligand_pdbqt, center, box_size,
+                receptor_pdbqt,
+                ligand_pdbqt,
+                center,
+                box_size,
                 exhaustiveness=exhaustiveness,
                 n_poses=n_poses,
                 energy_range=energy_range,
@@ -813,13 +874,9 @@ def dock_ensemble(
                 compound_name=f"{name}_repeat{i + 1}",
                 receptor_pdb=receptor_pdb,
             )
-            result.runtime_seconds = round(
-                (_time.perf_counter() - t0), 2
-            )
+            result.runtime_seconds = round((_time.perf_counter() - t0), 2)
             repeats.append(result)
-            logger.info(
-                f"Repeat {i + 1}/{n_repeats}: affinity={result.best_affinity:.3f} kcal/mol"
-            )
+            logger.info(f"Repeat {i + 1}/{n_repeats}: affinity={result.best_affinity:.3f} kcal/mol")
         except DockingCalculationError as exc:
             logger.error(f"Repeat {i + 1}/{n_repeats} failed: {exc}")
             # Append a placeholder so statistics can still be computed
@@ -844,10 +901,9 @@ def dock_ensemble(
 
     # ── Energy statistics ───────────────────────────────────────────
     affinities = np.array([r.best_affinity for r in valid_repeats])
-    consensus_affinities = np.array([
-        r.consensus_affinity for r in valid_repeats
-        if r.consensus_affinity is not None
-    ])
+    consensus_affinities = np.array(
+        [r.consensus_affinity for r in valid_repeats if r.consensus_affinity is not None]
+    )
 
     energy_mean = float(np.mean(affinities))
     energy_std = float(np.std(affinities, ddof=1))
@@ -867,9 +923,7 @@ def dock_ensemble(
         for j in range(i + 1, n_paths):
             rmsd = compute_rmsd(best_pose_paths[i], best_pose_paths[j])
             if rmsd is None or rmsd == 0.0:
-                rmsd = compute_rmsd_coordinate_based(
-                    best_pose_paths[i], best_pose_paths[j]
-                )
+                rmsd = compute_rmsd_coordinate_based(best_pose_paths[i], best_pose_paths[j])
             if rmsd is not None:
                 rmsd_values.append(rmsd)
 
@@ -882,6 +936,7 @@ def dock_ensemble(
 
     # ── Clustering of all best poses ────────────────────────────────
     from autodock.clustering import cluster_poses
+
     pose_strings = []
     pose_energies_list = []
     for r in valid_repeats:
@@ -889,9 +944,13 @@ def dock_ensemble(
             with open(r.best_pose_pdbqt) as fh:
                 pose_strings.append(fh.read())
             pose_energies_list.append(r.best_affinity)
-    pose_energies = np.array(pose_energies_list).reshape(-1, 1) if pose_energies_list else np.array([])
+    pose_energies = (
+        np.array(pose_energies_list).reshape(-1, 1) if pose_energies_list else np.array([])
+    )
     cluster_summary = cluster_poses(
-        pose_strings, pose_energies, rmsd_threshold=2.0,
+        pose_strings,
+        pose_energies,
+        rmsd_threshold=2.0,
     )
     n_clusters = len(cluster_summary)
 
@@ -925,8 +984,7 @@ def dock_ensemble(
         "ensemble_best_affinity_max": float(np.max(affinities)),
         "ensemble_best_affinity_cv": energy_cv,
         "ensemble_consensus_affinity_mean": (
-            float(np.mean(consensus_affinities))
-            if consensus_affinities.size > 0 else None
+            float(np.mean(consensus_affinities)) if consensus_affinities.size > 0 else None
         ),
         "pose_stability_rmsd_mean": rmsd_mean,
         "pose_stability_rmsd_std": rmsd_std,

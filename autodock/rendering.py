@@ -3,28 +3,25 @@ autodock.rendering — Publication-quality visualization.
 =======================================================
 3D rendering via PyMOL CLI and 2D interaction diagrams via RDKit + Cairo.
 """
+
 from __future__ import annotations
 
+import contextlib
 import math
 import os
-import re
 import tempfile
-from pathlib import Path
 from typing import Any
 
-import numpy as np
-
 from autodock.core import (
-    logger,
+    DEFAULT_DPI,
+    DEFAULT_RAY_HEIGHT,
+    DEFAULT_RAY_WIDTH,
     VisualizationError,
     find_pymol,
+    logger,
     safe_subprocess,
-    DEFAULT_DPI,
-    DEFAULT_RAY_WIDTH,
-    DEFAULT_RAY_HEIGHT,
 )
 from autodock.utils import ensure_dir
-
 
 # ─────────────────────────────────────────────────────────────────────────────
 # PyMOL 3D Rendering (CLI-based)
@@ -93,7 +90,9 @@ def _build_pymol_script(
     # Pocket surface
     if scene == "pocket" and center:
         cx, cy, cz = center
-        lines.append(f"cmd.select('pocket_surf', 'br. receptor and center {cx},{cy},{cz} around {pocket_distance}')")
+        lines.append(
+            f"cmd.select('pocket_surf', 'br. receptor and center {cx},{cy},{cz} around {pocket_distance}')"
+        )
         lines.append("cmd.show('surface', 'pocket_surf')")
         lines.append("cmd.set('transparency', 0.25, 'pocket_surf')")
         lines.append("cmd.color('bluewhite', 'pocket_surf and elem C')")
@@ -129,17 +128,21 @@ def _build_pymol_script(
             atom = inter.get("atom", "CA")
 
             pair_name = f"int_{idx}"
-            prot_sel = f"(receptor and resn {resn} and resi {resi} and chain {chain} and name {atom})"
+            prot_sel = (
+                f"(receptor and resn {resn} and resi {resi} and chain {chain} and name {atom})"
+            )
             lig_sel = "ligand"
 
             lines.append(f"try: cmd.distance('{pair_name}', '{prot_sel}', '{lig_sel}')")
-            lines.append(f"except: pass")
-            lines.append(f"try: cmd.set('dash_color', '{INTERACTION_COLORS[itype]}', '{pair_name}')")
-            lines.append(f"except: pass")
+            lines.append("except: pass")
+            lines.append(
+                f"try: cmd.set('dash_color', '{INTERACTION_COLORS[itype]}', '{pair_name}')"
+            )
+            lines.append("except: pass")
             lines.append(f"try: cmd.set('dash_width', 2.5, '{pair_name}')")
-            lines.append(f"except: pass")
+            lines.append("except: pass")
             lines.append(f"try: cmd.hide('labels', '{pair_name}')")
-            lines.append(f"except: pass")
+            lines.append("except: pass")
 
     # Labels for interacting residues
     if scene == "interaction" and interactions:
@@ -205,14 +208,21 @@ def render_scene_pymol(
         Path to output PNG.
     """
     if not _PYMOL_EXE:
-        raise VisualizationError("PyMOL executable not found. Install: conda install -c conda-forge pymol-open-source")
+        raise VisualizationError(
+            "PyMOL executable not found. Install: conda install -c conda-forge pymol-open-source"
+        )
 
     ensure_dir(os.path.dirname(output_png) or ".")
 
     script = _build_pymol_script(
-        receptor_pdb, ligand_pdbqt, output_png,
-        scene=scene, center=center, interactions=interactions,
-        width=width, height=height,
+        receptor_pdb,
+        ligand_pdbqt,
+        output_png,
+        scene=scene,
+        center=center,
+        interactions=interactions,
+        width=width,
+        height=height,
     )
 
     script_path = tempfile.mktemp(suffix=".pml")
@@ -227,10 +237,8 @@ def render_scene_pymol(
         if not success:
             raise VisualizationError(f"PyMOL rendering failed: {stderr[:500]}")
     finally:
-        try:
+        with contextlib.suppress(Exception):
             os.remove(script_path)
-        except Exception:
-            pass
 
     if not os.path.exists(output_png):
         raise VisualizationError(f"PyMOL did not produce output: {output_png}")
@@ -242,6 +250,7 @@ def render_scene_pymol(
 # ─────────────────────────────────────────────────────────────────────────────
 # RDKit 2D Interaction Diagram
 # ─────────────────────────────────────────────────────────────────────────────
+
 
 def _parse_smiles_idx_from_pdbqt(ligand_pdbqt: str) -> dict[int, int]:
     """Parse REMARK SMILES IDX lines from PDBQT.
@@ -307,9 +316,9 @@ def render_interactions_2d(
         Path to output PNG.
     """
     try:
-        from rdkit import Chem
-        from rdkit.Chem import Draw, AllChem
         from PIL import Image, ImageDraw, ImageFont
+        from rdkit import Chem
+        from rdkit.Chem import AllChem, Draw
     except ImportError as exc:
         raise VisualizationError(f"Required packages missing for 2D rendering: {exc}")
 
@@ -328,7 +337,7 @@ def render_interactions_2d(
     else:
         with open(ligand_pdbqt) as fh:
             lines = fh.readlines()
-        clean = [l for l in lines if l.startswith(("ATOM  ", "HETATM"))]
+        clean = [line for line in lines if line.startswith(("ATOM  ", "HETATM"))]
         mol = Chem.MolFromPDBBlock("".join(clean))
 
     if mol is None:
@@ -409,10 +418,10 @@ def render_interactions_2d(
     # ── Fonts ─────────────────────────────────────────────────────────────────
     try:
         font = ImageFont.truetype("/System/Library/Fonts/Helvetica.ttc", 16)
-        small_font = ImageFont.truetype("/System/Library/Fonts/Helvetica.ttc", 12)
+        ImageFont.truetype("/System/Library/Fonts/Helvetica.ttc", 12)
     except Exception:
         font = ImageFont.load_default()
-        small_font = ImageFont.load_default()
+        ImageFont.load_default()
 
     # ── Draw residue labels near atoms ────────────────────────────────────────
     # Sort groups so that labels with fewer atoms (more specific) are placed first
@@ -459,7 +468,9 @@ def render_interactions_2d(
         base_angle = -math.pi / 2  # straight up
         if total_for_atom > 1:
             spread = min(math.pi * 0.6, 0.35 * total_for_atom)
-            base_angle = -math.pi / 2 + (idx_for_atom - (total_for_atom - 1) / 2) * spread / (total_for_atom - 1)
+            base_angle = -math.pi / 2 + (idx_for_atom - (total_for_atom - 1) / 2) * spread / (
+                total_for_atom - 1
+            )
 
         dist = 55
         lx = ax + int(dist * math.cos(base_angle)) - text_w // 2
@@ -493,10 +504,14 @@ def render_interactions_2d(
         )
         draw.text((lx, ly), label, fill=(0, 0, 0), font=font)
 
-        placed_boxes.append((
-            lx - padding, ly - padding,
-            lx + text_w + padding, ly + text_h + padding,
-        ))
+        placed_boxes.append(
+            (
+                lx - padding,
+                ly - padding,
+                lx + text_w + padding,
+                ly + text_h + padding,
+            )
+        )
 
     # ── Draw legend box ───────────────────────────────────────────────────────
     color_rgb_int = {
@@ -542,6 +557,7 @@ def render_interactions_2d(
 # ─────────────────────────────────────────────────────────────────────────────
 # Composite figure assembly
 # ─────────────────────────────────────────────────────────────────────────────
+
 
 def composite_summary(
     panel_paths: list[str],

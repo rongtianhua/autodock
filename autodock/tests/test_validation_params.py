@@ -1,24 +1,25 @@
 """Tests for autodock.validation_params — input validation layer."""
+
 from __future__ import annotations
 
 import pytest
 
+from autodock.core import ConfigurationError, DockingCalculationError, PreparationError
 from autodock.validation_params import (
-    validate_file_exists,
-    validate_pdbqt_file,
-    validate_smiles,
-    validate_pdb_id,
-    validate_exhaustiveness,
-    validate_n_poses,
-    validate_energy_range,
-    validate_timeout,
-    validate_seed,
     validate_box_size,
     validate_center,
-    validate_n_workers,
     validate_docking_params,
+    validate_energy_range,
+    validate_exhaustiveness,
+    validate_file_exists,
+    validate_n_poses,
+    validate_n_workers,
+    validate_pdb_id,
+    validate_pdbqt_file,
+    validate_seed,
+    validate_smiles,
+    validate_timeout,
 )
-from autodock.core import ConfigurationError, DockingCalculationError, PreparationError
 
 
 class TestFileValidators:
@@ -33,7 +34,9 @@ class TestFileValidators:
 
     def test_validate_pdbqt_file_valid(self, tmp_path):
         f = tmp_path / "ligand.pdbqt"
-        f.write_text("ATOM      1  C   LIG A   1      1.000   2.000   3.000  0.00  0.00    +0.000 C\n")
+        f.write_text(
+            "ATOM      1  C   LIG A   1      1.000   2.000   3.000  0.00  0.00    +0.000 C\n"
+        )
         assert validate_pdbqt_file(f) == str(f.resolve())
 
     def test_validate_pdbqt_file_no_atoms(self, tmp_path):
@@ -167,13 +170,23 @@ class TestNumericValidators:
 class TestValidateDockingParams:
     def test_valid_params(self, tmp_path):
         rec = tmp_path / "rec.pdbqt"
-        rec.write_text("ATOM      1  N   SER A   1      0.000   0.000   0.000  0.00  0.00    +0.000 N\n")
+        rec.write_text(
+            "ATOM      1  N   SER A   1      0.000   0.000   0.000  0.00  0.00    +0.000 N\n"
+        )
         lig = tmp_path / "lig.pdbqt"
-        lig.write_text("ATOM      1  C   LIG A   1      1.000   2.000   3.000  0.00  0.00    +0.000 C\n")
+        lig.write_text(
+            "ATOM      1  C   LIG A   1      1.000   2.000   3.000  0.00  0.00    +0.000 C\n"
+        )
 
         params = validate_docking_params(
-            rec, lig, (10.0, 10.0, 10.0), (20.0, 20.0, 20.0),
-            exhaustiveness=32, n_poses=20, seed=42, timeout=600,
+            rec,
+            lig,
+            (10.0, 10.0, 10.0),
+            (20.0, 20.0, 20.0),
+            exhaustiveness=32,
+            n_poses=20,
+            seed=42,
+            timeout=600,
         )
         assert params["exhaustiveness"] == 32
         assert params["seed"] == 42
@@ -181,18 +194,20 @@ class TestValidateDockingParams:
 
     def test_missing_receptor(self, tmp_path):
         lig = tmp_path / "lig.pdbqt"
-        lig.write_text("ATOM      1  C   LIG A   1      1.000   2.000   3.000  0.00  0.00    +0.000 C\n")
+        lig.write_text(
+            "ATOM      1  C   LIG A   1      1.000   2.000   3.000  0.00  0.00    +0.000 C\n"
+        )
         with pytest.raises(DockingCalculationError):
-            validate_docking_params(
-                "missing.pdbqt", lig, (0, 0, 0), (20, 20, 20)
-            )
+            validate_docking_params("missing.pdbqt", lig, (0, 0, 0), (20, 20, 20))
 
     def test_invalid_exhaustiveness(self, tmp_path):
         rec = tmp_path / "rec.pdbqt"
-        rec.write_text("ATOM      1  N   SER A   1      0.000   0.000   0.000  0.00  0.00    +0.000 N\n")
+        rec.write_text(
+            "ATOM      1  N   SER A   1      0.000   0.000   0.000  0.00  0.00    +0.000 N\n"
+        )
         lig = tmp_path / "lig.pdbqt"
-        lig.write_text("ATOM      1  C   LIG A   1      1.000   2.000   3.000  0.00  0.00    +0.000 C\n")
+        lig.write_text(
+            "ATOM      1  C   LIG A   1      1.000   2.000   3.000  0.00  0.00    +0.000 C\n"
+        )
         with pytest.raises(ConfigurationError):
-            validate_docking_params(
-                rec, lig, (0, 0, 0), (20, 20, 20), exhaustiveness=-5
-            )
+            validate_docking_params(rec, lig, (0, 0, 0), (20, 20, 20), exhaustiveness=-5)

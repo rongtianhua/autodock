@@ -3,17 +3,18 @@ autodock.utils — General-purpose utilities.
 ===========================================
 Coordinate math, file I/O helpers, PDB parsing, and format conversion.
 """
+
 from __future__ import annotations
 
+import contextlib
 import os
-import re
 import tempfile
 from pathlib import Path
 from typing import Any
 
 import numpy as np
 
-from autodock.core import logger, safe_subprocess, find_conda_tool
+from autodock.core import StructureFetchError, find_conda_tool, logger, safe_subprocess
 
 
 def ensure_dir(path: str | Path) -> Path:
@@ -43,7 +44,7 @@ def read_pdb_atoms(pdb_path: str) -> list[dict[str, Any]]:
     chain, res_seq, x, y, z, element.
     """
     atoms = []
-    with open(pdb_path, "r") as fh:
+    with open(pdb_path) as fh:
         for line in fh:
             if not line.startswith(("ATOM  ", "HETATM")):
                 continue
@@ -66,7 +67,9 @@ def read_pdb_atoms(pdb_path: str) -> list[dict[str, Any]]:
     return atoms
 
 
-def compute_bounding_box(atoms: list[dict[str, Any]]) -> tuple[tuple[float, float, float], tuple[float, float, float]]:
+def compute_bounding_box(
+    atoms: list[dict[str, Any]],
+) -> tuple[tuple[float, float, float], tuple[float, float, float]]:
     """
     Compute (center, size) of a bounding box from atom coordinates.
 
@@ -83,7 +86,9 @@ def compute_bounding_box(atoms: list[dict[str, Any]]) -> tuple[tuple[float, floa
     return center, size
 
 
-def compute_bounding_box_from_pdb(pdb_path: str, residue_filter: set[str] | None = None) -> tuple[tuple[float, float, float], tuple[float, float, float]]:
+def compute_bounding_box_from_pdb(
+    pdb_path: str, residue_filter: set[str] | None = None
+) -> tuple[tuple[float, float, float], tuple[float, float, float]]:
     """
     Compute bounding box for atoms in a PDB file, optionally filtering by residue name.
 
@@ -100,19 +105,23 @@ def compute_bounding_box_from_pdb(pdb_path: str, residue_filter: set[str] | None
     return compute_bounding_box(atoms)
 
 
-def compute_bounding_box_from_pdbqt(pdbqt_path: str) -> tuple[tuple[float, float, float], tuple[float, float, float]]:
+def compute_bounding_box_from_pdbqt(
+    pdbqt_path: str,
+) -> tuple[tuple[float, float, float], tuple[float, float, float]]:
     """Compute bounding box from a PDBQT file (parses ATOM/HETATM lines)."""
     atoms = []
-    with open(pdbqt_path, "r") as fh:
+    with open(pdbqt_path) as fh:
         for line in fh:
             if not line.startswith(("ATOM  ", "HETATM")):
                 continue
             try:
-                atoms.append({
-                    "x": float(line[30:38]),
-                    "y": float(line[38:46]),
-                    "z": float(line[46:54]),
-                })
+                atoms.append(
+                    {
+                        "x": float(line[30:38]),
+                        "y": float(line[38:46]),
+                        "z": float(line[46:54]),
+                    }
+                )
             except ValueError:
                 continue
     return compute_bounding_box(atoms)
@@ -140,7 +149,7 @@ def filter_pdb_lines(
     """
     water_names = {"HOH", "WAT", "H2O", "DOD", "TIP", "SOL"}
     out_lines = []
-    with open(pdb_path, "r") as fh:
+    with open(pdb_path) as fh:
         for line in fh:
             if line.startswith("ATOM  "):
                 res_name = line[17:20].strip()
@@ -168,31 +177,76 @@ def filter_pdb_lines(
 
 # AutoDock atom type → element symbol mapping for PDBQT → RDKit parsing
 _AD4_ELEMENT_MAP = {
-    "A": "C", "OA": "O", "HD": "H", "NA": "N", "SA": "S",
-    "N": "N", "O": "O", "C": "C", "H": "H", "S": "S",
-    "F": "F", "Cl": "Cl", "Br": "Br", "I": "I", "P": "P",
-    "Mg": "Mg", "Ca": "Ca", "Mn": "Mn", "Fe": "Fe", "Zn": "Zn",
-    "Na": "Na", "K": "K", "Cu": "Cu", "Co": "Co", "Ni": "Ni", "Se": "Se",
+    "A": "C",
+    "OA": "O",
+    "HD": "H",
+    "NA": "N",
+    "SA": "S",
+    "N": "N",
+    "O": "O",
+    "C": "C",
+    "H": "H",
+    "S": "S",
+    "F": "F",
+    "Cl": "Cl",
+    "Br": "Br",
+    "I": "I",
+    "P": "P",
+    "Mg": "Mg",
+    "Ca": "Ca",
+    "Mn": "Mn",
+    "Fe": "Fe",
+    "Zn": "Zn",
+    "Na": "Na",
+    "K": "K",
+    "Cu": "Cu",
+    "Co": "Co",
+    "Ni": "Ni",
+    "Se": "Se",
+    # Open Babel sometimes emits G0 for unrecognized atoms (usually carbon)
+    "G": "C",
+    "G0": "C",
 }
 
 
 def _sanitize_pdbqt_for_rdkit(pdbqt_path: str) -> str:
     """
     Read a PDBQT file, keep only ATOM/HETATM lines, and replace AutoDock atom
-    types in the element column (cols 77-78) with standard element symbols so
-    RDKit can parse them.
+    types with standard element symbols so RDKit can parse them.
+
+    PDBQT appends the AutoDock atom type after the partial charge, which usually
+    lands at columns 78-79 (0-based positions 77-78).  RDKit, however, reads the
+    element symbol from the PDB element column at columns 77-78 (0-based 76-77).
+    For two-letter elements (Cl, Br, …) an off-by-one placement causes RDKit to
+    read only the first character and mis-assign the element (e.g. Cl → C).
+
+    We therefore reconstruct each line, writing the element at the correct
+    position (76-77) and stripping the trailing partial charge / atom type.
+
+    Also fixes atom names that RDKit mis-interprets as element symbols
+    (e.g. atom name 'G' causes RDKit to look up element 'G' and crash).
     """
     out_lines = []
-    with open(pdbqt_path, "r") as fh:
+    with open(pdbqt_path) as fh:
         for line in fh:
             if not line.startswith(("ATOM  ", "HETATM")):
                 continue
-            ad_type = line[77:79].strip()
+            # Read AutoDock atom type from the PDBQT extension position
+            ad_type = line[77:79].strip() if len(line) > 78 else ""
             elem = _AD4_ELEMENT_MAP.get(ad_type, ad_type)
-            if len(elem) == 1:
-                new_line = line[:77] + " " + elem + line[78:]
-            else:
-                new_line = line[:77] + elem[:2] + line[79:]
+
+            # Strip trailing whitespace / newline so we can rebuild the line
+            stripped = line.rstrip("\n\r")
+
+            # Fix atom name (cols 13-16 = 0-based 12-15) if RDKit would choke on it
+            atom_name = stripped[12:16].strip() if len(stripped) > 15 else ""
+            if atom_name == "G":
+                stripped = stripped[:12] + " C  " + stripped[16:]
+
+            # Reconstruct with element at proper PDB position (cols 77-78 = 0-based 76-77).
+            # Truncate anything from position 76 onward and append the element
+            # right-justified in a 2-char field, then add newline.
+            new_line = stripped[:76] + f"{elem:>2}\n"
             out_lines.append(new_line)
     return "".join(out_lines)
 
@@ -250,21 +304,40 @@ def extract_ligand_from_pdb(
     """
     Extract a ligand from a PDB complex file and optionally save as SDF.
 
+    PDB asymmetric units often contain multiple copies of the same ligand
+    (different chains / residue numbers).  We group by (chain, res_seq) and
+    keep only the largest group so that the returned molecule is a single
+    ligand instance.
+
     Returns:
         (rdkit_mol, sdf_path_or_none)
     """
     from rdkit import Chem
 
-    with open(pdb_path, "r") as fh:
+    with open(pdb_path) as fh:
         lines = fh.readlines()
 
-    ligand_lines = [
-        l for l in lines
-        if l.startswith("HETATM") and ligand_resname in l[17:20]
-    ]
-    if not ligand_lines:
+    # Group HETATM lines by (chain, res_seq) to handle multi-copy ASUs
+    from collections import defaultdict
+
+    groups: dict[tuple[str, str], list[str]] = defaultdict(list)
+    for line in lines:
+        if line.startswith("HETATM") and ligand_resname in line[17:20]:
+            chain = line[21].strip()
+            res_seq = line[22:26].strip()
+            groups[(chain, res_seq)].append(line)
+
+    if not groups:
         logger.warning(f"No ligand '{ligand_resname}' found in {pdb_path}")
         return None, None
+
+    # Pick the largest group (most atoms) — this is the primary ligand copy
+    best_key = max(groups, key=lambda k: len(groups[k]))
+    ligand_lines = groups[best_key]
+    logger.debug(
+        f"Extracted ligand '{ligand_resname}' from chain {best_key[0]} "
+        f"residue {best_key[1]} ({len(ligand_lines)} atoms)"
+    )
 
     ligand_pdb = "".join(ligand_lines)
     mol = Chem.MolFromPDBBlock(ligand_pdb)
@@ -273,6 +346,17 @@ def extract_ligand_from_pdb(
         return None, None
 
     mol = Chem.AddHs(mol, addCoords=True)
+
+    # Sanity check: if the ligand still contains multiple fragments (e.g.
+    # a covalent adduct split across residues), keep only the largest fragment.
+    frags = Chem.GetMolFrags(mol, asMols=True, sanitizeFrags=True)
+    if len(frags) > 1:
+        logger.warning(
+            f"Ligand '{ligand_resname}' has {len(frags)} fragments; " f"keeping the largest one."
+        )
+        mol = max(frags, key=lambda m: m.GetNumAtoms())
+        # Re-add Hs because GetMolFrags may strip them
+        mol = Chem.AddHs(mol, addCoords=True)
 
     if output_sdf:
         writer = Chem.SDWriter(output_sdf)
@@ -302,7 +386,7 @@ def extract_chain_from_pdb(
         Path to output PDB file, or PDB block string if output_pdb is None.
     """
     chain_id = chain_id.strip()
-    with open(pdb_path, "r") as fh:
+    with open(pdb_path) as fh:
         lines = fh.readlines()
 
     # Collect atom serial numbers in the target chain
@@ -312,10 +396,8 @@ def extract_chain_from_pdb(
         if line.startswith(("ATOM  ", "HETATM")):
             if line[21].strip() == chain_id:
                 out_lines.append(line)
-                try:
+                with contextlib.suppress(ValueError):
                     chain_atom_nums.add(int(line[6:11]))
-                except ValueError:
-                    pass
         elif line.startswith("TER   "):
             # Include TER if it matches the chain
             ter_chain = line[21].strip() if len(line) > 21 else ""
@@ -324,7 +406,9 @@ def extract_chain_from_pdb(
         elif line.startswith("CONECT") and include_connect:
             # Include CONECT if any connected atom is in our chain
             try:
-                nums = [int(line[i:i+5]) for i in range(6, len(line), 5) if line[i:i+5].strip()]
+                nums = [
+                    int(line[i : i + 5]) for i in range(6, len(line), 5) if line[i : i + 5].strip()
+                ]
                 if any(n in chain_atom_nums for n in nums):
                     out_lines.append(line)
             except ValueError:
@@ -350,8 +434,8 @@ def pdb_chain_to_smiles(pdb_path: str, chain_id: str) -> str | None:
     Returns:
         SMILES string or None on failure.
     """
-    import tempfile
     import subprocess
+    import tempfile
 
     chain_pdb = tempfile.mktemp(suffix="_chain.pdb")
     extract_chain_from_pdb(pdb_path, chain_id, chain_pdb)
@@ -364,7 +448,9 @@ def pdb_chain_to_smiles(pdb_path: str, chain_id: str) -> str | None:
     try:
         result = subprocess.run(
             [obabel, "-i", "pdb", chain_pdb, "-o", "smi"],
-            capture_output=True, text=True, timeout=30
+            capture_output=True,
+            text=True,
+            timeout=30,
         )
         if result.returncode == 0:
             # Output format: "SMILES  filename"
@@ -386,7 +472,6 @@ def rmsd_matrix(poses: list[Any]) -> np.ndarray:
     Returns:
         NxN numpy array of RMSD values (Å).
     """
-    from rdkit import Chem
     from rdkit.Chem import AllChem
 
     n = len(poses)
@@ -470,6 +555,7 @@ class StructureCache:
     """
     Simple disk cache for downloaded structures.
     """
+
     def __init__(self, cache_dir: str | None = None):
         if cache_dir is None:
             cache_dir = os.path.expanduser("~/.autodock/structure_cache")
@@ -487,6 +573,7 @@ class StructureCache:
     def put(self, key: str, source_path: str, ext: str = ".pdb") -> str:
         dest = self._cache_path(key, ext)
         import shutil
+
         shutil.copy2(source_path, dest)
         return str(dest)
 

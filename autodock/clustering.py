@@ -6,8 +6,10 @@ binding modes.  This is a publication-grade best practice: reporting
 only the energy-lowest pose misses alternative binding modes that may
 be only slightly higher in energy but biologically relevant.
 """
+
 from __future__ import annotations
 
+import contextlib
 import os
 import tempfile
 from typing import Any
@@ -60,9 +62,7 @@ def cluster_poses(
 
     n = len(poses)
     if n != energies.shape[0]:
-        logger.warning(
-            f"Pose/energy count mismatch: {n} poses vs {energies.shape[0]} energies"
-        )
+        logger.warning(f"Pose/energy count mismatch: {n} poses vs {energies.shape[0]} energies")
         n = min(n, energies.shape[0])
 
     # Write all poses to temp files once
@@ -98,13 +98,15 @@ def cluster_poses(
                     break
 
             if not assigned:
-                clusters.append({
-                    "representative_index": int(idx),
-                    "size": 1,
-                    "member_indices": [int(idx)],
-                    "representative_energy": energy,
-                    "member_energies": [energy],
-                })
+                clusters.append(
+                    {
+                        "representative_index": int(idx),
+                        "size": 1,
+                        "member_indices": [int(idx)],
+                        "representative_energy": energy,
+                        "member_energies": [energy],
+                    }
+                )
 
         # Sort clusters by representative energy (best first)
         clusters.sort(key=lambda c: c["representative_energy"])
@@ -116,7 +118,5 @@ def cluster_poses(
 
     finally:
         for path in temp_files:
-            try:
+            with contextlib.suppress(OSError):
                 os.unlink(path)
-            except OSError:
-                pass

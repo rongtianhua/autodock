@@ -4,17 +4,18 @@ autodock.posebusters_eval — PoseBusters benchmark evaluation.
 Run redocking + PoseBusters validation on the PoseBusters benchmark set.
 Supports both the full 428-set (V1) and the curated 308-set (V2).
 """
+
 from __future__ import annotations
 
-import os
 import json
+import os
 from typing import Any
 
 import numpy as np
 
-from autodock.core import logger, ValidationError
-from autodock.validation import run_redocking_validation, validate_pose_with_posebusters
 from autodock.benchmark import auto_detect_ligand_resname
+from autodock.core import ValidationError, logger
+from autodock.validation import run_redocking_validation, validate_pose_with_posebusters
 
 
 def load_posebusters_ids(path: str) -> list[tuple[str, str]]:
@@ -58,7 +59,6 @@ def run_posebusters_evaluation(
     Returns:
         Summary dict with statistics and per-target results.
     """
-    from autodock.utils import download_pdb
 
     targets = load_posebusters_ids(id_list_path)
     if max_targets:
@@ -69,14 +69,16 @@ def run_posebusters_evaluation(
 
     work_items = []
     for pdb_id, ccd in targets:
-        work_items.append({
-            "pdb_id": pdb_id,
-            "ccd": ccd,
-            "output_dir": os.path.join(output_dir, pdb_id),
-            "exhaustiveness": exhaustiveness,
-            "n_poses": n_poses,
-            "seed": seed,
-        })
+        work_items.append(
+            {
+                "pdb_id": pdb_id,
+                "ccd": ccd,
+                "output_dir": os.path.join(output_dir, pdb_id),
+                "exhaustiveness": exhaustiveness,
+                "n_poses": n_poses,
+                "seed": seed,
+            }
+        )
 
     raw_results: list[dict[str, Any]] = []
     if n_workers == 1:
@@ -85,11 +87,16 @@ def run_posebusters_evaluation(
     else:
         if n_workers == -1:
             import multiprocessing
+
             n_workers = multiprocessing.cpu_count()
         from concurrent.futures import ProcessPoolExecutor, as_completed
+
         raw_results = [None] * len(work_items)
         with ProcessPoolExecutor(max_workers=n_workers) as executor:
-            futures = {executor.submit(_run_single_posebuster, item): i for i, item in enumerate(work_items)}
+            futures = {
+                executor.submit(_run_single_posebuster, item): i
+                for i, item in enumerate(work_items)
+            }
             for future in as_completed(futures):
                 idx = futures[future]
                 try:

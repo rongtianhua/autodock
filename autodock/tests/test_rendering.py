@@ -1,4 +1,5 @@
 """Tests for autodock.rendering — PyMOL and 2D interaction rendering."""
+
 from __future__ import annotations
 
 from pathlib import Path
@@ -13,6 +14,7 @@ from autodock.core import VisualizationError
 def _make_min_png(path: Path) -> None:
     """Write a minimal valid 1x1 PNG using PIL."""
     from PIL import Image
+
     img = Image.new("RGB", (1, 1), color=(0, 0, 0))
     img.save(path)
 
@@ -20,22 +22,44 @@ def _make_min_png(path: Path) -> None:
 class TestBuildPymolScript:
     def test_returns_string(self):
         script = rend._build_pymol_script(
-            "rec.pdb", "lig.pdbqt", "out.png", scene="complex", interactions=[],
+            "rec.pdb",
+            "lig.pdbqt",
+            "out.png",
+            scene="complex",
+            interactions=[],
         )
         assert isinstance(script, str)
         assert "load" in script
 
     def test_interaction_scene(self):
-        intx = [{"type": "H-bond", "resn": "SER", "resi": 1, "chain": "A", "atom": "OG", "color": "cyan", "description": "test"}]
+        intx = [
+            {
+                "type": "H-bond",
+                "resn": "SER",
+                "resi": 1,
+                "chain": "A",
+                "atom": "OG",
+                "color": "cyan",
+                "description": "test",
+            }
+        ]
         script = rend._build_pymol_script(
-            "rec.pdb", "lig.pdbqt", "out.png", scene="interaction",
-            center=(1.0, 2.0, 3.0), interactions=intx,
+            "rec.pdb",
+            "lig.pdbqt",
+            "out.png",
+            scene="interaction",
+            center=(1.0, 2.0, 3.0),
+            interactions=intx,
         )
         assert "distance" in script.lower()
 
     def test_pocket_scene(self):
         script = rend._build_pymol_script(
-            "rec.pdb", "lig.pdbqt", "out.png", scene="pocket", center=(1.0, 2.0, 3.0),
+            "rec.pdb",
+            "lig.pdbqt",
+            "out.png",
+            scene="pocket",
+            center=(1.0, 2.0, 3.0),
         )
         assert "pocket_surf" in script
 
@@ -67,7 +91,17 @@ class TestRenderInteractions2d:
     @patch("PIL.Image.open")
     @patch("PIL.ImageDraw.Draw")
     @patch("PIL.ImageFont.truetype")
-    def test_basic(self, mock_font, mock_draw, mock_img_open, mock_drawer, mock_2d, mock_remhs, mock_mol, tmp_path):
+    def test_basic(
+        self,
+        mock_font,
+        mock_draw,
+        mock_img_open,
+        mock_drawer,
+        mock_2d,
+        mock_remhs,
+        mock_mol,
+        tmp_path,
+    ):
         mock_mol_instance = MagicMock()
         mock_mol.return_value = mock_mol_instance
         mock_remhs.return_value = mock_mol_instance
@@ -81,7 +115,8 @@ class TestRenderInteractions2d:
         ligand.write_text("REMARK SMILES CC\nATOM 1 C 0 0 0\n")
         out = tmp_path / "out.png"
         rend.render_interactions_2d(
-            "rec.pdb", str(ligand),
+            "rec.pdb",
+            str(ligand),
             interactions=[{"type": "H-bond", "resn": "SER", "resi": 1}],
             output_png=str(out),
         )
@@ -92,7 +127,8 @@ class TestRenderInteractions2d:
         ligand.write_text("ATOM 1 XX 0 0 0\n")
         with pytest.raises(VisualizationError):
             rend.render_interactions_2d(
-                "rec.pdb", str(ligand),
+                "rec.pdb",
+                str(ligand),
                 interactions=[],
                 output_png=str(tmp_path / "out.png"),
             )

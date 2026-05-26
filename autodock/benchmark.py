@@ -9,17 +9,17 @@ benchmark sets.
 Default benchmark: 20 diverse non-covalent complexes drawn from the
 literature (kinases, proteases, nuclear receptors, and other enzymes).
 """
+
 from __future__ import annotations
 
-import os
 import json
+import os
 from typing import Any
 
 import numpy as np
 
-from autodock.core import logger, ValidationError
+from autodock.core import ValidationError, logger
 from autodock.validation import run_redocking_validation
-
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Default benchmark set (20 diverse non-covalent targets)
@@ -87,13 +87,15 @@ def run_redocking_benchmark(
 
     work_items = []
     for t in targets:
-        work_items.append({
-            "target": t,
-            "output_dir": os.path.join(output_dir, t["pdb_id"]),
-            "exhaustiveness": exhaustiveness,
-            "n_poses": n_poses,
-            "seed": seed,
-        })
+        work_items.append(
+            {
+                "target": t,
+                "output_dir": os.path.join(output_dir, t["pdb_id"]),
+                "exhaustiveness": exhaustiveness,
+                "n_poses": n_poses,
+                "seed": seed,
+            }
+        )
 
     # Execute
     raw_results: list[dict[str, Any]] = []
@@ -103,11 +105,15 @@ def run_redocking_benchmark(
     else:
         if n_workers == -1:
             import multiprocessing
+
             n_workers = multiprocessing.cpu_count()
         from concurrent.futures import ProcessPoolExecutor, as_completed
+
         raw_results = [None] * len(work_items)
         with ProcessPoolExecutor(max_workers=n_workers) as executor:
-            futures = {executor.submit(_run_single_benchmark, item): i for i, item in enumerate(work_items)}
+            futures = {
+                executor.submit(_run_single_benchmark, item): i for i, item in enumerate(work_items)
+            }
             for future in as_completed(futures):
                 idx = futures[future]
                 try:
@@ -169,17 +175,20 @@ def run_redocking_benchmark(
     # CSV
     try:
         import pandas as pd
+
         rows = []
         for r in raw_results:
-            rows.append({
-                "pdb_id": r["pdb_id"],
-                "family": r.get("family", ""),
-                "name": r.get("name", ""),
-                "success": r.get("success", False),
-                "rmsd": r.get("rmsd"),
-                "best_affinity": r.get("best_affinity"),
-                "error": r.get("error", ""),
-            })
+            rows.append(
+                {
+                    "pdb_id": r["pdb_id"],
+                    "family": r.get("family", ""),
+                    "name": r.get("name", ""),
+                    "success": r.get("success", False),
+                    "rmsd": r.get("rmsd"),
+                    "best_affinity": r.get("best_affinity"),
+                    "error": r.get("error", ""),
+                }
+            )
         df = pd.DataFrame(rows)
         csv_path = os.path.join(output_dir, "benchmark_results.csv")
         df.to_csv(csv_path, index=False, float_format="%.4f")
@@ -192,22 +201,94 @@ def run_redocking_benchmark(
     logger.info(
         f"Benchmark complete: {summary['n_success']}/{summary['n_total']} succeeded "
         f"({summary['success_rate']*100:.1f}%). "
-        f"Median RMSD: {summary['median_rmsd']:.2f} Å" if summary['median_rmsd'] else ""
+        f"Median RMSD: {summary['median_rmsd']:.2f} Å"
+        if summary["median_rmsd"]
+        else ""
     )
     return summary
 
 
 # Common non-ligand HET residues to ignore
 _NON_LIGAND_HETS = {
-    "HOH", "WAT", "H2O", "DOD", "SO4", "PO4", "MES", "EDO", "PEG", "MRD", "MPD",
-    "ACT", "ACA", "TRIS", "HEP", "BME", "DTT", "GOL", "PG4", "DMS", "EOH",
-    "MOH", "IPA", "NHE", "NH2", "UNK", "UNX", "UNL",
-    "MG", "CA", "ZN", "NA", "CL", "K", "FE", "MN", "CO", "NI", "CU",
-    "NAG", "MAN", "FUC", "GAL", "SIA", "NGA", "GLC", "Fru", "RIB",
-    "GDP", "GTP", "ATP", "ADP", "AMP", "ANP", "MSE", "ACE", "FOR",
-    "PTR", "TPO", "SEP", "KCX", "CSD", "CSO", "CME", "OCY", "MEX",
-    "FLC", "CIT", "BENZ", "AZI", "BOG", "DIO", "IMD", "PGE", "PG6",
-    "SUC", "TAR", "MLI", "BMA", "FUC", "GAL", "MAN", "NAG", "SIA",
+    "HOH",
+    "WAT",
+    "H2O",
+    "DOD",
+    "SO4",
+    "PO4",
+    "MES",
+    "EDO",
+    "PEG",
+    "MRD",
+    "MPD",
+    "ACT",
+    "ACA",
+    "TRIS",
+    "HEP",
+    "BME",
+    "DTT",
+    "GOL",
+    "PG4",
+    "DMS",
+    "EOH",
+    "MOH",
+    "IPA",
+    "NHE",
+    "NH2",
+    "UNK",
+    "UNX",
+    "UNL",
+    "MG",
+    "CA",
+    "ZN",
+    "NA",
+    "CL",
+    "K",
+    "FE",
+    "MN",
+    "CO",
+    "NI",
+    "CU",
+    "NAG",
+    "MAN",
+    "FUC",
+    "GAL",
+    "SIA",
+    "NGA",
+    "GLC",
+    "Fru",
+    "RIB",
+    "GDP",
+    "GTP",
+    "ATP",
+    "ADP",
+    "AMP",
+    "ANP",
+    "MSE",
+    "ACE",
+    "FOR",
+    "PTR",
+    "TPO",
+    "SEP",
+    "KCX",
+    "CSD",
+    "CSO",
+    "CME",
+    "OCY",
+    "MEX",
+    "FLC",
+    "CIT",
+    "BENZ",
+    "AZI",
+    "BOG",
+    "DIO",
+    "IMD",
+    "PGE",
+    "PG6",
+    "SUC",
+    "TAR",
+    "MLI",
+    "BMA",
 }
 
 
@@ -257,8 +338,12 @@ def _run_single_benchmark(item: dict[str, Any]) -> dict[str, Any]:
         except Exception as exc:
             logger.error(f"[{pdb_id}] Download failed: {exc}")
             return {
-                "pdb_id": pdb_id, "family": family, "name": name,
-                "success": False, "rmsd": None, "error": f"download: {exc}",
+                "pdb_id": pdb_id,
+                "family": family,
+                "name": name,
+                "success": False,
+                "rmsd": None,
+                "error": f"download: {exc}",
             }
 
     # Auto-detect ligand if not provided
@@ -270,8 +355,12 @@ def _run_single_benchmark(item: dict[str, Any]) -> dict[str, Any]:
         else:
             logger.warning(f"[{pdb_id}] No ligand detected; skipping")
             return {
-                "pdb_id": pdb_id, "family": family, "name": name,
-                "success": False, "rmsd": None, "error": "No ligand detected",
+                "pdb_id": pdb_id,
+                "family": family,
+                "name": name,
+                "success": False,
+                "rmsd": None,
+                "error": "No ligand detected",
             }
 
     # Run redocking
@@ -297,12 +386,20 @@ def _run_single_benchmark(item: dict[str, Any]) -> dict[str, Any]:
     except ValidationError as exc:
         logger.warning(f"[{pdb_id}] Redocking validation failed: {exc}")
         return {
-            "pdb_id": pdb_id, "family": family, "name": name,
-            "success": False, "rmsd": None, "error": str(exc),
+            "pdb_id": pdb_id,
+            "family": family,
+            "name": name,
+            "success": False,
+            "rmsd": None,
+            "error": str(exc),
         }
     except Exception as exc:
         logger.error(f"[{pdb_id}] Unexpected error: {exc}")
         return {
-            "pdb_id": pdb_id, "family": family, "name": name,
-            "success": False, "rmsd": None, "error": str(exc),
+            "pdb_id": pdb_id,
+            "family": family,
+            "name": name,
+            "success": False,
+            "rmsd": None,
+            "error": str(exc),
         }

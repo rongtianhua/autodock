@@ -1,9 +1,8 @@
 """Tests for autodock.reporting — PDF/Excel/CSV report generation."""
+
 from __future__ import annotations
 
 from pathlib import Path
-
-import pytest
 
 from autodock import reporting as rep
 from autodock.core import DockingResult
@@ -12,6 +11,7 @@ from autodock.core import DockingResult
 def _make_min_png(path: Path) -> None:
     """Write a minimal valid 1x1 PNG using PIL."""
     from PIL import Image
+
     img = Image.new("RGB", (1, 1), color=(0, 0, 0))
     img.save(path)
 
@@ -61,7 +61,17 @@ class TestGeneratePdfReport:
             compound_name="aspirin",
             receptor="rec.pdbqt",
             best_affinity=-7.5,
-            interactions=[{"type": "H-bond", "resn": "SER", "resi": 1, "chain": "A", "atom": "OG", "distance": 2.8, "description": "H-bond: SER1.A (OG) — 2.80 Å"}],
+            interactions=[
+                {
+                    "type": "H-bond",
+                    "resn": "SER",
+                    "resi": 1,
+                    "chain": "A",
+                    "atom": "OG",
+                    "distance": 2.8,
+                    "description": "H-bond: SER1.A (OG) — 2.80 Å",
+                }
+            ],
         )
         path = tmp_path / "out.pdf"
         rep.generate_pdf_report(result, str(path), figure_paths=[])

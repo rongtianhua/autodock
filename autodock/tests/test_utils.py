@@ -1,10 +1,9 @@
 """Tests for autodock.utils — file helpers, PDB parsing, coordinate math."""
+
 from __future__ import annotations
 
 import os
-from pathlib import Path
 
-import numpy as np
 import pytest
 
 from autodock import utils
@@ -61,10 +60,14 @@ class TestComputeBoundingBox:
 
 
 class TestRmsdMatrix:
-    @pytest.mark.skipif(not __import__("autodock.core", fromlist=["_HAVE_RDKIT"])._HAVE_RDKIT, reason="RDKit not available")
+    @pytest.mark.skipif(
+        not __import__("autodock.core", fromlist=["_HAVE_RDKIT"])._HAVE_RDKIT,
+        reason="RDKit not available",
+    )
     def test_identity(self):
         from rdkit import Chem
         from rdkit.Chem import AllChem
+
         mol = Chem.MolFromSmiles("CC")
         AllChem.EmbedMolecule(mol, randomSeed=42)
         poses = [mol, mol]
@@ -97,6 +100,90 @@ class TestFilterPdbLines:
         utils.filter_pdb_lines(str(inp), str(out), remove_water=False)
         lines = out.read_text().splitlines()
         assert len(lines) == 2
+
+
+class TestSanitizePdbqtForRdkit:
+    def test_replaces_ad4_atom_types(self, tmp_path):
+        pdbqt = tmp_path / "test.pdbqt"
+        pdbqt.write_text(
+            "ATOM      1  C   UNL     1       0.000   0.000   0.000  1.00  0.00     0.000 A \n"
+            "ATOM      2  O   UNL     1       1.000   1.000   1.000  1.00  0.00     0.000 OA\n"
+        )
+        block = utils._sanitize_pdbqt_for_rdkit(str(pdbqt))
+        lines = block.strip().splitlines()
+        # Element is written at PDB cols 77-78 (0-based positions 76-77)
+        assert lines[0][76] == " " and lines[0][77] == "C"
+        assert lines[1][76] == " " and lines[1][77] == "O"
+
+    def test_fixes_g_atom_name(self, tmp_path):
+        """Atom name 'G' triggers RDKit 'Element G not found' — must be remapped."""
+        pdbqt = tmp_path / "test.pdbqt"
+        pdbqt.write_text(
+            "ATOM      1  G   UNL     1       0.000   0.000   0.000  1.00  0.00     0.000 G0\n"
+        )
+        block = utils._sanitize_pdbqt_for_rdkit(str(pdbqt))
+        line = block.strip()
+        # atom name should become ' C  '
+        assert line[12:16] == " C  "
+        # element column should be C at 0-based position 76-77
+        assert line[76:78].strip() == "C"
+
+    @pytest.mark.skipif(
+        not __import__("autodock.core", fromlist=["_HAVE_RDKIT"])._HAVE_RDKIT,
+        reason="RDKit not available",
+    )
+    def test_two_letter_element_preserved(self, tmp_path):
+        """Chlorine (Cl) and other two-letter elements must survive sanitization."""
+        from rdkit import Chem
+
+        pdbqt = tmp_path / "test.pdbqt"
+        pdbqt.write_text(
+            "ATOM     28  Cl  UNL     1      -5.651   1.205   0.772  1.00  0.00    -0.123 Cl\n"
+        )
+        block = utils._sanitize_pdbqt_for_rdkit(str(pdbqt))
+        mol = Chem.MolFromPDBBlock(block, removeHs=True)
+        assert mol is not None
+        assert mol.GetNumAtoms() == 1
+        assert mol.GetAtomWithIdx(0).GetSymbol() == "Cl"
+
+
+class TestExtractLigandFromPdb:
+    @pytest.mark.skipif(
+        not __import__("autodock.core", fromlist=["_HAVE_RDKIT"])._HAVE_RDKIT,
+        reason="RDKit not available",
+    )
+    def test_multi_copy_asu_takes_largest(self, tmp_path):
+        """PDBs with multiple copies of the same ligand (different chains/resi)
+        should return only the largest copy."""
+        pdb = tmp_path / "multi.pdb"
+        pdb.write_text(
+            "HETATM    1  C   LIG A   1       0.000   0.000   0.000\n"
+            "HETATM    2  C   LIG A   1       1.000   0.000   0.000\n"
+            "HETATM    3  O   LIG B   2       5.000   0.000   0.000\n"
+        )
+        mol, sdf = utils.extract_ligand_from_pdb(str(pdb), "LIG")
+        assert mol is not None
+        # Chain A has 2 atoms, chain B has 1 atom — should pick chain A
+        assert mol.GetNumAtoms() >= 2
+
+    @pytest.mark.skipif(
+        not __import__("autodock.core", fromlist=["_HAVE_RDKIT"])._HAVE_RDKIT,
+        reason="RDKit not available",
+    )
+    def test_multi_fragment_keeps_largest(self, tmp_path):
+        """If a single ligand copy still has multiple fragments, keep the largest."""
+        from rdkit import Chem
+
+        pdb = tmp_path / "frags.pdb"
+        # Two disconnected heavy atoms = two fragments
+        pdb.write_text(
+            "HETATM    1  C   LIG A   1       0.000   0.000   0.000\n"
+            "HETATM    2  O   LIG A   1      10.000   0.000   0.000\n"
+        )
+        mol, sdf = utils.extract_ligand_from_pdb(str(pdb), "LIG")
+        assert mol is not None
+        frags = Chem.GetMolFrags(mol, asMols=False, sanitizeFrags=False)
+        assert len(frags) == 1
 
 
 class TestStructureCache:

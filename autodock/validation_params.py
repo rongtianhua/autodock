@@ -5,27 +5,28 @@ Centralised validation layer to ensure all user-facing parameters are
 checked before they reach the docking engine.  This prevents cryptic
 low-level errors and guarantees publication-grade reproducibility.
 """
+
 from __future__ import annotations
 
-import os
 from pathlib import Path
 from typing import Any
 
 from autodock.core import (
+    _POCKET_MAX_DIM,
+    _POCKET_MIN_DIM,
+    VINA_DEFAULT_ENERGY_RANGE,
+    VINA_DEFAULT_EXHAUSTIVENESS,
+    VINA_DEFAULT_N_POSES,
+    VINA_DEFAULT_TIMEOUT,
     ConfigurationError,
     DockingCalculationError,
     PreparationError,
-    VINA_DEFAULT_EXHAUSTIVENESS,
-    VINA_DEFAULT_N_POSES,
-    VINA_DEFAULT_ENERGY_RANGE,
-    VINA_DEFAULT_TIMEOUT,
-    _POCKET_MIN_DIM,
-    _POCKET_MAX_DIM,
 )
 
 # ─────────────────────────────────────────────────────────────────────────────
 # File validators
 # ─────────────────────────────────────────────────────────────────────────────
+
 
 def validate_file_exists(path: str | Path, label: str = "file") -> str:
     """Return absolute path if it exists, else raise."""
@@ -40,7 +41,7 @@ def validate_file_exists(path: str | Path, label: str = "file") -> str:
 def validate_pdbqt_file(path: str | Path, label: str = "PDBQT") -> str:
     """Validate file exists and contains at least one ATOM/HETATM record."""
     path = validate_file_exists(path, label)
-    with open(path, "r") as fh:
+    with open(path) as fh:
         for line in fh:
             if line.startswith("ATOM") or line.startswith("HETATM"):
                 return path
@@ -70,6 +71,7 @@ def validate_pdb_id(pdb_id: str) -> str:
 # ─────────────────────────────────────────────────────────────────────────────
 # Numeric parameter validators
 # ─────────────────────────────────────────────────────────────────────────────
+
 
 def validate_exhaustiveness(value: int) -> int:
     v = int(value)
@@ -153,6 +155,7 @@ def validate_n_workers(value: int) -> int:
 # ─────────────────────────────────────────────────────────────────────────────
 # Combined docking parameter validator
 # ─────────────────────────────────────────────────────────────────────────────
+
 
 def validate_docking_params(
     receptor_pdbqt: str | Path,

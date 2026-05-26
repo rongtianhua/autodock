@@ -3,13 +3,13 @@ autodock.reporting — Publication-ready report generation.
 =========================================================
 PDF reports (reportlab) and Excel tables (openpyxl).
 """
+
 from __future__ import annotations
 
 import os
 from datetime import datetime
-from typing import Any
 
-from autodock.core import logger, DockingResult
+from autodock.core import DockingResult, logger
 from autodock.utils import ensure_dir
 
 
@@ -32,11 +32,17 @@ def generate_pdf_report(
     try:
         from reportlab.lib import colors
         from reportlab.lib.pagesizes import A4
+        from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
         from reportlab.lib.units import cm
         from reportlab.platypus import (
-            SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer, Image, PageBreak,
+            Image,
+            PageBreak,
+            Paragraph,
+            SimpleDocTemplate,
+            Spacer,
+            Table,
+            TableStyle,
         )
-        from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
     except ImportError as exc:
         raise RuntimeError(f"reportlab required: {exc}")
 
@@ -61,13 +67,13 @@ def generate_pdf_report(
         textColor=colors.HexColor("#1a1a2e"),
         spaceAfter=20,
     )
-    story.append(Paragraph(
-        f"Molecular Docking Report: {result.compound_name}", title_style
-    ))
-    story.append(Paragraph(
-        f"<i>Generated: {datetime.now().strftime('%Y-%m-%d %H:%M')}</i>",
-        styles["Normal"],
-    ))
+    story.append(Paragraph(f"Molecular Docking Report: {result.compound_name}", title_style))
+    story.append(
+        Paragraph(
+            f"<i>Generated: {datetime.now().strftime('%Y-%m-%d %H:%M')}</i>",
+            styles["Normal"],
+        )
+    )
     story.append(Spacer(1, 0.5 * cm))
 
     # Docking parameters
@@ -79,24 +85,31 @@ def generate_pdf_report(
         ["N poses", str(result.n_poses)],
         ["Seed", str(result.seed)],
         ["Box center", f"({result.center[0]:.2f}, {result.center[1]:.2f}, {result.center[2]:.2f})"],
-        ["Box size", f"({result.box_size[0]:.1f}, {result.box_size[1]:.1f}, {result.box_size[2]:.1f})"],
+        [
+            "Box size",
+            f"({result.box_size[0]:.1f}, {result.box_size[1]:.1f}, {result.box_size[2]:.1f})",
+        ],
     ]
     if result.receptor_source:
         param_data.append(["Receptor source", result.receptor_source])
 
     param_table = Table(param_data, colWidths=[6 * cm, 10 * cm])
-    param_table.setStyle(TableStyle([
-        ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#16213e")),
-        ("TEXTCOLOR", (0, 0), (-1, 0), colors.whitesmoke),
-        ("ALIGN", (0, 0), (-1, -1), "LEFT"),
-        ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
-        ("FONTSIZE", (0, 0), (-1, 0), 11),
-        ("BOTTOMPADDING", (0, 0), (-1, 0), 10),
-        ("BACKGROUND", (0, 1), (-1, -1), colors.HexColor("#f5f5f5")),
-        ("GRID", (0, 0), (-1, -1), 0.5, colors.grey),
-        ("LEFTPADDING", (0, 0), (-1, -1), 8),
-        ("RIGHTPADDING", (0, 0), (-1, -1), 8),
-    ]))
+    param_table.setStyle(
+        TableStyle(
+            [
+                ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#16213e")),
+                ("TEXTCOLOR", (0, 0), (-1, 0), colors.whitesmoke),
+                ("ALIGN", (0, 0), (-1, -1), "LEFT"),
+                ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+                ("FONTSIZE", (0, 0), (-1, 0), 11),
+                ("BOTTOMPADDING", (0, 0), (-1, 0), 10),
+                ("BACKGROUND", (0, 1), (-1, -1), colors.HexColor("#f5f5f5")),
+                ("GRID", (0, 0), (-1, -1), 0.5, colors.grey),
+                ("LEFTPADDING", (0, 0), (-1, -1), 8),
+                ("RIGHTPADDING", (0, 0), (-1, -1), 8),
+            ]
+        )
+    )
     story.append(param_table)
     story.append(Spacer(1, 0.5 * cm))
 
@@ -116,18 +129,22 @@ def generate_pdf_report(
 
     if len(score_data) > 1:
         score_table = Table(score_data, colWidths=[6 * cm, 10 * cm])
-        score_table.setStyle(TableStyle([
-            ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#0f3460")),
-            ("TEXTCOLOR", (0, 0), (-1, 0), colors.whitesmoke),
-            ("ALIGN", (0, 0), (-1, -1), "LEFT"),
-            ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
-            ("FONTSIZE", (0, 0), (-1, 0), 11),
-            ("BOTTOMPADDING", (0, 0), (-1, 0), 10),
-            ("BACKGROUND", (0, 1), (-1, -1), colors.HexColor("#f5f5f5")),
-            ("GRID", (0, 0), (-1, -1), 0.5, colors.grey),
-            ("LEFTPADDING", (0, 0), (-1, -1), 8),
-            ("RIGHTPADDING", (0, 0), (-1, -1), 8),
-        ]))
+        score_table.setStyle(
+            TableStyle(
+                [
+                    ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#0f3460")),
+                    ("TEXTCOLOR", (0, 0), (-1, 0), colors.whitesmoke),
+                    ("ALIGN", (0, 0), (-1, -1), "LEFT"),
+                    ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+                    ("FONTSIZE", (0, 0), (-1, 0), 11),
+                    ("BOTTOMPADDING", (0, 0), (-1, 0), 10),
+                    ("BACKGROUND", (0, 1), (-1, -1), colors.HexColor("#f5f5f5")),
+                    ("GRID", (0, 0), (-1, -1), 0.5, colors.grey),
+                    ("LEFTPADDING", (0, 0), (-1, -1), 8),
+                    ("RIGHTPADDING", (0, 0), (-1, -1), 8),
+                ]
+            )
+        )
         story.append(score_table)
     story.append(Spacer(1, 0.5 * cm))
 
@@ -147,18 +164,22 @@ def generate_pdf_report(
 
     if len(val_data) > 1:
         val_table = Table(val_data, colWidths=[6 * cm, 10 * cm])
-        val_table.setStyle(TableStyle([
-            ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#e94560")),
-            ("TEXTCOLOR", (0, 0), (-1, 0), colors.whitesmoke),
-            ("ALIGN", (0, 0), (-1, -1), "LEFT"),
-            ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
-            ("FONTSIZE", (0, 0), (-1, 0), 11),
-            ("BOTTOMPADDING", (0, 0), (-1, 0), 10),
-            ("BACKGROUND", (0, 1), (-1, -1), colors.HexColor("#f5f5f5")),
-            ("GRID", (0, 0), (-1, -1), 0.5, colors.grey),
-            ("LEFTPADDING", (0, 0), (-1, -1), 8),
-            ("RIGHTPADDING", (0, 0), (-1, -1), 8),
-        ]))
+        val_table.setStyle(
+            TableStyle(
+                [
+                    ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#e94560")),
+                    ("TEXTCOLOR", (0, 0), (-1, 0), colors.whitesmoke),
+                    ("ALIGN", (0, 0), (-1, -1), "LEFT"),
+                    ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+                    ("FONTSIZE", (0, 0), (-1, 0), 11),
+                    ("BOTTOMPADDING", (0, 0), (-1, 0), 10),
+                    ("BACKGROUND", (0, 1), (-1, -1), colors.HexColor("#f5f5f5")),
+                    ("GRID", (0, 0), (-1, -1), 0.5, colors.grey),
+                    ("LEFTPADDING", (0, 0), (-1, -1), 8),
+                    ("RIGHTPADDING", (0, 0), (-1, -1), 8),
+                ]
+            )
+        )
         story.append(val_table)
     story.append(Spacer(1, 0.5 * cm))
 
@@ -171,18 +192,22 @@ def generate_pdf_report(
 
     if len(intx_data) > 1:
         intx_table = Table(intx_data, colWidths=[6 * cm, 10 * cm])
-        intx_table.setStyle(TableStyle([
-            ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#533483")),
-            ("TEXTCOLOR", (0, 0), (-1, 0), colors.whitesmoke),
-            ("ALIGN", (0, 0), (-1, -1), "LEFT"),
-            ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
-            ("FONTSIZE", (0, 0), (-1, 0), 11),
-            ("BOTTOMPADDING", (0, 0), (-1, 0), 10),
-            ("BACKGROUND", (0, 1), (-1, -1), colors.HexColor("#f5f5f5")),
-            ("GRID", (0, 0), (-1, -1), 0.5, colors.grey),
-            ("LEFTPADDING", (0, 0), (-1, -1), 8),
-            ("RIGHTPADDING", (0, 0), (-1, -1), 8),
-        ]))
+        intx_table.setStyle(
+            TableStyle(
+                [
+                    ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#533483")),
+                    ("TEXTCOLOR", (0, 0), (-1, 0), colors.whitesmoke),
+                    ("ALIGN", (0, 0), (-1, -1), "LEFT"),
+                    ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+                    ("FONTSIZE", (0, 0), (-1, 0), 11),
+                    ("BOTTOMPADDING", (0, 0), (-1, 0), 10),
+                    ("BACKGROUND", (0, 1), (-1, -1), colors.HexColor("#f5f5f5")),
+                    ("GRID", (0, 0), (-1, -1), 0.5, colors.grey),
+                    ("LEFTPADDING", (0, 0), (-1, -1), 8),
+                    ("RIGHTPADDING", (0, 0), (-1, -1), 8),
+                ]
+            )
+        )
         story.append(intx_table)
 
     # Figures
@@ -221,10 +246,7 @@ def generate_excel_report(
 
     ensure_dir(os.path.dirname(output_xlsx) or ".")
 
-    if not results:
-        df = pd.DataFrame()
-    else:
-        df = pd.DataFrame([r.to_dataframe_row() for r in results])
+    df = pd.DataFrame() if not results else pd.DataFrame([r.to_dataframe_row() for r in results])
 
     df.to_excel(output_xlsx, index=False, float_format="%.4f")
     logger.info(f"Excel report generated: {output_xlsx}")
@@ -243,10 +265,7 @@ def generate_csv_report(
 
     ensure_dir(os.path.dirname(output_csv) or ".")
 
-    if not results:
-        df = pd.DataFrame()
-    else:
-        df = pd.DataFrame([r.to_dataframe_row() for r in results])
+    df = pd.DataFrame() if not results else pd.DataFrame([r.to_dataframe_row() for r in results])
 
     df.to_csv(output_csv, index=False, float_format="%.4f")
     logger.info(f"CSV report generated: {output_csv}")

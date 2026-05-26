@@ -4,6 +4,7 @@ autodock.config — YAML configuration parser and validator.
 Reads docking pipeline configs and validates parameters against
 publication-grade defaults.
 """
+
 from __future__ import annotations
 
 import os
@@ -11,11 +12,10 @@ from pathlib import Path
 from typing import Any
 
 from autodock.core import (
-    ConfigurationError,
-    logger,
     VINA_DEFAULT_EXHAUSTIVENESS,
     VINA_DEFAULT_N_POSES,
-    REDocking_RMSD_THRESHOLD,
+    ConfigurationError,
+    logger,
 )
 
 
@@ -44,7 +44,7 @@ def load_config(path: str | Path) -> dict[str, Any]:
         )
 
     try:
-        with open(path, "r") as fh:
+        with open(path) as fh:
             cfg = yaml.safe_load(fh)
     except Exception as exc:
         raise ConfigurationError(f"Failed to parse YAML config: {exc}")
@@ -146,8 +146,7 @@ def _validate(cfg: dict[str, Any]) -> None:
         )
     if exhaust < 32:
         logger.info(
-            f"Config: exhaustiveness={exhaust}. "
-            f"Consider >=32 for publication-grade docking."
+            f"Config: exhaustiveness={exhaust}. " f"Consider >=32 for publication-grade docking."
         )
 
     num_modes = dock.get("num_modes", VINA_DEFAULT_N_POSES)
@@ -166,10 +165,7 @@ def _validate(cfg: dict[str, Any]) -> None:
 
     pocket = cfg.get("pocket", {})
     if pocket.get("method") == "fpocket" and pocket.get("use_p2rank", True) is False:
-        logger.info(
-            "Config: P2Rank rescoring disabled. "
-            "Pocket ranking may be less reliable."
-        )
+        logger.info("Config: P2Rank rescoring disabled. " "Pocket ranking may be less reliable.")
 
     out_dir = cfg.get("project", {}).get("output_dir", "./docking_results")
     os.makedirs(out_dir, exist_ok=True)

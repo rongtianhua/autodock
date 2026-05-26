@@ -3,14 +3,14 @@ autodock.interactions — Protein-ligand interaction detection.
 ===========================================================
 PLIP (primary) and ProLIF (secondary) for comprehensive interaction profiling.
 """
+
 from __future__ import annotations
 
 import os
 import tempfile
 from typing import Any
 
-from autodock.core import logger, VisualizationError, _HAVE_PLIP, _HAVE_MDANALYSIS, _HAVE_PROLIF
-
+from autodock.core import _HAVE_MDANALYSIS, _HAVE_PLIP, _HAVE_PROLIF, VisualizationError, logger
 
 # ─────────────────────────────────────────────────────────────────────────────
 # PLIP-based interaction detection (primary / authoritative)
@@ -66,13 +66,9 @@ def _extract_ligand_atoms_plip(rec: Any, plip_attr: str) -> list[dict[str, Any]]
         if hasattr(rec, "don") and rec.don:
             atoms = [{"coords": rec.don.x.coords}]
     elif plip_attr in ("water_bridges",):
-        if rec.protisdon:
-            atoms = [{"coords": rec.a.coords}]
-        else:
-            atoms = [{"coords": rec.d.coords}]
-    elif plip_attr in ("metal_complexes",):
-        if hasattr(rec, "target") and rec.target:
-            atoms = [{"coords": rec.target.atom.coords}]
+        atoms = [{"coords": rec.a.coords}] if rec.protisdon else [{"coords": rec.d.coords}]
+    elif plip_attr in ("metal_complexes",) and hasattr(rec, "target") and rec.target:
+        atoms = [{"coords": rec.target.atom.coords}]
     return atoms
 
 
@@ -81,16 +77,16 @@ def _build_complex_pdb(receptor_pdb: str, ligand_pdbqt: str, output_pdb: str) ->
     Merge receptor PDB and ligand PDBQT into a single PDB for PLIP analysis.
     PLIP requires the ligand as HETATM records with a distinct residue name.
     """
-    with open(receptor_pdb, "r") as fh:
+    with open(receptor_pdb) as fh:
         rec_lines = fh.readlines()
 
     # Strip END/ENDMDL from receptor
-    rec_lines = [l for l in rec_lines if not l.strip().startswith(("END", "ENDMDL"))]
+    rec_lines = [line for line in rec_lines if not line.strip().startswith(("END", "ENDMDL"))]
 
     # Parse ligand from PDBQT and rewrite as properly formatted HETATM
     lig_lines = []
     atom_num = 1
-    with open(ligand_pdbqt, "r") as fh:
+    with open(ligand_pdbqt) as fh:
         for line in fh:
             if not line.startswith(("ATOM  ", "HETATM")):
                 continue
@@ -139,9 +135,7 @@ def detect_interactions_plip(
           type, color, resn, resi, chain, atom, distance, description
     """
     if not _HAVE_PLIP:
-        raise VisualizationError(
-            "PLIP not available. Install: conda install -c conda-forge plip"
-        )
+        raise VisualizationError("PLIP not available. Install: conda install -c conda-forge plip")
 
     from plip.structure.preparation import PDBComplex
 
@@ -190,17 +184,19 @@ def detect_interactions_plip(
                         desc += f" — {distance:.2f} Å"
 
                     ligand_atoms = _extract_ligand_atoms_plip(rec, plip_attr)
-                    interactions.append({
-                        "type": display_type,
-                        "color": color,
-                        "resn": resn,
-                        "resi": int(resi),
-                        "chain": chain,
-                        "atom": atom,
-                        "distance": round(float(distance), 2) if distance is not None else None,
-                        "description": desc,
-                        "ligand_atoms": ligand_atoms,
-                    })
+                    interactions.append(
+                        {
+                            "type": display_type,
+                            "color": color,
+                            "resn": resn,
+                            "resi": int(resi),
+                            "chain": chain,
+                            "atom": atom,
+                            "distance": round(float(distance), 2) if distance is not None else None,
+                            "description": desc,
+                            "ligand_atoms": ligand_atoms,
+                        }
+                    )
                 except Exception as exc:
                     logger.debug(f"Skipping malformed PLIP record: {exc}")
                     continue
@@ -212,6 +208,7 @@ def detect_interactions_plip(
 # ─────────────────────────────────────────────────────────────────────────────
 # ProLIF-based interaction detection (secondary)
 # ─────────────────────────────────────────────────────────────────────────────
+
 
 def detect_interactions_prolif(
     receptor_pdb: str,
@@ -255,16 +252,18 @@ def detect_interactions_prolif(
         count = df[col].sum()
         if count > 0:
             color = "cyan"
-            interactions.append({
-                "type": interaction_type.replace("_", " ").title(),
-                "color": color,
-                "resn": prot_res.split(":")[0] if ":" in str(prot_res) else str(prot_res),
-                "resi": 0,
-                "chain": "A",
-                "atom": "",
-                "distance": None,
-                "description": f"{interaction_type}: {prot_res}",
-            })
+            interactions.append(
+                {
+                    "type": interaction_type.replace("_", " ").title(),
+                    "color": color,
+                    "resn": prot_res.split(":")[0] if ":" in str(prot_res) else str(prot_res),
+                    "resi": 0,
+                    "chain": "A",
+                    "atom": "",
+                    "distance": None,
+                    "description": f"{interaction_type}: {prot_res}",
+                }
+            )
 
     logger.info(f"ProLIF detected {len(interactions)} interaction types")
     return interactions
@@ -273,6 +272,7 @@ def detect_interactions_prolif(
 # ─────────────────────────────────────────────────────────────────────────────
 # Unified interaction detection with cross-validation
 # ─────────────────────────────────────────────────────────────────────────────
+
 
 def detect_interactions(
     receptor_pdb: str,
@@ -296,7 +296,9 @@ def detect_interactions(
     prolif_intx: list[dict[str, Any]] = []
 
     if method not in ("plip", "prolif", "both"):
-        raise ValueError(f"Invalid interaction method: {method}. Choose 'plip', 'prolif', or 'both'.")
+        raise ValueError(
+            f"Invalid interaction method: {method}. Choose 'plip', 'prolif', or 'both'."
+        )
 
     if method in ("plip", "both"):
         try:

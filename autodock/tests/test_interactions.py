@@ -1,35 +1,39 @@
 """Tests for autodock.interactions — PLIP/ProLIF interaction detection."""
+
 from __future__ import annotations
 
-import os
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 import pytest
 
 from autodock import interactions as intx
 from autodock.core import VisualizationError
 
-
 # ─────────────────────────────────────────────────────────────────────────────
 # Complex PDB builder
 # ─────────────────────────────────────────────────────────────────────────────
+
 
 class TestBuildComplexPdb:
     def test_basic_merge(self, tmp_path):
         rec = tmp_path / "rec.pdb"
         rec.write_text("ATOM      1  N   SER A   1      0.000   0.000   0.000\nEND\n")
         lig = tmp_path / "lig.pdbqt"
-        lig.write_text("ATOM      1  C   LIG A   1      1.000   2.000   3.000  0.00  0.00    +0.000 C\n")
+        lig.write_text(
+            "ATOM      1  C   LIG A   1      1.000   2.000   3.000  0.00  0.00    +0.000 C\n"
+        )
         out = tmp_path / "complex.pdb"
         intx._build_complex_pdb(str(rec), str(lig), str(out))
         lines = out.read_text().splitlines()
-        assert any("SER" in l for l in lines)
-        assert any("HETATM" in l and "LIG" in l for l in lines)
+        assert any("SER" in line for line in lines)
+        assert any("HETATM" in line and "LIG" in line for line in lines)
         assert lines[-1] == "END"
 
     def test_skips_non_atom_lines(self, tmp_path):
         rec = tmp_path / "rec.pdb"
-        rec.write_text("REMARK   1\nATOM      1  N   SER A   1      0.000   0.000   0.000\nENDMDL\n")
+        rec.write_text(
+            "REMARK   1\nATOM      1  N   SER A   1      0.000   0.000   0.000\nENDMDL\n"
+        )
         lig = tmp_path / "lig.pdbqt"
         lig.write_text("REMARK 1\nATOM      1  C   LIG A   1      1.000   2.000   3.000\n")
         out = tmp_path / "complex.pdb"
@@ -44,6 +48,7 @@ class TestBuildComplexPdb:
 # ─────────────────────────────────────────────────────────────────────────────
 # Unified detect_interactions
 # ─────────────────────────────────────────────────────────────────────────────
+
 
 class TestDetectInteractions:
     @patch("autodock.interactions.detect_interactions_plip")
@@ -92,8 +97,18 @@ class TestDetectInteractions:
 # Interaction categories
 # ─────────────────────────────────────────────────────────────────────────────
 
+
 class TestInteractionCategories:
     def test_categories_cover_major_types(self):
         types = {cat[2] for cat in intx.INTERACTION_CATEGORIES}
-        expected = {"H-bond", "Hydrophobic", "π-π", "π-cation", "Salt bridge", "Halogen bond", "Water bridge", "Metal complex"}
+        expected = {
+            "H-bond",
+            "Hydrophobic",
+            "π-π",
+            "π-cation",
+            "Salt bridge",
+            "Halogen bond",
+            "Water bridge",
+            "Metal complex",
+        }
         assert expected.issubset(types)

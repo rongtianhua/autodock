@@ -1,8 +1,10 @@
 """
 autodock.__main__ — Entry point for `python -m autodock`.
 """
-from autodock.cli import main
+
 import sys
+
+from autodock.cli import main
 
 if __name__ == "__main__":
     sys.exit(main())

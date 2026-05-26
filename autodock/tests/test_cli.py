@@ -1,7 +1,6 @@
 """Tests for autodock.cli — argument parser and command dispatch."""
-from __future__ import annotations
 
-import pytest
+from __future__ import annotations
 
 from autodock import cli
 
@@ -18,12 +17,23 @@ class TestBuildParser:
 
     def test_dock_subcommand(self):
         parser = cli.build_parser()
-        args = parser.parse_args([
-            "dock", "rec.pdbqt", "lig.pdbqt",
-            "--center", "0", "0", "0",
-            "--box-size", "20", "20", "20",
-            "--seed", "42",
-        ])
+        args = parser.parse_args(
+            [
+                "dock",
+                "rec.pdbqt",
+                "lig.pdbqt",
+                "--center",
+                "0",
+                "0",
+                "0",
+                "--box-size",
+                "20",
+                "20",
+                "20",
+                "--seed",
+                "42",
+            ]
+        )
         assert args.command == "dock"
         assert args.receptor == "rec.pdbqt"
         assert args.seed == 42
@@ -43,22 +53,37 @@ class TestBuildParser:
 
     def test_virtual_screen_subcommand(self):
         parser = cli.build_parser()
-        args = parser.parse_args([
-            "virtual-screen", "--receptor", "6LU7",
-            "--library", "lib.txt", "--workers", "4",
-        ])
+        args = parser.parse_args(
+            [
+                "virtual-screen",
+                "--receptor",
+                "6LU7",
+                "--library",
+                "lib.txt",
+                "--workers",
+                "4",
+            ]
+        )
         assert args.command == "virtual-screen"
         assert args.workers == 4
 
     def test_batch_dock_subcommand(self):
         parser = cli.build_parser()
-        args = parser.parse_args([
-            "batch-dock",
-            "--receptors", "r1.pdbqt", "r2.pdbqt",
-            "--ligands", "l1.pdbqt", "l2.pdbqt",
-            "--pockets", "pockets.json",
-            "--seed", "42",
-        ])
+        args = parser.parse_args(
+            [
+                "batch-dock",
+                "--receptors",
+                "r1.pdbqt",
+                "r2.pdbqt",
+                "--ligands",
+                "l1.pdbqt",
+                "l2.pdbqt",
+                "--pockets",
+                "pockets.json",
+                "--seed",
+                "42",
+            ]
+        )
         assert args.command == "batch-dock"
         assert args.receptors == ["r1.pdbqt", "r2.pdbqt"]
         assert args.ligands == ["l1.pdbqt", "l2.pdbqt"]
@@ -66,9 +91,15 @@ class TestBuildParser:
 
     def test_run_subcommand(self):
         parser = cli.build_parser()
-        args = parser.parse_args([
-            "run", "--receptor", "6LU7", "--ligand", "aspirin",
-        ])
+        args = parser.parse_args(
+            [
+                "run",
+                "--receptor",
+                "6LU7",
+                "--ligand",
+                "aspirin",
+            ]
+        )
         assert args.command == "run"
         assert args.receptor == "6LU7"
 
@@ -76,9 +107,11 @@ class TestBuildParser:
 class TestSetupLogging:
     def test_quiet(self):
         import logging
+
         args = cli.build_parser().parse_args(["-q", "status"])
         cli._setup_logging(args)
         from autodock.core import autodock_logger
+
         # Stream handlers should be at WARNING
         for h in autodock_logger.handlers:
             if isinstance(h, logging.StreamHandler) and not isinstance(h, logging.FileHandler):
@@ -88,9 +121,11 @@ class TestSetupLogging:
 
     def test_verbose(self):
         import logging
+
         args = cli.build_parser().parse_args(["-v", "status"])
         cli._setup_logging(args)
         from autodock.core import autodock_logger
+
         for h in autodock_logger.handlers:
             if isinstance(h, logging.StreamHandler) and not isinstance(h, logging.FileHandler):
                 assert h.level == logging.DEBUG
@@ -116,6 +151,7 @@ class TestMain:
     def test_keyboard_interrupt(self, monkeypatch):
         def raise_interrupt(args):
             raise KeyboardInterrupt()
+
         monkeypatch.setattr(cli, "cmd_status", raise_interrupt)
         rc = cli.main(["status"])
         assert rc == 130

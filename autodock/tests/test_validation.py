@@ -1,19 +1,18 @@
 """Tests for autodock.validation — clash, RMSD, redocking validation."""
+
 from __future__ import annotations
 
-import os
 from unittest.mock import MagicMock, patch
 
 import numpy as np
 import pytest
 
 from autodock import validation as val
-from autodock.core import ValidationError
-
 
 # ─────────────────────────────────────────────────────────────────────────────
 # PoseBusters
 # ─────────────────────────────────────────────────────────────────────────────
+
 
 class TestPoseBusters:
     def test_not_available(self, tmp_path):
@@ -24,15 +23,23 @@ class TestPoseBusters:
     def test_pass(self, tmp_path):
         mock_pb = MagicMock()
         mock_result = MagicMock()
-        mock_result.columns = ["bond_lengths", "bond_angles", "aromatic_ring_flatness", "mol_pred_loaded"]
+        mock_result.columns = [
+            "bond_lengths",
+            "bond_angles",
+            "aromatic_ring_flatness",
+            "mol_pred_loaded",
+        ]
         # Build a mock DataFrame-like object with bool dtype columns
         import pandas as pd
-        df = pd.DataFrame({
-            "bond_lengths": [True],
-            "bond_angles": [True],
-            "aromatic_ring_flatness": [True],
-            "mol_pred_loaded": [True],
-        })
+
+        df = pd.DataFrame(
+            {
+                "bond_lengths": [True],
+                "bond_angles": [True],
+                "aromatic_ring_flatness": [True],
+                "mol_pred_loaded": [True],
+            }
+        )
         mock_pb.bust.return_value = df
 
         with patch("posebusters.PoseBusters", return_value=mock_pb):
@@ -45,7 +52,9 @@ class TestPoseBusters:
                     with patch("rdkit.Chem.AddHs", return_value=mock_mol):
                         with patch("rdkit.Chem.SDWriter") as mock_writer:
                             mock_writer.return_value = MagicMock()
-                            with patch("autodock.validation._sanitize_pdbqt_for_rdkit", return_value="ATOM"):
+                            with patch(
+                                "autodock.validation._sanitize_pdbqt_for_rdkit", return_value="ATOM"
+                            ):
                                 result = val.validate_pose_with_posebusters("pose.pdbqt", "rec.pdb")
         assert result["available"] is True
         assert result["pass"] is True
@@ -54,6 +63,7 @@ class TestPoseBusters:
 # ─────────────────────────────────────────────────────────────────────────────
 # Clash Detection
 # ─────────────────────────────────────────────────────────────────────────────
+
 
 class TestClashDetection:
     def test_empty_files(self, tmp_path):
@@ -91,6 +101,7 @@ class TestClashDetection:
 # RMSD
 # ─────────────────────────────────────────────────────────────────────────────
 
+
 class TestKabschRmsd:
     def test_identity(self):
         P = np.array([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]])
@@ -117,6 +128,7 @@ class TestComputeRmsdCoordinateBased:
     def test_same_molecule(self, tmp_path):
         from rdkit import Chem
         from rdkit.Chem import AllChem
+
         mol = Chem.MolFromSmiles("CCO")
         AllChem.EmbedMolecule(mol, randomSeed=42)
         block = Chem.MolToPDBBlock(mol)
@@ -139,6 +151,7 @@ class TestComputeRmsdToCrystal:
     def test_same_molecule(self, tmp_path):
         from rdkit import Chem
         from rdkit.Chem import AllChem
+
         mol = Chem.MolFromSmiles("CCO")
         AllChem.EmbedMolecule(mol, randomSeed=42)
         block = Chem.MolToPDBBlock(mol)
@@ -155,14 +168,24 @@ class TestComputeRmsdToCrystal:
 # Redocking Validation
 # ─────────────────────────────────────────────────────────────────────────────
 
+
 class TestRunRedockingValidation:
     @patch("autodock.docking.dock_ligand")
     @patch("autodock.preparation.prepare_receptor")
     @patch("autodock.preparation.prepare_ligand")
     @patch("autodock.preparation.find_top_pockets")
-    @patch("autodock.utils.extract_ligand_from_pdb")
+    @patch("autodock.validation.extract_ligand_from_pdb")
     @patch("autodock.validation.compute_rmsd_to_crystal")
-    def test_successful_redock(self, mock_rmsd, mock_extract, mock_pockets, mock_prep_lig, mock_prep_rec, mock_dock, tmp_path):
+    def test_successful_redock(
+        self,
+        mock_rmsd,
+        mock_extract,
+        mock_pockets,
+        mock_prep_lig,
+        mock_prep_rec,
+        mock_dock,
+        tmp_path,
+    ):
         holo = tmp_path / "holo.pdb"
         holo.write_text("ATOM 1 N SER A 1 0 0 0\nHETATM 2 C LIG A 2 1 1 1\n")
 
@@ -177,9 +200,13 @@ class TestRunRedockingValidation:
         mock_dock.return_value = mock_result
         mock_rmsd.return_value = 1.2
 
-        with patch("rdkit.Chem.MolToSmiles", return_value="CC"), \
-             patch("rdkit.Chem.rdmolfiles.MolToPDBFile"):
-            result = val.run_redocking_validation(str(holo), ligand_resname="LIG", output_dir=str(tmp_path / "out"))
+        with (
+            patch("rdkit.Chem.MolToSmiles", return_value="CC"),
+            patch("rdkit.Chem.rdmolfiles.MolToPDBFile"),
+        ):
+            result = val.run_redocking_validation(
+                str(holo), ligand_resname="LIG", output_dir=str(tmp_path / "out")
+            )
         assert result["success"] is True
         assert result["rmsd"] == pytest.approx(1.2)
         assert result["best_affinity"] == -8.0

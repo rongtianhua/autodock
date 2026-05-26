@@ -1,7 +1,8 @@
 """Tests for autodock.preparation — receptor/ligand prep and pocket detection."""
+
 from __future__ import annotations
 
-import os
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -9,10 +10,10 @@ import pytest
 from autodock import preparation as prep
 from autodock.core import PreparationError
 
-
 # ─────────────────────────────────────────────────────────────────────────────
 # Receptor Preparation
 # ─────────────────────────────────────────────────────────────────────────────
+
 
 class TestPrepareReceptor:
     def test_missing_file_raises(self):
@@ -41,16 +42,18 @@ class TestPrepareReceptor:
         mock_polymer = MagicMock()
         mock_templates = MagicMock()
         mock_mk = MagicMock()
-        with patch("meeko.ResidueChemTemplates") as mock_tmpl_cls, \
-             patch("meeko.MoleculePreparation") as mock_mk_cls, \
-             patch("meeko.Polymer") as mock_poly_cls, \
-             patch("meeko.PDBQTWriterLegacy") as mock_writer:
+        with (
+            patch("meeko.ResidueChemTemplates") as mock_tmpl_cls,
+            patch("meeko.MoleculePreparation") as mock_mk_cls,
+            patch("meeko.Polymer") as mock_poly_cls,
+            patch("meeko.PDBQTWriterLegacy") as mock_writer,
+        ):
             mock_tmpl_cls.create_from_defaults.return_value = mock_templates
             mock_mk_cls.return_value = mock_mk
             mock_poly_cls.from_pdb_string.return_value = mock_polymer
             mock_writer.write_from_polymer.return_value = ("REMARK  mock\nATOM 1 N", None)
 
-            result = prep.prepare_receptor(str(pdb), str(out), remove_water=True, remove_hetatms=True)
+            prep.prepare_receptor(str(pdb), str(out), remove_water=True, remove_hetatms=True)
             assert out.exists()
             content = out.read_text()
             assert "ATOM" in content
@@ -63,10 +66,12 @@ class TestPrepareReceptor:
             "ATOM      3  C   GLY A   3      2.000   2.000   2.000\n"
         )
         out = tmp_path / "rec.pdbqt"
-        with patch("meeko.ResidueChemTemplates"), \
-             patch("meeko.MoleculePreparation"), \
-             patch("meeko.Polymer") as mock_poly_cls, \
-             patch("meeko.PDBQTWriterLegacy") as mock_writer:
+        with (
+            patch("meeko.ResidueChemTemplates"),
+            patch("meeko.MoleculePreparation"),
+            patch("meeko.Polymer") as mock_poly_cls,
+            patch("meeko.PDBQTWriterLegacy") as mock_writer,
+        ):
             mock_poly_cls.from_pdb_string.return_value = MagicMock()
             mock_writer.write_from_polymer.return_value = ("REMARK\n", None)
             prep.prepare_receptor(str(pdb), str(out), keep_residues={"SER"})
@@ -77,6 +82,7 @@ class TestPrepareReceptor:
 # ─────────────────────────────────────────────────────────────────────────────
 # Ligand Preparation
 # ─────────────────────────────────────────────────────────────────────────────
+
 
 class TestPrepareLigand:
     def test_invalid_smiles_raises(self, tmp_path):
@@ -92,7 +98,18 @@ class TestPrepareLigand:
     @patch("rdkit.Chem.rdPartialCharges.ComputeGasteigerCharges")
     @patch("meeko.MoleculePreparation")
     @patch("meeko.PDBQTWriterLegacy")
-    def test_prepare_ligand_mock(self, mock_writer_cls, mock_mk_cls, mock_charges, mock_mmff, mock_embed, mock_etkdg, mock_addhs, mock_molfrom, tmp_path):
+    def test_prepare_ligand_mock(
+        self,
+        mock_writer_cls,
+        mock_mk_cls,
+        mock_charges,
+        mock_mmff,
+        mock_embed,
+        mock_etkdg,
+        mock_addhs,
+        mock_molfrom,
+        tmp_path,
+    ):
         mock_mol = MagicMock()
         mock_molfrom.return_value = mock_mol
         mock_addhs.return_value = mock_mol
@@ -125,9 +142,39 @@ class TestPrepareLigandConformers:
         assert seeds == [10, 11, 12, 13, 14]
 
 
+class TestPrepareLigandObabelFallback:
+    @patch("autodock.preparation.obabel_convert")
+    @patch("meeko.MoleculePreparation")
+    @patch("rdkit.Chem.rdPartialCharges.ComputeGasteigerCharges")
+    def test_meeko_charge_error_fallback_to_obabel(
+        self,
+        mock_charges,
+        mock_mk_cls,
+        mock_obabel,
+        tmp_path,
+    ):
+        """If Meeko raises a charge error, prepare_ligand falls back to Open Babel."""
+        mock_mk = MagicMock()
+        mock_mk_cls.return_value = mock_mk
+        mock_mk.prepare.side_effect = Exception("atom number 0 has non finite charge, charge: nan")
+
+        def obabel_side_effect(smi, out_pdbqt, **kwargs):
+            Path(out_pdbqt).write_text("REMARK  obabel\nATOM 1 C LIG\n")
+            return True
+
+        mock_obabel.side_effect = obabel_side_effect
+
+        out = tmp_path / "lig.pdbqt"
+        result = prep.prepare_ligand("CCO", str(out), name="LIG", seed=42)
+        assert out.exists()
+        assert "obabel" in out.read_text()
+        assert result == str(out.resolve())
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Pocket Detection helpers
 # ─────────────────────────────────────────────────────────────────────────────
+
 
 class TestComputeBoxSize:
     def test_basic(self):
@@ -197,7 +244,9 @@ class TestFindTopPockets:
         pdb = tmp_path / "rec.pdb"
         pdb.write_text("ATOM      1  N   SER A   1      0.000   0.000   0.000\n")
         lig = tmp_path / "lig.pdb"
-        lig.write_text("HETATM    1  C   LIG A   1      5.000   5.000   5.000  1.00  0.00           C\n")
+        lig.write_text(
+            "HETATM    1  C   LIG A   1      5.000   5.000   5.000  1.00  0.00           C\n"
+        )
 
         pockets = prep.find_top_pockets(str(pdb), ligand_pdb=str(lig))
         assert len(pockets) >= 1

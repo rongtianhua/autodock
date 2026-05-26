@@ -1,18 +1,18 @@
 """Tests for autodock.core — exceptions, logging, DockingResult, environment."""
+
 from __future__ import annotations
 
 import logging
 import os
-from dataclasses import fields
 
 import pytest
 
 from autodock import core
 
-
 # ─────────────────────────────────────────────────────────────────────────────
 # Exceptions
 # ─────────────────────────────────────────────────────────────────────────────
+
 
 class TestExceptions:
     def test_exception_hierarchy(self):
@@ -31,6 +31,7 @@ class TestExceptions:
 # Logging
 # ─────────────────────────────────────────────────────────────────────────────
 
+
 class TestLogging:
     def test_set_log_level_int(self):
         core.set_log_level(logging.DEBUG)
@@ -46,8 +47,13 @@ class TestLogging:
     def test_formatter_output(self):
         fmt = core._AutodockFormatter()
         rec = logging.LogRecord(
-            name="autodock", level=logging.INFO,
-            pathname="", lineno=0, msg="hello", args=(), exc_info=None,
+            name="autodock",
+            level=logging.INFO,
+            pathname="",
+            lineno=0,
+            msg="hello",
+            args=(),
+            exc_info=None,
         )
         assert fmt.format(rec) == "[autodock] I: hello"
 
@@ -55,6 +61,7 @@ class TestLogging:
         # Simulate unreadable home directory for logs
         def raise_oserror(*args, **kwargs):
             raise PermissionError("denied")
+
         monkeypatch.setattr(os, "makedirs", raise_oserror)
         # Re-import would trigger the except block; here we just assert no crash
         assert True
@@ -63,6 +70,7 @@ class TestLogging:
 # ─────────────────────────────────────────────────────────────────────────────
 # Seed helper
 # ─────────────────────────────────────────────────────────────────────────────
+
 
 class TestSeedHelper:
     def test_explicit_seed(self):
@@ -83,6 +91,7 @@ class TestSeedHelper:
 # Environment discovery
 # ─────────────────────────────────────────────────────────────────────────────
 
+
 class TestEnvironmentDiscovery:
     def test_find_conda_tool_python(self):
         path = core.find_conda_tool("python")
@@ -99,10 +108,24 @@ class TestEnvironmentDiscovery:
     def test_get_environment_status_keys(self):
         st = core.get_environment_status()
         expected = {
-            "conda_prefix", "python", "java", "vina_cli", "vina_python",
-            "rdkit", "meeko", "plip", "mdanalysis", "prolif", "openmm",
-            "openbabel", "pymol_cli", "pymol_import", "fpocket", "p2rank",
-            "gromacs", "timestamp",
+            "conda_prefix",
+            "python",
+            "java",
+            "vina_cli",
+            "vina_python",
+            "rdkit",
+            "meeko",
+            "plip",
+            "mdanalysis",
+            "prolif",
+            "openmm",
+            "openbabel",
+            "pymol_cli",
+            "pymol_import",
+            "fpocket",
+            "p2rank",
+            "gromacs",
+            "timestamp",
         }
         assert expected.issubset(set(st.keys()))
 
@@ -125,6 +148,7 @@ class TestEnvironmentDiscovery:
 # ─────────────────────────────────────────────────────────────────────────────
 # DockingResult
 # ─────────────────────────────────────────────────────────────────────────────
+
 
 class TestDockingResult:
     def test_basic_creation(self):
@@ -210,6 +234,7 @@ class TestDockingResult:
 
     def test_build_docking_result(self):
         import numpy as np
+
         r = core.build_docking_result(
             compound_name="test",
             receptor="rec.pdbqt",
@@ -225,6 +250,7 @@ class TestDockingResult:
 # ─────────────────────────────────────────────────────────────────────────────
 # Receptor source detection
 # ─────────────────────────────────────────────────────────────────────────────
+
 
 class TestDetectReceptorSource:
     def test_detect_alphafold(self, tmp_path):
