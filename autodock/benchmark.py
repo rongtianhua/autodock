@@ -182,7 +182,7 @@ def run_redocking_benchmark(
                         "family": target.get("family", "unknown"),
                     }
 
-    # Compile statistics
+    # Compile statistics (primary = minimized, when available)
     successes = [r for r in raw_results if r.get("success")]
     rmsds = [r["rmsd"] for r in successes if r.get("rmsd") is not None]
 
@@ -201,7 +201,27 @@ def run_redocking_benchmark(
         },
     }
 
-    # By family
+    # Raw (un-minimized) statistics for transparent comparison
+    raw_successes = [r for r in raw_results if r.get("success_raw")]
+    raw_rmsds = [r["rmsd_raw"] for r in raw_successes if r.get("rmsd_raw") is not None]
+    summary["n_success_raw"] = len(raw_successes)
+    summary["success_rate_raw"] = len(raw_successes) / len(targets) if targets else 0.0
+    summary["mean_rmsd_raw"] = float(np.mean(raw_rmsds)) if raw_rmsds else None
+    summary["median_rmsd_raw"] = float(np.median(raw_rmsds)) if raw_rmsds else None
+
+    # Minimization impact: rescued (raw fail → min pass) vs degraded (raw pass → min fail)
+    n_rescued = sum(
+        1 for r in raw_results
+        if not r.get("success_raw") and r.get("success")
+    )
+    n_degraded = sum(
+        1 for r in raw_results
+        if r.get("success_raw") and not r.get("success")
+    )
+    summary["n_rescued"] = n_rescued
+    summary["n_degraded"] = n_degraded
+
+    # By family (primary)
     by_family: dict[str, list[float]] = {}
     for r in raw_results:
         fam = r.get("family", "unknown")
@@ -210,12 +230,20 @@ def run_redocking_benchmark(
     family_stats = {}
     for fam, fam_rmsds in by_family.items():
         valid = [x for x in fam_rmsds if x is not None]
+        # Raw stats per family
+        fam_raw = [r for r in raw_results if r.get("family", "unknown") == fam]
+        fam_raw_successes = [r for r in fam_raw if r.get("success_raw")]
+        fam_raw_rmsds = [r["rmsd_raw"] for r in fam_raw_successes if r.get("rmsd_raw") is not None]
         family_stats[fam] = {
             "n_total": len(fam_rmsds),
             "n_success": len(valid),
             "success_rate": len(valid) / len(fam_rmsds) if fam_rmsds else 0.0,
             "mean_rmsd": float(np.mean(valid)) if valid else None,
             "median_rmsd": float(np.median(valid)) if valid else None,
+            "n_success_raw": len(fam_raw_successes),
+            "success_rate_raw": len(fam_raw_successes) / len(fam_rmsds) if fam_rmsds else 0.0,
+            "mean_rmsd_raw": float(np.mean(fam_raw_rmsds)) if fam_raw_rmsds else None,
+            "median_rmsd_raw": float(np.median(fam_raw_rmsds)) if fam_raw_rmsds else None,
         }
     summary["by_family"] = family_stats
     summary["per_target"] = raw_results
@@ -238,6 +266,8 @@ def run_redocking_benchmark(
                     "name": r.get("name", ""),
                     "success": r.get("success", False),
                     "rmsd": r.get("rmsd"),
+                    "success_raw": r.get("success_raw", False),
+                    "rmsd_raw": r.get("rmsd_raw"),
                     "best_rmsd": r.get("best_rmsd"),
                     "best_affinity": r.get("best_affinity"),
                     "error": r.get("error", ""),
@@ -252,13 +282,19 @@ def run_redocking_benchmark(
         summary["csv_path"] = None
 
     summary["json_path"] = json_path
-    logger.info(
+    msg = (
         f"Benchmark complete: {summary['n_success']}/{summary['n_total']} succeeded "
         f"({summary['success_rate']*100:.1f}%). "
-        f"Median RMSD: {summary['median_rmsd']:.2f} Å"
-        if summary["median_rmsd"]
-        else ""
     )
+    if minimize:
+        msg += (
+            f"Raw: {summary['n_success_raw']}/{summary['n_total']} "
+            f"({summary['success_rate_raw']*100:.1f}%). "
+            f"Rescued: {n_rescued}, Degraded: {n_degraded}. "
+        )
+    if summary["median_rmsd"] is not None:
+        msg += f"Median RMSD: {summary['median_rmsd']:.2f} Å"
+    logger.info(msg)
     return summary
 
 
@@ -448,6 +484,8 @@ def _run_single_benchmark(item: dict[str, Any]) -> dict[str, Any]:
             "name": name,
             "success": result.get("success", False),
             "rmsd": result.get("rmsd"),
+            "success_raw": result.get("success_raw", False),
+            "rmsd_raw": result.get("rmsd_raw"),
             "best_affinity": result.get("best_affinity"),
             "best_rmsd": result.get("best_rmsd"),
             "best_rmsd_pose_idx": result.get("best_rmsd_pose_idx"),
@@ -461,6 +499,8 @@ def _run_single_benchmark(item: dict[str, Any]) -> dict[str, Any]:
             "name": name,
             "success": False,
             "rmsd": None,
+            "success_raw": False,
+            "rmsd_raw": None,
             "error": str(exc),
         }
     except Exception as exc:
@@ -471,5 +511,7 @@ def _run_single_benchmark(item: dict[str, Any]) -> dict[str, Any]:
             "name": name,
             "success": False,
             "rmsd": None,
+            "success_raw": False,
+            "rmsd_raw": None,
             "error": str(exc),
         }

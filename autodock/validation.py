@@ -728,9 +728,20 @@ def run_redocking_validation(
                 f"Pose minimisation failed: {min_result.get('error', 'unknown')}"
             )
 
-    # ── 7. Compute RMSD ────────────────────────────────────────────────────
-    rmsd = compute_rmsd_to_crystal(minimized_pose_pdbqt, crystal_ligand_pdb)
-    success = rmsd is not None and rmsd < REDocking_RMSD_THRESHOLD
+    # ── 7. Compute RMSD (raw + optional minimized) ─────────────────────────
+    # Always compute raw RMSD from the un-minimized best pose for transparency
+    rmsd_raw = compute_rmsd_to_crystal(result.best_pose_pdbqt, crystal_ligand_pdb)
+    success_raw = rmsd_raw is not None and rmsd_raw < REDocking_RMSD_THRESHOLD
+
+    rmsd_min = None
+    success_min = None
+    if minimize:
+        rmsd_min = compute_rmsd_to_crystal(minimized_pose_pdbqt, crystal_ligand_pdb)
+        success_min = rmsd_min is not None and rmsd_min < REDocking_RMSD_THRESHOLD
+
+    # Primary reported rmsd/success: minimized when available, else raw
+    rmsd = rmsd_min if minimize else rmsd_raw
+    success = success_min if minimize else success_raw
 
     # Also compute best-achievable RMSD across all sampled poses
     best_rmsd = None
@@ -746,14 +757,25 @@ def run_redocking_validation(
             )
 
     rmsd_str = f"{rmsd:.2f} Å" if rmsd is not None else "N/A"
-    logger.info(
-        f"Redocking RMSD: {rmsd_str} — {'PASS' if success else 'FAIL'} "
-        f"(threshold: {REDocking_RMSD_THRESHOLD} Å)"
-    )
+    raw_str = f"{rmsd_raw:.2f} Å" if rmsd_raw is not None else "N/A"
+    if minimize and rmsd_min is not None:
+        logger.info(
+            f"Redocking RMSD: {raw_str} (raw) → {rmsd_str} (min) — "
+            f"{'PASS' if success else 'FAIL'} (threshold: {REDocking_RMSD_THRESHOLD} Å)"
+        )
+    else:
+        logger.info(
+            f"Redocking RMSD: {rmsd_str} — {'PASS' if success else 'FAIL'} "
+            f"(threshold: {REDocking_RMSD_THRESHOLD} Å)"
+        )
 
     return {
         "rmsd": rmsd,
+        "rmsd_raw": rmsd_raw,
+        "rmsd_min": rmsd_min,
         "success": success,
+        "success_raw": success_raw,
+        "success_min": success_min,
         "threshold": REDocking_RMSD_THRESHOLD,
         "best_affinity": result.best_affinity,
         "center": center,
