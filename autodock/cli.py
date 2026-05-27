@@ -98,6 +98,7 @@ def cmd_fetch(args: argparse.Namespace) -> int:
         print(f"✅ PubChem SMILES: {smiles}")
         if args.format == "sdf":
             import pubchempy as pcp
+
             compounds = pcp.get_compounds(fid, "name")
             if compounds:
                 path = os.path.join(outdir, f"{fid}.sdf")

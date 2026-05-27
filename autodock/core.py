@@ -555,7 +555,17 @@ class DockingResult:
     def to_dict(self) -> dict[str, Any]:
         d = asdict(self)
         # strip private cached fields
-        for key in ("_n_hbonds", "_n_pi_pi", "_n_pi_cation", "_n_hydrophobic", "_n_saltbridge", "_n_halogen", "_n_waterbridge", "_n_metal", "_interactions_computed"):
+        for key in (
+            "_n_hbonds",
+            "_n_pi_pi",
+            "_n_pi_cation",
+            "_n_hydrophobic",
+            "_n_saltbridge",
+            "_n_halogen",
+            "_n_waterbridge",
+            "_n_metal",
+            "_interactions_computed",
+        ):
             d.pop(key, None)
         if self.receptor_source:
             d["receptor_source_label"] = _RECEPTOR_SOURCE_LABELS.get(

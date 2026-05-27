@@ -142,17 +142,13 @@ def download_alphafold(
         data = _http_get_json(api_url, timeout=30)
     except urllib.error.HTTPError as exc:
         if exc.code == 404:
-            raise StructureFetchError(
-                f"AlphaFold DB has no entry for UniProt ID: {uniprot_id}"
-            )
+            raise StructureFetchError(f"AlphaFold DB has no entry for UniProt ID: {uniprot_id}")
         raise StructureFetchError(f"AlphaFold API error: {exc}")
     except Exception as exc:
         raise StructureFetchError(f"AlphaFold API request failed: {exc}")
 
     if not isinstance(data, list) or len(data) == 0:
-        raise StructureFetchError(
-            f"AlphaFold API returned empty result for {uniprot_id}"
-        )
+        raise StructureFetchError(f"AlphaFold API returned empty result for {uniprot_id}")
 
     entry = data[0]
     fmt = format.lower()
@@ -173,9 +169,7 @@ def download_alphafold(
     out_path = os.path.join(output_dir, f"AF-{uniprot_id}-F1{ext}")
     ensure_dir(output_dir)
     _download_url(file_url, out_path)
-    logger.info(
-        f"Downloaded AlphaFold ({fmt}, pLDDT={entry.get('globalMetricValue')}): {out_path}"
-    )
+    logger.info(f"Downloaded AlphaFold ({fmt}, pLDDT={entry.get('globalMetricValue')}): {out_path}")
     return out_path
 
 
@@ -214,9 +208,7 @@ def download_swissmodel(
         header = fh.read(200)
     if b"<!DOCTYPE" in header or b"<html" in header:
         os.remove(out_path)
-        raise StructureFetchError(
-            f"No SWISS-MODEL structure available for {uniprot_id}"
-        )
+        raise StructureFetchError(f"No SWISS-MODEL structure available for {uniprot_id}")
 
     logger.info(f"Downloaded SWISS-MODEL: {out_path}")
     return out_path
@@ -488,7 +480,6 @@ def read_sdf_library(path: str) -> dict[str, str]:
         Molecules that cannot be converted are silently skipped.
     """
     from rdkit import Chem
-    from rdkit.Chem import Descriptors
 
     results: dict[str, str] = {}
     supplier = Chem.SDMolSupplier(str(path))

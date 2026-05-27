@@ -9,13 +9,11 @@ be only slightly higher in energy but biologically relevant.
 
 from __future__ import annotations
 
-import os
 from typing import Any
 
 import numpy as np
 
 from autodock.core import logger
-
 
 # Optional RDKit dependency (probed at import time)
 try:
@@ -216,7 +214,6 @@ def cluster_poses(
     # Sort clusters by representative energy (best first)
     clusters.sort(key=lambda c: c["representative_energy"])
     logger.info(
-        f"Pose clustering: {n} poses → {len(clusters)} clusters "
-        f"(threshold={rmsd_threshold} Å)"
+        f"Pose clustering: {n} poses → {len(clusters)} clusters " f"(threshold={rmsd_threshold} Å)"
     )
     return clusters

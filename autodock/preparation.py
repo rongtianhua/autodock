@@ -498,7 +498,7 @@ def _generate_multi_conformers(
             f"No clustering occurred ({len(cids)} clusters) — "
             f"falling back to top {min(len(cids), 10)} lowest-energy conformers"
         )
-        representatives = sorted_cids[:min(len(cids), 10)]
+        representatives = sorted_cids[: min(len(cids), 10)]
 
     logger.debug(
         f"Conformer clustering: {len(cids)} generated → "
@@ -701,7 +701,9 @@ def prepare_ligand_adaptive(
 
     if n_heavy > 45:
         effective_max_reps = min(effective_max_reps, 2)
-        logger.info(f"Large ligand ({n_heavy} heavy atoms) — capping representatives to {effective_max_reps}")
+        logger.info(
+            f"Large ligand ({n_heavy} heavy atoms) — capping representatives to {effective_max_reps}"
+        )
 
     return prepare_ligand_multi(
         smiles,

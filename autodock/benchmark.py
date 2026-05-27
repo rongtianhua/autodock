@@ -79,20 +79,20 @@ DEFAULT_BENCHMARK_TARGETS: list[dict[str, Any]] = [
 #
 HARD_TARGET_OVERRIDES: dict[str, dict[str, Any]] = {
     "1GWX": {
-        "exhaustiveness": 16,       # prevent combinatorial explosion
-        "box_padding": 8.0,         # accommodate Y-shaped pocket
+        "exhaustiveness": 16,  # prevent combinatorial explosion
+        "box_padding": 8.0,  # accommodate Y-shaped pocket
         "ligand_strategy": "simple",  # force single conformer (avoid hang)
         "_note": "PPARγ Y-pocket: Vina scoring minima ≠ crystal pose",
     },
     "1T46": {
-        "exhaustiveness": 64,       # more sampling for 5-ring system
+        "exhaustiveness": 64,  # more sampling for 5-ring system
         "box_padding": 6.0,
         "ligand_strategy": "simple",
         "_note": "HIV-RT NNRTI: flexible pocket, ring conformation mismatch",
     },
     "1H22": {
         "exhaustiveness": 32,
-        "box_padding": 8.0,         # spacious cavity
+        "box_padding": 8.0,  # spacious cavity
         "ligand_strategy": "simple",
         "_note": "PDE5: alkyl chain folds in crystal; Vina prefers extended",
     },

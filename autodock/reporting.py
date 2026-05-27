@@ -188,12 +188,14 @@ def generate_pdf_report(
         story.append(Paragraph("<b>Pose Clusters</b>", styles["Heading2"]))
         cluster_data = [["Cluster", "Rep. energy (kcal/mol)", "Size", "RMSD threshold (Å)"]]
         for i, c in enumerate(result.pose_clusters[:5], 1):
-            cluster_data.append([
-                str(i),
-                f"{c.get('representative_energy', 0):.3f}",
-                str(c.get('size', 0)),
-                f"{result.rmsd_clustering_threshold:.1f}",
-            ])
+            cluster_data.append(
+                [
+                    str(i),
+                    f"{c.get('representative_energy', 0):.3f}",
+                    str(c.get("size", 0)),
+                    f"{result.rmsd_clustering_threshold:.1f}",
+                ]
+            )
         cl_table = Table(cluster_data, colWidths=[3 * cm, 5 * cm, 3 * cm, 5 * cm])
         cl_table.setStyle(
             TableStyle(
@@ -247,11 +249,17 @@ def generate_pdf_report(
         story.append(Paragraph("<i>Top interactions</i>", styles["Normal"]))
         detail_data = [["Type", "Residue", "Distance (Å)"]]
         for inter in result.interactions[:10]:
-            detail_data.append([
-                inter.get("type", ""),
-                f"{inter.get('resn', '')}{inter.get('resi', '')}.{inter.get('chain', '')}",
-                f"{inter.get('distance', 0):.2f}" if inter.get("distance") is not None else "N/A",
-            ])
+            detail_data.append(
+                [
+                    inter.get("type", ""),
+                    f"{inter.get('resn', '')}{inter.get('resi', '')}.{inter.get('chain', '')}",
+                    (
+                        f"{inter.get('distance', 0):.2f}"
+                        if inter.get("distance") is not None
+                        else "N/A"
+                    ),
+                ]
+            )
         det_table = Table(detail_data, colWidths=[5 * cm, 6 * cm, 5 * cm])
         det_table.setStyle(
             TableStyle(

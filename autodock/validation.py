@@ -554,16 +554,12 @@ def run_redocking_validation(
     if crystal_smiles is None:
         raise ValidationError("No SMILES available for ligand preparation")
 
-    ligand_prep_result = prepare_ligand_adaptive(
-        crystal_smiles, output_dir, name="LIG", seed=seed
-    )
+    ligand_prep_result = prepare_ligand_adaptive(crystal_smiles, output_dir, name="LIG", seed=seed)
     use_multi = isinstance(ligand_prep_result, list)
     if use_multi:
         conformer_pdbqts = ligand_prep_result
         ligand_pdbqt = conformer_pdbqts[0]  # reference path for results
-        logger.info(
-            f"Adaptive prep returned {len(conformer_pdbqts)} conformer(s)"
-        )
+        logger.info(f"Adaptive prep returned {len(conformer_pdbqts)} conformer(s)")
     else:
         ligand_pdbqt = ligand_prep_result
         conformer_pdbqts = None

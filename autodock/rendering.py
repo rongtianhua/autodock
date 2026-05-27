@@ -422,12 +422,12 @@ def render_interactions_2d(
     def _load_font(size: int):
         """Cross-platform font loader with sensible fallbacks."""
         candidates = [
-            "/System/Library/Fonts/Helvetica.ttc",      # macOS
+            "/System/Library/Fonts/Helvetica.ttc",  # macOS
             "/System/Library/Fonts/HelveticaNeue.ttc",  # macOS alt
             "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",  # Linux
-            "/usr/share/fonts/TTF/DejaVuSans.ttf",      # Linux alt
-            "C:/Windows/Fonts/arial.ttf",               # Windows
-            "C:/Windows/Fonts/segoeui.ttf",             # Windows alt
+            "/usr/share/fonts/TTF/DejaVuSans.ttf",  # Linux alt
+            "C:/Windows/Fonts/arial.ttf",  # Windows
+            "C:/Windows/Fonts/segoeui.ttf",  # Windows alt
         ]
         for path in candidates:
             if os.path.isfile(path):

@@ -241,9 +241,7 @@ def _run_vina_dock(
         )
 
     if p.exitcode != 0:
-        raise DockingCalculationError(
-            f"Docking subprocess exited with code {p.exitcode}"
-        )
+        raise DockingCalculationError(f"Docking subprocess exited with code {p.exitcode}")
 
     try:
         status, payload1, payload2 = result_queue.get(timeout=30)
@@ -277,9 +275,9 @@ def _score_pose_with_sf(
         with open(pose_pdbqt) as fh:
             lines = fh.readlines()
         clean_lines = [
-            line for line in lines
-            if not line.startswith(("MODEL", "ENDMDL"))
-            and not line.strip().isdigit()
+            line
+            for line in lines
+            if not line.startswith(("MODEL", "ENDMDL")) and not line.strip().isdigit()
         ]
         import tempfile
 
@@ -688,16 +686,21 @@ def dock_ligand_multi_conformer(
         # Sequential fallback
         for item in work_items:
             pool, ok = _dock_conformer_core(
-                item[0], item[1], item[2], item[3], item[4],
-                item[5], item[6], item[7], item[8],
+                item[0],
+                item[1],
+                item[2],
+                item[3],
+                item[4],
+                item[5],
+                item[6],
+                item[7],
+                item[8],
             )
             all_poses_pool.extend(pool)
             n_success += ok
             if ok:
                 best_e = min(e for e, _ in pool)
-                logger.debug(
-                    f"Conformer done: {len(pool)} poses, best={best_e:.2f} kcal/mol"
-                )
+                logger.debug(f"Conformer done: {len(pool)} poses, best={best_e:.2f} kcal/mol")
 
     if not all_poses_pool:
         raise DockingCalculationError("All conformers failed to dock.")

@@ -4,15 +4,13 @@ Tests for autodock.fetchers — structure and compound database fetchers.
 
 from __future__ import annotations
 
-import json
 import os
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 import pytest
 
 from autodock import fetchers
 from autodock.core import DataSourceError, StructureFetchError
-
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Receptor fetchers (mocked)
@@ -71,9 +69,7 @@ class TestDownloadAlphaFold:
     def test_not_found(self, mock_json, tmp_path):
         import urllib.error
 
-        mock_json.side_effect = urllib.error.HTTPError(
-            "url", 404, "Not Found", {}, None
-        )
+        mock_json.side_effect = urllib.error.HTTPError("url", 404, "Not Found", {}, None)
         with pytest.raises(StructureFetchError, match="no entry for UniProt ID"):
             fetchers.download_alphafold("P68871", str(tmp_path))
 
@@ -135,9 +131,7 @@ class TestFetchUniProtFASTA:
 class TestFetchPubChemSMILES:
     @patch("autodock.fetchers._http_get_json")
     def test_via_rest(self, mock_json):
-        mock_json.return_value = {
-            "PropertyTable": {"Properties": [{"CanonicalSMILES": "CC(=O)O"}]}
-        }
+        mock_json.return_value = {"PropertyTable": {"Properties": [{"CanonicalSMILES": "CC(=O)O"}]}}
         # Patch pubchempy so we exercise the REST fallback path
         with patch.dict("sys.modules", {"pubchempy": None}):
             smi = fetchers.fetch_pubchem_smiles("aspirin")
