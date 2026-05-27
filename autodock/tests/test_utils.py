@@ -118,8 +118,9 @@ class TestSanitizePdbqtForRdkit:
     def test_fixes_g_atom_name(self, tmp_path):
         """Atom name 'G' triggers RDKit 'Element G not found' — must be remapped."""
         pdbqt = tmp_path / "test.pdbqt"
+        # Use type 'C' (not 'G0') so the atom is kept and renamed
         pdbqt.write_text(
-            "ATOM      1  G   UNL     1       0.000   0.000   0.000  1.00  0.00     0.000 G0\n"
+            "ATOM      1  G   UNL     1       0.000   0.000   0.000  1.00  0.00     0.000 C\n"
         )
         block = utils._sanitize_pdbqt_for_rdkit(str(pdbqt))
         line = block.strip()
@@ -127,6 +128,18 @@ class TestSanitizePdbqtForRdkit:
         assert line[12:16] == " C  "
         # element column should be C at 0-based position 76-77
         assert line[76:78].strip() == "C"
+
+    def test_skips_g0_ghost_atoms(self, tmp_path):
+        """Ghost atoms (name 'G' + type 'G0') must be skipped entirely."""
+        pdbqt = tmp_path / "test.pdbqt"
+        pdbqt.write_text(
+            "ATOM      1  G   UNL     1       0.000   0.000   0.000  1.00  0.00     0.000 G0\n"
+            "ATOM      2  C   UNL     1       1.000   1.000   1.000  1.00  0.00     0.000 C\n"
+        )
+        block = utils._sanitize_pdbqt_for_rdkit(str(pdbqt))
+        lines = block.strip().splitlines()
+        assert len(lines) == 1
+        assert lines[0][12:16].strip() == "C"
 
     @pytest.mark.skipif(
         not __import__("autodock.core", fromlist=["_HAVE_RDKIT"])._HAVE_RDKIT,

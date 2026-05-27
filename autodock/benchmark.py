@@ -43,7 +43,7 @@ DEFAULT_BENCHMARK_TARGETS: list[dict[str, Any]] = [
     {"pdb_id": "1GWX", "family": "nuclear_receptor", "name": "PPARγ"},
     {"pdb_id": "2P54", "family": "nuclear_receptor", "name": "AR"},
     # Other enzymes
-    {"pdb_id": "1D4K", "family": "enzyme", "name": "HMGR"},
+    {"pdb_id": "1D4K", "family": "enzyme", "name": "HMGR", "ligand_resname": "PI8"},
     {"pdb_id": "1E1V", "family": "enzyme", "name": "DHFR"},
     {"pdb_id": "1F0R", "family": "enzyme", "name": "COX-2"},
     {"pdb_id": "1T46", "family": "enzyme", "name": "HIV-RT"},
@@ -107,6 +107,7 @@ def run_redocking_benchmark(
     seed: int = 42,
     n_workers: int = 1,
     skip_consensus: bool = True,
+    minimize: bool = True,
 ) -> dict[str, Any]:
     """
     Run redocking validation on a benchmark set and compile statistics.
@@ -119,6 +120,8 @@ def run_redocking_benchmark(
         seed: Random seed for reproducibility.
         n_workers: Parallel workers (-1 = all CPU cores).
         skip_consensus: Skip Vinardo consensus scoring for speed (default True for benchmarks).
+        minimize: If True (default), run OpenMM ligand-only energy minimisation
+            on each best pose before RMSD evaluation.
 
     Returns:
         Summary dict with:
@@ -143,6 +146,7 @@ def run_redocking_benchmark(
                 "n_poses": n_poses,
                 "seed": seed,
                 "skip_consensus": skip_consensus,
+                "minimize": minimize,
             }
         )
 
@@ -422,6 +426,7 @@ def _run_single_benchmark(item: dict[str, Any]) -> dict[str, Any]:
         "box_padding": item.get("box_padding", 5.0),
         "skip_consensus": item.get("skip_consensus", True),
         "ligand_strategy": item.get("ligand_strategy"),
+        "minimize": item.get("minimize", False),
     }
     if pdb_id in HARD_TARGET_OVERRIDES:
         overrides = HARD_TARGET_OVERRIDES[pdb_id].copy()

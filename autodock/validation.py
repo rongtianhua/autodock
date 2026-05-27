@@ -286,10 +286,11 @@ def _kabsch_rmsd(P: np.ndarray, Q: np.ndarray) -> float:
     Qc = Q - Q_mean
     H = Pc.T @ Qc
     U, S, Vt = np.linalg.svd(H)
-    R = Vt.T @ U.T
+    # For the objective ||Pc @ R - Qc||^2, the optimal rotation is U @ Vt
+    R = U @ Vt
     if np.linalg.det(R) < 0:
         Vt[-1, :] *= -1
-        R = Vt.T @ U.T
+        R = U @ Vt
     Pr = Pc @ R
     return float(np.sqrt(np.mean(np.sum((Pr - Qc) ** 2, axis=1))))
 
@@ -386,7 +387,7 @@ def compute_rmsd_to_crystal(
     coordinate-based Hungarian/Kabsch method if atom ordering differs.
 
     Args:
-        docked_pdbqt: Docked ligand PDBQT.
+        docked_pdbqt: Docked ligand PDBQT (or PDB file if path ends with .pdb).
         crystal_ligand_pdb: Crystal ligand PDB (extracted from holo structure).
 
     Returns:
@@ -398,9 +399,13 @@ def compute_rmsd_to_crystal(
     from rdkit import Chem
     from rdkit.Chem import AllChem
 
-    # Parse docked pose (sanitize AutoDock atom types for RDKit)
-    docked_pdb_block = _sanitize_pdbqt_for_rdkit(docked_pdbqt)
-    docked_mol = Chem.MolFromPDBBlock(docked_pdb_block, removeHs=True)
+    # Parse docked pose
+    if docked_pdbqt.lower().endswith(".pdb"):
+        docked_mol = Chem.MolFromPDBFile(docked_pdbqt, removeHs=True)
+    else:
+        docked_pdb_block = _sanitize_pdbqt_for_rdkit(docked_pdbqt)
+        docked_mol = Chem.MolFromPDBBlock(docked_pdb_block, removeHs=True)
+
     crystal_mol = Chem.MolFromPDBFile(crystal_ligand_pdb, removeHs=True)
 
     if docked_mol is None or crystal_mol is None:
@@ -493,6 +498,7 @@ def run_redocking_validation(
     box_padding: float = 5.0,
     ligand_strategy: str | None = None,
     skip_consensus: bool = False,
+    minimize: bool = False,
 ) -> dict[str, Any]:
     """
     Validate docking protocol by redocking the co-crystallized ligand.
@@ -508,7 +514,8 @@ def run_redocking_validation(
       3. Prepare extracted ligand
       4. Define box from crystal ligand geometry
       5. Dock
-      6. Compute RMSD between top pose and crystal
+      6. (Optional) OpenMM energy-minimise the best pose
+      7. Compute RMSD between top pose and crystal
 
     Args:
         holo_pdb: PDB file containing protein-ligand complex.
@@ -522,6 +529,9 @@ def run_redocking_validation(
         output_dir: Working directory.
         box_padding: Extra padding (Å) around crystal ligand bounding box.
         skip_consensus: If True, skip Vinardo consensus scoring (faster for benchmarks).
+        minimize: If True, run OpenMM ligand-only energy minimisation on the
+            best pose before RMSD evaluation.  This can rescue scoring failures
+            by improving local geometry and hydrogen placement.
 
     Returns:
         Dict with rmsd, success flag, energies, and file paths.
@@ -595,6 +605,20 @@ def run_redocking_validation(
                 continue
             if ligand_resname and line.startswith("HETATM") and ligand_resname in line[17:20]:
                 continue
+            # Remove all other HETATM (crystallographic additives, alternate ligands,
+            # detergents, etc.) to ensure a clean apo receptor.
+            # Retain common physiologically relevant metal ions and cofactors.
+            if line.startswith("HETATM"):
+                if res_name not in {
+                    # Metal ions
+                    "NA", "K", "CA", "MG", "ZN", "FE", "MN", "CO", "CU", "NI",
+                    "CL", "BR", "IOD", "F",
+                    # Common cofactors (minimal set)
+                    "HEM", "FAD", "NAD", "NAP", "SAM", "ATP", "ADP", "AMP",
+                    # Sulfate, phosphate
+                    "SO4", "PO4", "GOL",
+                }:
+                    continue
             filtered.append(line)
         elif line.startswith("CONECT"):
             # Skip CONECTs involving removed atoms (optional simplification)
@@ -676,8 +700,36 @@ def run_redocking_validation(
             skip_consensus=skip_consensus,
         )
 
-    # ── 6. Compute RMSD ────────────────────────────────────────────────────
-    rmsd = compute_rmsd_to_crystal(result.best_pose_pdbqt, crystal_ligand_pdb)
+    # ── 6. Optional OpenMM energy minimisation ─────────────────────────────
+    minimized_pose_pdbqt = result.best_pose_pdbqt
+    if minimize:
+        from autodock.minimization import minimize_docked_pose
+
+        ligand_sdf_path = None
+        if ligand_resname:
+            ligand_sdf_path = os.path.join(output_dir, "crystal_ligand.sdf")
+
+        min_result = minimize_docked_pose(
+            receptor_pdb=apo_pdb,
+            ligand_pdbqt=result.best_pose_pdbqt,
+            ligand_smiles=crystal_smiles,
+            ligand_sdf=ligand_sdf_path if ligand_sdf_path and os.path.isfile(ligand_sdf_path) else None,
+            output_pdb=os.path.join(output_dir, "docking_best_minimized.pdb"),
+            max_iterations=500,
+        )
+        if min_result["success"]:
+            minimized_pose_pdbqt = min_result["output_pdb"]
+            logger.info(
+                f"Minimised best pose: {min_result['initial_energy_kJ_mol']:.1f} → "
+                f"{min_result['final_energy_kJ_mol']:.1f} kJ/mol"
+            )
+        else:
+            logger.warning(
+                f"Pose minimisation failed: {min_result.get('error', 'unknown')}"
+            )
+
+    # ── 7. Compute RMSD ────────────────────────────────────────────────────
+    rmsd = compute_rmsd_to_crystal(minimized_pose_pdbqt, crystal_ligand_pdb)
     success = rmsd is not None and rmsd < REDocking_RMSD_THRESHOLD
 
     # Also compute best-achievable RMSD across all sampled poses
@@ -709,6 +761,7 @@ def run_redocking_validation(
         "apo_receptor": receptor_pdbqt,
         "ligand": ligand_pdbqt,
         "best_pose": result.best_pose_pdbqt,
+        "minimized_pose": minimized_pose_pdbqt if minimize else None,
         "crystal_ligand": crystal_ligand_pdb,
         "best_rmsd": best_rmsd,
         "best_rmsd_pose_idx": best_rmsd_pose_idx,

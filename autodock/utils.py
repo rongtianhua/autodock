@@ -259,11 +259,17 @@ def _sanitize_pdbqt_for_rdkit(pdbqt_path: str) -> str:
             ad_type = line[77:].strip().split()[0] if len(line) > 77 else ""
             elem = _AD4_ELEMENT_MAP.get(ad_type, ad_type)
 
+            # Skip ghost/virtual atoms added by some AutoDock preparation tools
+            # (atom name "G" with type "G0" — these duplicate real carbons and
+            # break substructure matching in post-processing).
+            atom_name = line[12:16].strip() if len(line) > 15 else ""
+            if atom_name == "G" and ad_type == "G0":
+                continue
+
             # Strip trailing whitespace / newline so we can rebuild the line
             stripped = line.rstrip("\n\r")
 
             # Fix atom name (cols 13-16 = 0-based 12-15) if RDKit would choke on it
-            atom_name = stripped[12:16].strip() if len(stripped) > 15 else ""
             if atom_name == "G":
                 stripped = stripped[:12] + " C  " + stripped[16:]
 
