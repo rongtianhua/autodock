@@ -738,6 +738,14 @@ def dock_ligand_multi_conformer(
     with open(best_pose_path, "w") as fh:
         fh.write(best_clean)
 
+    # Persist all poses for best-achievable RMSD analysis
+    all_poses_path = os.path.join(out_dir, "all_poses.pdbqt")
+    with open(all_poses_path, "w") as fh:
+        for i, pose in enumerate(all_poses, start=1):
+            fh.write(f"MODEL {i}\n")
+            fh.write(pose.replace("MODEL ", "").replace("ENDMDL", "").strip())
+            fh.write("\nENDMDL\n")
+
     # Persist cluster representatives
     if clusters:
         for i, cluster in enumerate(clusters[:5], 1):
@@ -769,6 +777,7 @@ def dock_ligand_multi_conformer(
         all_scores=all_scores,
         consensus_affinity=consensus,
         best_pose_pdbqt=best_pose_path,
+        all_poses_pdbqt=all_poses_path,
         output_dir=out_dir,
         pose_clusters=clusters,
         n_clusters=len(clusters),

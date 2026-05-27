@@ -234,6 +234,7 @@ def run_redocking_benchmark(
                     "name": r.get("name", ""),
                     "success": r.get("success", False),
                     "rmsd": r.get("rmsd"),
+                    "best_rmsd": r.get("best_rmsd"),
                     "best_affinity": r.get("best_affinity"),
                     "error": r.get("error", ""),
                 }
@@ -443,6 +444,8 @@ def _run_single_benchmark(item: dict[str, Any]) -> dict[str, Any]:
             "success": result.get("success", False),
             "rmsd": result.get("rmsd"),
             "best_affinity": result.get("best_affinity"),
+            "best_rmsd": result.get("best_rmsd"),
+            "best_rmsd_pose_idx": result.get("best_rmsd_pose_idx"),
             "threshold": result.get("threshold"),
         }
     except ValidationError as exc:

@@ -418,6 +418,64 @@ def compute_rmsd_to_crystal(
     return compute_rmsd_coordinate_based(docked_pdbqt, crystal_ligand_pdb)
 
 
+def compute_best_rmsd_from_all_poses(
+    all_poses_pdbqt: str,
+    crystal_ligand_pdb: str,
+) -> tuple[float | None, int]:
+    """
+    Compute the best (lowest) RMSD among all poses in a multi-MODEL PDBQT.
+
+    Args:
+        all_poses_pdbqt: PDBQT file containing multiple MODEL poses.
+        crystal_ligand_pdb: Crystal ligand PDB reference.
+
+    Returns:
+        (best_rmsd, best_pose_index) where best_pose_index is 1-based.
+        Returns (None, -1) if no poses could be evaluated.
+    """
+    if not _HAVE_RDKIT or not os.path.isfile(all_poses_pdbqt):
+        return None, -1
+
+    import re
+
+    with open(all_poses_pdbqt) as fh:
+        content = fh.read()
+
+    # Split on MODEL lines
+    models = re.split(r"MODEL\s+\d+\n", content)
+    if len(models) <= 1:
+        # Single pose — compute directly
+        rmsd = compute_rmsd_to_crystal(all_poses_pdbqt, crystal_ligand_pdb)
+        return (rmsd, 1) if rmsd is not None else (None, -1)
+
+    best_rmsd = float("inf")
+    best_idx = -1
+
+    for idx, model_block in enumerate(models[1:], start=1):
+        model_block = model_block.split("ENDMDL")[0]
+        if not model_block.strip():
+            continue
+
+        # Write temporary single-pose PDBQT
+        tmp = tempfile.NamedTemporaryFile(mode="w", suffix=".pdbqt", delete=False)
+        tmp.write("MODEL\n")
+        tmp.write(model_block)
+        tmp.write("ENDMDL\n")
+        tmp.close()
+
+        try:
+            rmsd = compute_rmsd_to_crystal(tmp.name, crystal_ligand_pdb)
+            if rmsd is not None and rmsd < best_rmsd:
+                best_rmsd = rmsd
+                best_idx = idx
+        finally:
+            os.unlink(tmp.name)
+
+    if best_idx == -1:
+        return None, -1
+    return float(best_rmsd), best_idx
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Redocking Validation
 # ─────────────────────────────────────────────────────────────────────────────
@@ -622,6 +680,19 @@ def run_redocking_validation(
     rmsd = compute_rmsd_to_crystal(result.best_pose_pdbqt, crystal_ligand_pdb)
     success = rmsd is not None and rmsd < REDocking_RMSD_THRESHOLD
 
+    # Also compute best-achievable RMSD across all sampled poses
+    best_rmsd = None
+    best_rmsd_pose_idx = None
+    if result.all_poses_pdbqt and os.path.isfile(result.all_poses_pdbqt):
+        best_rmsd, best_rmsd_pose_idx = compute_best_rmsd_from_all_poses(
+            result.all_poses_pdbqt, crystal_ligand_pdb
+        )
+        if best_rmsd is not None:
+            logger.info(
+                f"Redocking best-achievable RMSD: {best_rmsd:.2f} Å "
+                f"(pose #{best_rmsd_pose_idx})"
+            )
+
     rmsd_str = f"{rmsd:.2f} Å" if rmsd is not None else "N/A"
     logger.info(
         f"Redocking RMSD: {rmsd_str} — {'PASS' if success else 'FAIL'} "
@@ -639,4 +710,6 @@ def run_redocking_validation(
         "ligand": ligand_pdbqt,
         "best_pose": result.best_pose_pdbqt,
         "crystal_ligand": crystal_ligand_pdb,
+        "best_rmsd": best_rmsd,
+        "best_rmsd_pose_idx": best_rmsd_pose_idx,
     }

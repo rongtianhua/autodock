@@ -203,9 +203,32 @@ _AD4_ELEMENT_MAP = {
     "Co": "Co",
     "Ni": "Ni",
     "Se": "Se",
-    # Open Babel sometimes emits G0 for unrecognized atoms (usually carbon)
+    # Open Babel sometimes emits G0 / *G0 for unrecognized atoms (usually carbon)
     "G": "C",
     "G0": "C",
+    "CG0": "C",
+    "NG0": "N",
+    "OG0": "O",
+    "SG0": "S",
+    "HG0": "H",
+    "FG0": "F",
+    "CL0": "Cl",
+    "Cl0": "Cl",
+    "BR0": "Br",
+    "Br0": "Br",
+    "IG0": "I",
+    "PG0": "P",
+    "MG0": "Mg",
+    "CA0": "Ca",
+    "MN0": "Mn",
+    "FE0": "Fe",
+    "ZN0": "Zn",
+    "NA0": "Na",
+    "KU0": "K",
+    "CU0": "Cu",
+    "CO0": "Co",
+    "NI0": "Ni",
+    "SE0": "Se",
 }
 
 
@@ -232,7 +255,8 @@ def _sanitize_pdbqt_for_rdkit(pdbqt_path: str) -> str:
             if not line.startswith(("ATOM  ", "HETATM")):
                 continue
             # Read AutoDock atom type from the PDBQT extension position
-            ad_type = line[77:79].strip() if len(line) > 78 else ""
+            # (may be 1-3 chars depending on the generator; e.g. G0, CG0, Cl0)
+            ad_type = line[77:].strip().split()[0] if len(line) > 77 else ""
             elem = _AD4_ELEMENT_MAP.get(ad_type, ad_type)
 
             # Strip trailing whitespace / newline so we can rebuild the line
