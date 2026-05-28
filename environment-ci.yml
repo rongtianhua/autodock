@@ -31,3 +31,4 @@ dependencies:
   # Pip-only packages (conda versions incompatible with Python 3.12)
   - pip:
     - meeko>=0.6.0
+    - posebusters>=0.2.0
