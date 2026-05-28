@@ -190,6 +190,7 @@ def render_scene_pymol(
     receptor_pdb: str,
     ligand_pdbqt: str,
     output_png: str,
+    output_pdf: str | None = None,
     scene: str = "pocket",
     center: tuple[float, float, float] | None = None,
     interactions: list[dict[str, Any]] | None = None,
@@ -254,6 +255,20 @@ def render_scene_pymol(
         raise VisualizationError(f"PyMOL did not produce output: {output_png}")
 
     logger.info(f"3D scene rendered: {output_png}")
+
+    # Optional PDF output — PIL converts PNG raster to PDF
+    if output_pdf:
+        ensure_dir(os.path.dirname(output_pdf) or ".")
+        try:
+            from PIL import Image as _PILImage
+
+            _img = _PILImage.open(output_png)
+            _rgb = _img.convert("RGB")
+            _rgb.save(output_pdf, dpi=(DEFAULT_DPI, DEFAULT_DPI), format="PDF")
+            logger.info(f"3D scene (PDF): {output_pdf}")
+        except Exception as exc:
+            logger.warning(f"3D PDF output skipped: {exc}")
+
     return output_png
 
 
@@ -516,8 +531,9 @@ def render_interactions_2d(
     ligand_pdbqt: str,
     interactions: list[dict[str, Any]],
     output_png: str,
-    width: int = 1200,
-    height: int = 900,
+    output_pdf: str | None = None,
+    width: int = 1800,
+    height: int = 1400,
     dpi: int = DEFAULT_DPI,
 ) -> str:
     """
@@ -532,6 +548,7 @@ def render_interactions_2d(
         ligand_pdbqt: Ligand PDBQT (parsed for structure).
         interactions: List of interaction dicts from detect_interactions().
         output_png: Output PNG path.
+        output_pdf: Optional output PDF path (high-DPI vector via PIL).
         width: Canvas width in pixels.
         height: Canvas height in pixels.
         dpi: Image DPI.
@@ -950,6 +967,17 @@ def render_interactions_2d(
     ensure_dir(os.path.dirname(output_png) or ".")
     img.save(output_png, dpi=(dpi, dpi))
     logger.info(f"2D interaction diagram rendered: {output_png}")
+
+    # Optional PDF output — PIL converts the same high-DPI bitmap to PDF
+    if output_pdf:
+        ensure_dir(os.path.dirname(output_pdf) or ".")
+        try:
+            rgb_img = img.convert("RGB")
+            rgb_img.save(output_pdf, dpi=(dpi, dpi), format="PDF")
+            logger.info(f"2D interaction diagram (PDF): {output_pdf}")
+        except Exception as exc:
+            logger.warning(f"2D PDF output skipped: {exc}")
+
     return output_png
 
 

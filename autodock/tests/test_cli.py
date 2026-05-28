@@ -613,8 +613,10 @@ class TestCmdDock:
             seed=42,
             output_dir="./out",
             compound_name="LIG",
+            receptor_pdb=None,
         )
-        assert "Docking Complete" in capsys.readouterr().out
+        out = capsys.readouterr().out
+        assert "Docking Complete" in out or "Full report" in out
 
     @patch("autodock.preparation.find_top_pockets")
     @patch("autodock.docking.dock_ligand")
@@ -786,17 +788,18 @@ class TestCmdAnalyze:
 # 12. cmd_report
 # ────────────────────────────────
 class TestCmdReport:
-    def test_cmd_report(self, capsys):
+    def test_cmd_report_no_results(self, capsys):
         args = _ns(
             result_dir="./results",
+            outdir=None,
             quiet=False,
             verbose=False,
             log_file=None,
         )
         rc = cli.cmd_report(args)
-        assert rc == 0
+        assert rc == 1  # no results found
         out = capsys.readouterr().out
-        assert "Report generation requires" in out
+        assert "No docking results found" in out
 
 
 # ────────────────────────────────

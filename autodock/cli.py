@@ -165,20 +165,33 @@ def cmd_find_pockets(args: argparse.Namespace) -> int:
 
 
 def cmd_dock(args: argparse.Namespace) -> int:
-    """Run molecular docking."""
+    """Run molecular docking with full post-processing."""
     from autodock.docking import dock_ligand
     from autodock.preparation import find_top_pockets
+    from autodock.pipeline import post_process_docking
 
     center = tuple(args.center) if args.center else None
     box_size = tuple(args.box_size) if args.box_size else None
 
+    # Resolve receptor PDB for post-processing (getattr for test compat)
+    receptor_pdb = getattr(args, 'receptor_pdb', None)
+    if receptor_pdb is None:
+        # Auto-detect PDB from PDBQT path
+        pdb_candidates = [
+            str(Path(args.receptor).with_suffix(".pdb")),
+            str(Path(args.receptor).with_suffix(".cif")),
+        ]
+        for candidate in pdb_candidates:
+            if Path(candidate).exists():
+                receptor_pdb = candidate
+                break
+
     # Auto-detect pocket if center not provided
     if center is None:
-        receptor_base = Path(args.receptor).with_suffix("")
-        pocket_input = str(receptor_base.with_suffix(".pdb"))
+        pocket_input = receptor_pdb if receptor_pdb and Path(receptor_pdb).exists() else str(Path(args.receptor).with_suffix(".pdb"))
         if not Path(pocket_input).exists():
             for ext in (".cif", ".pdbx"):
-                candidate = receptor_base.with_suffix(ext)
+                candidate = Path(args.receptor).with_suffix(ext)
                 if candidate.exists():
                     pocket_input = str(candidate)
                     break
@@ -197,6 +210,7 @@ def cmd_dock(args: argparse.Namespace) -> int:
         seed=args.seed,
         output_dir=args.output_dir,
         compound_name=args.name,
+        receptor_pdb=receptor_pdb,
     )
 
     print(f"\n{'='*50}")
@@ -208,6 +222,26 @@ def cmd_dock(args: argparse.Namespace) -> int:
     print(f"  Best pose:           {result.best_pose_pdbqt}")
     print(f"  Output dir:          {result.output_dir}")
     print(f"{'='*50}")
+
+    # ── Full post-processing ────────────────────────────────────────────────
+    pair_root = os.path.join(args.output_dir, "_full_report")
+    try:
+        outputs = post_process_docking(
+            result,
+            pair_root,
+            receptor_pdb=receptor_pdb,
+            do_interactions=True,
+            do_rendering=True,
+            do_report=True,
+            copy_structures=True,
+        )
+        print(f"📊  Full report: {outputs.get('pdf', 'N/A')}")
+        print(f"🖼️   Figures:    {outputs['dirs']['figures']}")
+        print(f"📁  Output tree: {pair_root}")
+    except Exception as exc:
+        logger.warning(f"Post-processing skipped: {exc}")
+        print("  (Install PLIP + PyMOL for full figures and reports)")
+
     return 0
 
 
@@ -277,12 +311,49 @@ def cmd_analyze(args: argparse.Namespace) -> int:
 
 
 def cmd_report(args: argparse.Namespace) -> int:
-    """Generate PDF/Excel report."""
+    """Generate PDF/Excel/CSV report from completed docking results."""
+    from autodock.pipeline import post_process_docking, read_docking_results
 
-    # For now, a simplified report from a config file
-    # In full pipeline, this reads result pickles / JSON
-    print("Report generation requires a completed docking run.")
-    print("Use 'autodock run' for end-to-end pipeline with auto-reporting.")
+    results = read_docking_results(args.result_dir)
+    if not results:
+        print(f"❌ No docking results found in: {args.result_dir}")
+        print("   Ensure the directory contains 04_reports/result.json files")
+        print("   from 'autodock run', 'autodock dock', or 'autodock batch-dock'.")
+        return 1
+
+    print(f"📊  Found {len(results)} docking result(s) in {args.result_dir}")
+
+    out_root = args.outdir or os.path.join(args.result_dir, "_reports")
+    ensure_dir(out_root)
+
+    # If there are multiple results, also produce a merged Excel
+    if len(results) > 1:
+        try:
+            xlsx_path = os.path.join(out_root, "merged_report.xlsx")
+            from autodock.reporting import generate_excel_report
+
+            generate_excel_report(results, xlsx_path)
+            print(f"  Merged Excel: {xlsx_path}")
+        except Exception as exc:
+            logger.warning(f"Merged Excel failed: {exc}")
+
+    # Individual per-result post-processing (PDF + figures)
+    for i, result in enumerate(results):
+        pair_root = os.path.join(out_root, f"pair_{i+1:03d}_{result.compound_name}")
+        try:
+            outputs = post_process_docking(
+                result,
+                pair_root,
+                do_interactions=False,  # interactions already in result
+                do_rendering=False,  # skip if already rendered
+                do_report=True,
+                copy_structures=False,
+            )
+            print(f"  [{i+1}/{len(results)}] {result.compound_name}: {outputs.get('pdf', 'N/A')}")
+        except Exception as exc:
+            logger.warning(f"Report generation failed for {result.compound_name}: {exc}")
+
+    print(f"✅  Reports generated: {out_root}")
     return 0
 
 
@@ -368,6 +439,7 @@ def cmd_batch_dock(args: argparse.Namespace) -> int:
     import json
 
     from autodock.docking import batch_dock
+    from autodock.pipeline import post_process_docking
 
     # Load pocket definitions
     with open(args.pockets) as fh:
@@ -391,6 +463,18 @@ def cmd_batch_dock(args: argparse.Namespace) -> int:
         name = os.path.splitext(os.path.basename(path))[0]
         ligands[name] = path
 
+    # Map receptor names to PDB files (getattr for test compat)
+    receptor_pdb_map: dict[str, str] = {}
+    receptor_pdb_dir = getattr(args, 'receptor_pdb_dir', None)
+    if receptor_pdb_dir:
+        pdb_dir = receptor_pdb_dir
+        for rec_name in receptors:
+            for ext in (".pdb", ".cif"):
+                candidate = os.path.join(pdb_dir, f"{rec_name}{ext}")
+                if os.path.isfile(candidate):
+                    receptor_pdb_map[rec_name] = candidate
+                    break
+
     results = batch_dock(
         receptors,
         ligands,
@@ -402,6 +486,8 @@ def cmd_batch_dock(args: argparse.Namespace) -> int:
         n_workers=args.workers,
     )
 
+    n_total = sum(len(rl) for rl in results.values())
+    n_success = sum(sum(1 for r in rl if r.best_affinity is not None) for rl in results.values())
     print(f"\n{'='*55}")
     print("🧬  Batch Docking Complete")
     print(f"{'='*55}")
@@ -413,7 +499,69 @@ def cmd_batch_dock(args: argparse.Namespace) -> int:
             aff_str = f"{aff:.2f} kcal/mol" if aff is not None else "FAILED"
             print(f"    {r.compound_name:20s}  {aff_str}")
     print(f"{'='*55}")
+    print(f"  Total: {n_success}/{n_total} successful")
     print(f"  Output directory: {args.outdir}")
+    print(f"{'='*55}")
+
+    # ── Post-process each pair ──────────────────────────────────────────────
+    print("\n📊  Generating per-pair reports and figures...")
+    processed_count = 0
+    all_results_flat: list = []
+    for rec_name, res_list in results.items():
+        for r in res_list:
+            all_results_flat.append(r)
+            lig_name = r.compound_name
+            pair_root = os.path.join(args.outdir, f"pair_{rec_name}_{lig_name}")
+            receptor_pdb = receptor_pdb_map.get(rec_name)
+            try:
+                post_process_docking(
+                    r,
+                    pair_root,
+                    receptor_pdb=receptor_pdb,
+                    do_interactions=bool(receptor_pdb),
+                    do_rendering=bool(receptor_pdb),
+                    do_report=True,
+                    copy_structures=True,
+                )
+                processed_count += 1
+                print(f"  ✓ {rec_name} × {lig_name}")
+            except Exception as exc:
+                logger.warning(f"Post-processing failed for {rec_name}×{lig_name}: {exc}")
+                print(f"  ⚠ {rec_name} × {lig_name}: {exc}")
+
+    print(f"  Processed {processed_count}/{n_total} pairs")
+
+    # ── Heatmap ──────────────────────────────────────────────────────────────
+    if n_success > 0:
+        print("\n🌡️  Generating binding energy heatmap...")
+        try:
+            from autodock.heatmap import plot_energy_heatmap
+
+            heatmap_out = plot_energy_heatmap(
+                results,
+                output_dir=args.outdir,
+                output_prefix="binding_energy_heatmap",
+                dpi=600,
+                palette="nature",
+                annotate=True,
+            )
+            print(f"  PNG: {heatmap_out['png']}")
+            print(f"  PDF: {heatmap_out['pdf']}")
+        except Exception as exc:
+            logger.warning(f"Heatmap generation failed: {exc}")
+            print(f"  ⚠ Heatmap skipped: {exc}")
+
+    # ── Merged CSV ──────────────────────────────────────────────────────────
+    if all_results_flat:
+        try:
+            csv_path = os.path.join(args.outdir, "batch_summary.csv")
+            from autodock.reporting import generate_csv_report
+
+            generate_csv_report(all_results_flat, csv_path)
+            print(f"  Merged CSV: {csv_path}")
+        except Exception as exc:
+            logger.warning(f"Merged CSV failed: {exc}")
+
     print(f"{'='*55}")
     return 0
 
@@ -824,6 +972,8 @@ def build_parser() -> argparse.ArgumentParser:
     p_dock.add_argument("--seed", type=int, default=42)
     p_dock.add_argument("--output-dir", default="./docking_results")
     p_dock.add_argument("--name", help="Compound name")
+    p_dock.add_argument("--receptor-pdb", default=None,
+                        help="Receptor PDB file (for interaction/rendering)")
     p_dock.set_defaults(func=cmd_dock)
 
     # validate
@@ -853,8 +1003,9 @@ def build_parser() -> argparse.ArgumentParser:
     p_analyze.set_defaults(func=cmd_analyze)
 
     # report
-    p_report = subparsers.add_parser("report", help="Generate reports")
-    p_report.add_argument("result_dir", help="Directory with docking results")
+    p_report = subparsers.add_parser("report", help="Generate reports from completed results")
+    p_report.add_argument("result_dir", help="Directory with docking results (04_reports/)")
+    p_report.add_argument("--outdir", default=None, help="Output directory for reports")
     p_report.set_defaults(func=cmd_report)
 
     # benchmark-redock
@@ -898,6 +1049,8 @@ def build_parser() -> argparse.ArgumentParser:
     p_batch.add_argument("--seed", type=int, default=42)
     p_batch.add_argument("--workers", type=int, default=1, help="Parallel workers (-1 = all cores)")
     p_batch.add_argument("--outdir", default="./batch_docking_results")
+    p_batch.add_argument("--receptor-pdb-dir", default=None,
+                        help="Directory with receptor PDB files (for interaction/rendering)")
     p_batch.set_defaults(func=cmd_batch_dock)
 
     # ensemble-dock

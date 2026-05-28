@@ -48,6 +48,8 @@ from autodock.preparation import (
 from autodock.rendering import composite_summary, render_interactions_2d, render_scene_pymol
 from autodock.reporting import generate_csv_report, generate_excel_report, generate_pdf_report
 from autodock.analysis import analyze_scoring_bias
+from autodock.pipeline import build_pair_dir, post_process_docking, read_docking_results
+from autodock.heatmap import plot_energy_heatmap
 from autodock.utils import (
     StructureCache,
     compute_bounding_box,
@@ -126,4 +128,8 @@ __all__ = [
     "download_ligand_sdf_from_pdb",
     "StructureCache",
     "analyze_scoring_bias",
+    "build_pair_dir",
+    "post_process_docking",
+    "read_docking_results",
+    "plot_energy_heatmap",
 ]
