@@ -176,6 +176,7 @@ def prepare_receptor(
     _metal_set_pdbfixer: set[str] = set()
     if retain_metal_ions:
         from autodock.core import _METAL_COFACTORS, _METAL_IONS
+
         _metal_set_pdbfixer = _METAL_IONS | _METAL_COFACTORS
 
     _pbfixer_lines: list[str] = []
@@ -290,22 +291,62 @@ def prepare_receptor(
                     _type = getattr(_g, "type", "")
                     _label = getattr(_g, "label", "")
                     if _type == "ASP" and (_pka < 2.0 or _pka > 6.0):
-                        _anomalous_pka.append({"residue": _label, "type": _type, "pKa": round(_pka, 1), "expected_range": "2.0-6.0"})
+                        _anomalous_pka.append(
+                            {
+                                "residue": _label,
+                                "type": _type,
+                                "pKa": round(_pka, 1),
+                                "expected_range": "2.0-6.0",
+                            }
+                        )
                     elif _type == "GLU" and (_pka < 2.0 or _pka > 7.0):
-                        _anomalous_pka.append({"residue": _label, "type": _type, "pKa": round(_pka, 1), "expected_range": "2.0-7.0"})
+                        _anomalous_pka.append(
+                            {
+                                "residue": _label,
+                                "type": _type,
+                                "pKa": round(_pka, 1),
+                                "expected_range": "2.0-7.0",
+                            }
+                        )
                     elif _type == "HIS" and (_pka < 4.0 or _pka > 8.0):
-                        _anomalous_pka.append({"residue": _label, "type": _type, "pKa": round(_pka, 1), "expected_range": "4.0-8.0"})
+                        _anomalous_pka.append(
+                            {
+                                "residue": _label,
+                                "type": _type,
+                                "pKa": round(_pka, 1),
+                                "expected_range": "4.0-8.0",
+                            }
+                        )
                     elif _type == "LYS" and (_pka < 8.0 or _pka > 12.0):
-                        _anomalous_pka.append({"residue": _label, "type": _type, "pKa": round(_pka, 1), "expected_range": "8.0-12.0"})
+                        _anomalous_pka.append(
+                            {
+                                "residue": _label,
+                                "type": _type,
+                                "pKa": round(_pka, 1),
+                                "expected_range": "8.0-12.0",
+                            }
+                        )
                     elif _type == "CYS" and _pka > 11.0:
-                        _anomalous_pka.append({"residue": _label, "type": _type, "pKa": round(_pka, 1), "expected_range": "<11.0"})
+                        _anomalous_pka.append(
+                            {
+                                "residue": _label,
+                                "type": _type,
+                                "pKa": round(_pka, 1),
+                                "expected_range": "<11.0",
+                            }
+                        )
                     elif _type == "TYR" and _pka > 13.0:
-                        _anomalous_pka.append({"residue": _label, "type": _type, "pKa": round(_pka, 1), "expected_range": "<13.0"})
+                        _anomalous_pka.append(
+                            {
+                                "residue": _label,
+                                "type": _type,
+                                "pKa": round(_pka, 1),
+                                "expected_range": "<13.0",
+                            }
+                        )
 
             if _anomalous_pka:
-                logger.info(
-                    f"PROPKA: {len(_anomalous_pka)} anomalous pKa residue(s) at pH {ph}:"
-                )
+                logger.info(f"PROPKA: {len(_anomalous_pka)} anomalous pKa residue(s) at pH {ph}:")
                 for _a in _anomalous_pka[:15]:
                     logger.info(
                         f"  {_a['residue']:12s} ({_a['type']}): "
@@ -314,7 +355,7 @@ def prepare_receptor(
                 if len(_anomalous_pka) > 15:
                     logger.info(f"  ... and {len(_anomalous_pka) - 15} more")
                 # Flag residues with pKa near target → protonation state uncertain
-                _flagged = [a for a in _anomalous_pka if abs(a['pKa'] - ph) < 1.0]
+                _flagged = [a for a in _anomalous_pka if abs(a["pKa"] - ph) < 1.0]
                 if _flagged:
                     logger.warning(
                         f"PROPKA: {len(_flagged)} residue(s) with pKa within ±1 of pH {ph} "
