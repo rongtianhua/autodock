@@ -1,12 +1,11 @@
 """Tests for autodock.analysis — scoring bias diagnostics."""
-import tempfile
 import os
+import tempfile
 import textwrap
-import json
 
 import pytest
 
-from autodock.analysis import _parse_all_poses, _extract_affinity, analyze_scoring_bias
+from autodock.analysis import _extract_affinity, _parse_all_poses, analyze_scoring_bias
 
 
 class TestParseAllPoses:
@@ -145,7 +144,7 @@ class TestBenchmarkScoringDecoupling:
 
     def test_scoring_failure_detection(self):
         """When best_rmsd < 2.0 but top-1 > 2.0, it's a scoring failure."""
-        from autodock.benchmark import DEFAULT_BENCHMARK_TARGETS, REDocking_RMSD_THRESHOLD
+        from autodock.benchmark import REDocking_RMSD_THRESHOLD
 
         # Simulate raw results
         raw = [
