@@ -163,7 +163,31 @@ def prepare_receptor(
         logger.warning(f"PDBFixer failed ({exc}) — falling back to raw structure")
         tmp_fixed = tmp_raw  # use raw structure
 
-    # ── Step 4: OpenMM short energy minimisation ─────────────────────────
+    # ── Step 4: Reduce — ASN/GLN flip detection + HIS tautomer assignment ────
+    tmp_reduced = write_temp_file("", suffix="_reduced.pdb")
+    try:
+        reduce_bin = find_conda_tool("reduce")
+        if not reduce_bin:
+            raise RuntimeError("reduce binary not found")
+        # -FLIP: add hydrogens, detect/correct ASN/GLN flips, assign HIS tautomers
+        success, stdout, stderr = safe_subprocess(
+            [reduce_bin, "-FLIP", tmp_fixed],
+            timeout=120,
+        )
+        if not success or not stdout.strip():
+            raise RuntimeError(f"reduce -FLIP failed: {stderr[:300]}")
+        with open(tmp_reduced, "w") as fh:
+            fh.write(stdout)
+        # Count flips from log
+        n_flips = stdout.count("FLIP") - stdout.count("NOFLIP")
+        if n_flips > 0:
+            logger.info(f"Reduce: corrected {n_flips} ASN/GLN sidechain flip(s)")
+        logger.info("Reduce: ASN/GLN flips processed, HIS tautomers assigned")
+    except Exception as exc:
+        logger.warning(f"Reduce step skipped ({exc}) — using PDBFixer output")
+        tmp_reduced = tmp_fixed
+
+    # ── Step 5: OpenMM short energy minimisation ─────────────────────────
     tmp_min = write_temp_file("", suffix="_minimized.pdb")
     try:
         from openmm import LangevinIntegrator
@@ -171,15 +195,18 @@ def prepare_receptor(
         from openmm.app import ForceField, PDBFile, Simulation
 
         # Use the force field for energy terms — only protein atoms matter
+        # Reload from Reduce output for OpenMM (needs PDBFixer topology + positions)
+        from pdbfixer import PDBFixer as _PBFixer
+        _reduce_fixer = _PBFixer(filename=tmp_reduced)
         ff = ForceField(forcefield)
-        system = ff.createSystem(fixer.topology)
+        system = ff.createSystem(_reduce_fixer.topology)
         integrator = LangevinIntegrator(
             300 * _omm_unit.kelvin,
             1.0 / _omm_unit.picosecond,
             0.002 * _omm_unit.picosecond,
         )
-        simulation = Simulation(fixer.topology, system, integrator)
-        simulation.context.setPositions(fixer.positions)
+        simulation = Simulation(_reduce_fixer.topology, system, integrator)
+        simulation.context.setPositions(_reduce_fixer.positions)
         simulation.minimizeEnergy(maxIterations=200)
         min_positions = simulation.context.getState(getPositions=True).getPositions()
         with open(tmp_min, "w") as fh:
@@ -193,16 +220,16 @@ def prepare_receptor(
     with open(tmp_min) as fh:
         pdb_content = fh.read()
 
-    # Clean up temps (keep tmp_raw in case it falls back as tmp_fixed/tmp_min)
-    _temps_to_clean = {tmp_raw, tmp_fixed, tmp_min}
-    if tmp_fixed == tmp_raw:
-        _temps_to_clean.discard(tmp_fixed)
-    if tmp_min in (tmp_fixed, tmp_raw):
-        _temps_to_clean.discard(tmp_min)
-    for t in _temps_to_clean:
-        with contextlib.suppress(OSError):
-            if os.path.exists(t):
-                os.remove(t)
+    # Clean up temp files (avoid deleting fallback aliases)
+    _keep = {tmp_raw}
+    for _t in (tmp_fixed, tmp_reduced, tmp_min):
+        if _t in _keep:
+            _keep.add(_t)
+    for _t in (tmp_raw, tmp_fixed, tmp_reduced, tmp_min):
+        if _t not in _keep:
+            with contextlib.suppress(OSError):
+                if os.path.exists(_t):
+                    os.remove(_t)
 
     # ── Step 5: Filter waters / hetatms (second pass after PDBFixer) ─────
     if remove_water or remove_hetatms or keep_residues:
