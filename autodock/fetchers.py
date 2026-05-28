@@ -1002,9 +1002,7 @@ def fetch_zinc_smiles(zinc_id: str, timeout: int = 15) -> str | None:
     return None
 
 
-def _safe_float(
-    val: Any, default: float | None = None
-) -> float | None:
+def _safe_float(val: Any, default: float | None = None) -> float | None:
     """Safely convert a value to float, returning *default* on failure."""
     if val is None:
         return default
@@ -1014,9 +1012,7 @@ def _safe_float(
         return default
 
 
-def _parse_zinc_results(
-    results: list, max_results: int
-) -> list[dict[str, str]]:
+def _parse_zinc_results(results: list, max_results: int) -> list[dict[str, str]]:
     """Parse ZINC API JSON results into consistent format."""
     parsed: list[dict[str, str]] = []
     for item in results[:max_results]:
