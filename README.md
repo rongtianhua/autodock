@@ -77,9 +77,14 @@ print(f"Best affinity: {result.best_affinity:.2f} kcal/mol")
 | **🤝 Interactions** | PLIP (primary) + ProLIF (cross-validation) for 8 interaction types |
 | **✅ Validation** | PoseBusters geometric checks + custom clash detection + RMSD |
 | **🌊 MD Stability** | OpenMM short MD with ligand RMSD and H-bond analysis |
-| **🎨 Visualization** | PyMOL 3D rendering + RDKit 2D interaction diagrams |
+| **🎨 Visualization** | PyMOL 3D rendering + RDKit 2D LigPlot⁺-style interaction diagrams |
 | **📊 Reporting** | PDF, Excel, and CSV reports with publication-ready figures (300 dpi) |
 | **🧪 Virtual Screening** | Parallel compound library screening with CSV ranking |
+| **🔬 Benchmark** | 20-target diverse benchmark suite (kinases, proteases, NRs, enzymes) |
+| **📏 Dual-Metric RMSD** | Top-1 vs best-RMSD across all poses — decouples scoring from sampling |
+| **📉 Scoring Bias** | Affinity-vs-RMSD scatter plots to diagnose Vina scoring deficiencies |
+| **🔄 Repeat Docking** | n-repeat statistics (mean ± SD) for stochastic sampling variability |
+| **🧹 OpenMM Post-Proc** | Ligand-only energy minimization to improve PoseBusters compliance |
 
 ---
 
@@ -177,6 +182,40 @@ Validate protocol accuracy by re-docking a co-crystallized ligand:
 
 ```bash
 autodock validate 6LU7_holo.pdb --chain-id C --output-dir ./validation
+```
+
+---
+
+### 5. Benchmark & Diagnostic Analysis
+
+Run redocking benchmark on the 20-target diverse set:
+
+```bash
+# Full benchmark (20 targets)
+python -m autodock.cli benchmark --output-dir ./benchmark_results --workers 4
+
+# Post-benchmark analysis: scoring bias scatter plots
+from autodock import analyze_scoring_bias
+
+results = analyze_scoring_bias(
+    output_dir="./benchmark_results",
+    target_ids=["1T46", "1H22", "3ELJ", "1GWX", "1D4K"],
+    figure_dir="./benchmark_results/figures",
+)
+# Each plot: RMSD vs affinity for all 20 poses, top-1 ★ and best-RMSD ★ highlighted
+```
+
+The benchmark reports **dual-metric** statistics:
+- **Top-1 success rate**: poses ranked first by Vina score
+- **Best-RMSD success rate**: the best pose among all 20 by RMSD (scoring-independent)
+- **Scoring failure targets**: where Vina found a good pose (< 2.0 Å) but ranked it low
+
+Repeat docking for statistical variability (mean ± SD):
+
+```python
+from autodock.benchmark import run_repeat_docking
+
+summary = run_repeat_docking(n_repeats=5, output_dir="./repeat_results")
 ```
 
 ---

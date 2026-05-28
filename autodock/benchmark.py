@@ -109,6 +109,7 @@ def run_redocking_benchmark(
     n_workers: int = 1,
     skip_consensus: bool = True,
     minimize: bool = True,
+    pocket_method: str = "crystal",
 ) -> dict[str, Any]:
     """
     Run redocking validation on a benchmark set and compile statistics.
@@ -123,6 +124,9 @@ def run_redocking_benchmark(
         skip_consensus: Skip Vinardo consensus scoring for speed (default True for benchmarks).
         minimize: If True (default), run OpenMM ligand-only energy minimisation
             on each best pose before RMSD evaluation.
+        pocket_method: Box-definition strategy:
+            * ``"crystal"`` (default): centre box on crystal ligand (self-docking).
+            * ``"blind"``: blind pocket detection (cross-docking).
 
     Returns:
         Summary dict with:
@@ -148,6 +152,7 @@ def run_redocking_benchmark(
                 "seed": seed,
                 "skip_consensus": skip_consensus,
                 "minimize": minimize,
+                "pocket_method": pocket_method,
             }
         )
 
@@ -187,6 +192,21 @@ def run_redocking_benchmark(
     successes = [r for r in raw_results if r.get("success")]
     rmsds = [r["rmsd"] for r in successes if r.get("rmsd") is not None]
 
+    # Best-RMSD from all poses — decouples scoring from sampling
+    best_successes = [
+        r for r in raw_results
+        if r.get("best_rmsd") is not None and r["best_rmsd"] <= REDocking_RMSD_THRESHOLD
+    ]
+    best_rmsds = [r["best_rmsd"] for r in best_successes]
+
+    # Scoring vs sampling bias: targets where Vina found a good pose but ranked it wrong
+    scoring_failures = [
+        r for r in raw_results
+        if not r.get("success")  # top-1 fail
+        and r.get("best_rmsd") is not None
+        and r["best_rmsd"] <= REDocking_RMSD_THRESHOLD  # but a good pose exists
+    ]
+
     summary = {
         "n_total": len(targets),
         "n_success": len(successes),
@@ -195,6 +215,14 @@ def run_redocking_benchmark(
         "median_rmsd": float(np.median(rmsds)) if rmsds else None,
         "rmsd_std": float(np.std(rmsds)) if rmsds else None,
         "threshold": REDocking_RMSD_THRESHOLD,
+        # Best-RMSD metrics (scoring-independent sampling quality)
+        "n_success_best": len(best_successes),
+        "success_rate_best": len(best_successes) / len(targets) if targets else 0.0,
+        "mean_best_rmsd": float(np.mean(best_rmsds)) if best_rmsds else None,
+        "median_best_rmsd": float(np.median(best_rmsds)) if best_rmsds else None,
+        # Scoring-failure targets: Vina ranked a sub-optimal pose higher than a good one
+        "n_scoring_failures": len(scoring_failures),
+        "scoring_failure_pdb_ids": [r["pdb_id"] for r in scoring_failures],
         "parameters": {
             "exhaustiveness": exhaustiveness,
             "n_poses": n_poses,
@@ -264,6 +292,10 @@ def run_redocking_benchmark(
                     "success_raw": r.get("success_raw", False),
                     "rmsd_raw": r.get("rmsd_raw"),
                     "best_rmsd": r.get("best_rmsd"),
+                    "best_rmsd_success": (
+                        (r.get("best_rmsd") is not None and r["best_rmsd"] <= 2.0)
+                        if "best_rmsd" in r else None
+                    ),
                     "best_affinity": r.get("best_affinity"),
                     "error": r.get("error", ""),
                 }
@@ -278,14 +310,20 @@ def run_redocking_benchmark(
 
     summary["json_path"] = json_path
     msg = (
-        f"Benchmark complete: {summary['n_success']}/{summary['n_total']} succeeded "
+        f"Benchmark complete: {summary['n_success']}/{summary['n_total']} top-1 succeeded "
         f"({summary['success_rate']*100:.1f}%). "
+        f"Best-RMSD: {summary['n_success_best']}/{summary['n_total']} "
+        f"({summary['success_rate_best']*100:.1f}%). "
     )
     if minimize:
         msg += (
             f"Raw: {summary['n_success_raw']}/{summary['n_total']} "
             f"({summary['success_rate_raw']*100:.1f}%). "
-            f"Rescued: {n_rescued}, Degraded: {n_degraded}. "
+        )
+    if summary["n_scoring_failures"] > 0:
+        msg += (
+            f"Scoring failures: {summary['n_scoring_failures']} targets have best-RMSD < 2.0 Å "
+            f"but top-1 > 2.0 Å ({', '.join(summary['scoring_failure_pdb_ids'])}). "
         )
     if summary["median_rmsd"] is not None:
         msg += f"Median RMSD: {summary['median_rmsd']:.2f} Å"
@@ -504,6 +542,7 @@ def _run_single_benchmark(item: dict[str, Any]) -> dict[str, Any]:
         "skip_consensus": item.get("skip_consensus", True),
         "ligand_strategy": item.get("ligand_strategy"),
         "minimize": item.get("minimize", False),
+        "pocket_method": item.get("pocket_method", "crystal"),
     }
     if pdb_id in HARD_TARGET_OVERRIDES:
         overrides = HARD_TARGET_OVERRIDES[pdb_id].copy()
@@ -531,6 +570,8 @@ def _run_single_benchmark(item: dict[str, Any]) -> dict[str, Any]:
             "best_rmsd": result.get("best_rmsd"),
             "best_rmsd_pose_idx": result.get("best_rmsd_pose_idx"),
             "threshold": result.get("threshold"),
+            "pocket_method": result.get("pocket_method"),
+            "pocket_source": result.get("pocket_source"),
         }
     except ValidationError as exc:
         logger.warning(f"[{pdb_id}] Redocking validation failed: {exc}")
@@ -556,3 +597,146 @@ def _run_single_benchmark(item: dict[str, Any]) -> dict[str, Any]:
             "rmsd_raw": None,
             "error": str(exc),
         }
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Repeat Docking Statistics
+# ─────────────────────────────────────────────────────────────────────────────
+
+# Deterministic seed sequence for repeat docking (arbitrary fixed values)
+_REPEAT_SEEDS: tuple[int, ...] = (42, 123, 456, 789, 1011, 1313, 1717, 2020, 2345, 2718)
+
+
+def run_repeat_docking(
+    targets: list[dict[str, Any]] | None = None,
+    output_dir: str = "./benchmark_repeats",
+    n_repeats: int = 5,
+    exhaustiveness: int = 32,
+    n_poses: int = 20,
+    n_workers: int = 1,
+    minimize: bool = True,
+) -> dict[str, Any]:
+    """
+    Run redocking validation **n times** with different deterministic seeds
+    and compute mean ± SD for affinity and RMSD per target.
+
+    This addresses a key publication requirement: reporting variability
+    due to stochastic sampling in Vina's Monte Carlo search.
+
+    Args:
+        targets: List of target dicts (default: top-3 representative targets).
+        output_dir: Root directory for repeat outputs.
+        n_repeats: Number of repeats (1 ≤ n ≤ 10).
+        exhaustiveness, n_poses: Vina parameters.
+        n_workers: Parallel workers (-1 = all CPU cores).
+        minimize: If True, run OpenMM ligand-only minimization before RMSD.
+
+    Returns:
+        Dict with:
+          - per_target: list of (pdb_id, mean_rmsd, sd_rmsd, mean_affinity, sd_affinity,
+            n_success, success_rate, rmsd_values, affinity_values)
+          - summary: aggregated statistics
+    """
+    if targets is None:
+        # Representative targets: 1 good, 1 moderate, 1 hard
+        _good = [t for t in DEFAULT_BENCHMARK_TARGETS if t["pdb_id"] == "1C5Z"]
+        _moderate = [t for t in DEFAULT_BENCHMARK_TARGETS if t["pdb_id"] == "3EL8"]
+        _hard = [t for t in DEFAULT_BENCHMARK_TARGETS if t["pdb_id"] == "1T46"]
+        targets = _good + _moderate + _hard
+
+    n_repeats = max(1, min(n_repeats, len(_REPEAT_SEEDS)))
+    seeds = _REPEAT_SEEDS[:n_repeats]
+
+    os.makedirs(output_dir, exist_ok=True)
+    logger.info(
+        f"Repeat docking: {len(targets)} targets × {n_repeats} repeats, "
+        f"seeds={list(seeds)}"
+    )
+
+    per_target: list[dict[str, Any]] = []
+
+    for t in targets:
+        pdb_id = t["pdb_id"]
+        family = t.get("family", "unknown")
+        name = t.get("name", pdb_id)
+
+        rmsd_values: list[float] = []
+        affinity_values: list[float] = []
+        errors: list[str] = []
+
+        for repeat_i, seed in enumerate(seeds):
+            work_item = {
+                "target": t,
+                "output_dir": os.path.join(output_dir, f"{pdb_id}_r{repeat_i + 1}"),
+                "exhaustiveness": exhaustiveness,
+                "n_poses": n_poses,
+                "seed": seed,
+                "skip_consensus": True,
+                "minimize": minimize,
+            }
+            try:
+                result = _run_single_benchmark(work_item)
+            except Exception as exc:
+                errors.append(f"seed={seed}: {exc}")
+                continue
+
+            if result.get("success"):
+                rmsd_values.append(result["rmsd"])
+            if result.get("best_affinity") is not None:
+                affinity_values.append(result["best_affinity"])
+
+        n_ok = len(rmsd_values)
+        mean_rmsd = float(np.mean(rmsd_values)) if rmsd_values else None
+        sd_rmsd = float(np.std(rmsd_values, ddof=1)) if len(rmsd_values) > 1 else None
+        mean_affinity = float(np.mean(affinity_values)) if affinity_values else None
+        sd_affinity = (
+            float(np.std(affinity_values, ddof=1)) if len(affinity_values) > 1 else None
+        )
+
+        per_target.append(
+            {
+                "pdb_id": pdb_id,
+                "family": family,
+                "name": name,
+                "n_total": n_repeats,
+                "n_success": n_ok,
+                "success_rate": n_ok / n_repeats if n_repeats else 0.0,
+                "mean_rmsd": round(mean_rmsd, 3) if mean_rmsd is not None else None,
+                "sd_rmsd": round(sd_rmsd, 3) if sd_rmsd is not None else None,
+                "mean_affinity": round(mean_affinity, 3) if mean_affinity is not None else None,
+                "sd_affinity": round(sd_affinity, 3) if sd_affinity is not None else None,
+                "rmsd_values": [round(v, 3) for v in rmsd_values],
+                "affinity_values": [round(v, 3) for v in affinity_values],
+                "errors": errors,
+            }
+        )
+
+        logger.info(
+            f"{pdb_id}: {n_ok}/{n_repeats} success, "
+            f"RMSD {mean_rmsd:.2f}±{sd_rmsd:.2f} Å, "
+            f"Affinity {mean_affinity:.2f}±{sd_affinity:.2f} kcal/mol"
+            if all(v is not None for v in [mean_rmsd, sd_rmsd, mean_affinity, sd_affinity])
+            else f"{pdb_id}: {n_ok}/{n_repeats} success"
+        )
+
+    # ── Persist results
+    json_path = os.path.join(output_dir, "repeat_docking_summary.json")
+    with open(json_path, "w") as fh:
+        json.dump(
+            {
+                "parameters": {
+                    "n_repeats": n_repeats,
+                    "seeds": list(seeds),
+                    "exhaustiveness": exhaustiveness,
+                    "n_poses": n_poses,
+                    "minimize": minimize,
+                },
+                "per_target": per_target,
+            },
+            fh,
+            indent=2,
+            default=str,
+        )
+
+    logger.info(f"Repeat docking summary saved: {json_path}")
+    return {"per_target": per_target, "json_path": json_path}

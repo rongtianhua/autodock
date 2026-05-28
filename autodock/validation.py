@@ -499,6 +499,7 @@ def run_redocking_validation(
     ligand_strategy: str | None = None,
     skip_consensus: bool = False,
     minimize: bool = False,
+    pocket_method: str = "crystal",
 ) -> dict[str, Any]:
     """
     Validate docking protocol by redocking the co-crystallized ligand.
@@ -512,7 +513,7 @@ def run_redocking_validation(
       1. Extract crystal ligand from holo structure
       2. Prepare apo receptor (remove ligand + water)
       3. Prepare extracted ligand
-      4. Define box from crystal ligand geometry
+      4. Define docking box
       5. Dock
       6. (Optional) OpenMM energy-minimise the best pose
       7. Compute RMSD between top pose and crystal
@@ -527,14 +528,18 @@ def run_redocking_validation(
         exhaustiveness: Vina exhaustiveness.
         n_poses: Number of poses.
         output_dir: Working directory.
-        box_padding: Extra padding (Å) around crystal ligand bounding box.
+        box_padding: Extra padding (Å) around the docking box.
+        pocket_method: Box-definition strategy:
+            * ``"crystal"`` (default): centre box on crystal ligand (self-docking).
+            * ``"blind"``: detect pocket blindly from apo receptor (cross-docking).
+              Uses fpocket + P2Rank without the crystal ligand as a hint.
         skip_consensus: If True, skip Vinardo consensus scoring (faster for benchmarks).
         minimize: If True, run OpenMM ligand-only energy minimisation on the
             best pose before RMSD evaluation.  This can rescue scoring failures
             by improving local geometry and hydrogen placement.
 
     Returns:
-        Dict with rmsd, success flag, energies, and file paths.
+        Dict with rmsd, success flag, pocket_center, pocket_method, and file paths.
     """
     from rdkit import Chem
 
@@ -664,30 +669,49 @@ def run_redocking_validation(
         conformer_pdbqts = None
         logger.info("Adaptive prep returned single conformer")
 
-    # ── 4. Define box from crystal ligand ──────────────────────────────────
-    # Try ligand-centered pocket detection first
-    pockets = find_top_pockets(
-        apo_pdb, ligand_pdb=crystal_ligand_pdb, max_pockets=1, use_p2rank=False
-    )
+    # ── 4. Define docking box ─────────────────────────────────────────────
+    if pocket_method == "blind":
+        # Cross-docking: blind pocket detection on apo receptor (no crystal hint)
+        logger.info("Cross-docking mode: blind pocket detection (fpocket + P2Rank)")
+        pockets = find_top_pockets(apo_pdb, max_pockets=3, use_p2rank=True)
+        if not pockets:
+            raise ValidationError(
+                "Blind pocket detection failed — no pockets found on apo receptor"
+            )
+        # Use top-ranked pocket
+        center = pockets[0]["center"]
+        box_size = pockets[0]["box_size"]
+        pocket_source = pockets[0].get("method", "fpocket+p2rank")
+        logger.info(
+            f"Blind pocket: center={center}, box={box_size}, "
+            f"source={pocket_source}"
+        )
+    else:
+        # Self-docking: centre box on crystal ligand (default)
+        pockets = find_top_pockets(
+            apo_pdb, ligand_pdb=crystal_ligand_pdb, max_pockets=1, use_p2rank=False
+        )
 
-    # Fallback: compute bounding box directly from crystal ligand PDB
-    if not pockets:
-        try:
-            atoms = read_pdb_atoms(crystal_ligand_pdb)
-            if atoms:
-                center, size = compute_bounding_box(atoms)
-                # Add padding
-                size = tuple(s + 2 * box_padding for s in size)
-                pockets = [{"center": center, "box_size": size}]
-        except Exception as exc:
-            logger.warning(f"Bounding-box fallback failed: {exc}")
+        # Fallback: compute bounding box directly from crystal ligand PDB
+        if not pockets:
+            try:
+                atoms = read_pdb_atoms(crystal_ligand_pdb)
+                if atoms:
+                    center, size = compute_bounding_box(atoms)
+                    # Add padding
+                    size = tuple(s + 2 * box_padding for s in size)
+                    pockets = [{"center": center, "box_size": size}]
+            except Exception as exc:
+                logger.warning(f"Bounding-box fallback failed: {exc}")
 
-    if not pockets:
-        raise ValidationError("Could not define binding box from crystal ligand")
+        if not pockets:
+            raise ValidationError("Could not define binding box from crystal ligand")
 
-    center = pockets[0]["center"]
-    box_size = pockets[0]["box_size"]
-    logger.info(f"Redocking box: center={center}, size={box_size}")
+        center = pockets[0]["center"]
+        box_size = pockets[0]["box_size"]
+        pocket_source = "crystal_ligand"
+
+    logger.info(f"Redocking box ({pocket_method}): center={center}, size={box_size}")
 
     # ── 5. Dock ────────────────────────────────────────────────────────────
     if use_multi:
@@ -702,6 +726,7 @@ def run_redocking_validation(
             output_dir=output_dir,
             compound_name="redock",
             skip_consensus=skip_consensus,
+            auto_exhaustiveness=False,
         )
     else:
         result = dock_ligand(
@@ -715,6 +740,7 @@ def run_redocking_validation(
             output_dir=output_dir,
             compound_name="redock",
             skip_consensus=skip_consensus,
+            auto_exhaustiveness=False,
         )
 
     # ── 6. Optional OpenMM energy minimisation ─────────────────────────────
@@ -797,7 +823,10 @@ def run_redocking_validation(
         "best_affinity": result.best_affinity,
         "center": center,
         "box_size": box_size,
+        "pocket_method": pocket_method,
+        "pocket_source": pocket_source,
         "apo_receptor": receptor_pdbqt,
+        "holo_receptor": holo_pdb,  # original PDB with waters, for interaction detection
         "ligand": ligand_pdbqt,
         "best_pose": result.best_pose_pdbqt,
         "minimized_pose": minimized_pose_pdbqt if minimize else None,

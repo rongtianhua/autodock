@@ -148,9 +148,11 @@ def _run_vina_dock(
     if auto_exhaustiveness:
         effective_exhaustiveness = _auto_exhaustiveness(ligand_pdbqt, exhaustiveness)
         if effective_exhaustiveness != exhaustiveness:
-            logger.info(
+            logger.warning(
                 f"Auto-adjusted exhaustiveness: {exhaustiveness} → {effective_exhaustiveness} "
-                f"({_count_pdbqt_atoms(ligand_pdbqt)} atoms)"
+                f"({_count_pdbqt_atoms(ligand_pdbqt)} heavy atoms). "
+                f"For redocking validation, pass auto_exhaustiveness=False to preserve "
+                f"publication-grade sampling."
             )
             exhaustiveness = effective_exhaustiveness
 
@@ -356,6 +358,7 @@ def dock_ligand(
     compound_name: str | None = None,
     receptor_pdb: str | None = None,
     skip_consensus: bool = False,
+    auto_exhaustiveness: bool = True,
 ) -> DockingResult:
     """
     Dock a single ligand into a protein binding site.
@@ -421,6 +424,7 @@ def dock_ligand(
         energy_range=energy_range,
         seed=seed,
         timeout=timeout,
+        auto_exhaustiveness=auto_exhaustiveness,
     )
 
     if energies.size == 0 or not poses:
@@ -527,6 +531,7 @@ def _dock_conformer_worker(
         energy_range,
         seed,
         timeout,
+        auto_exhaustiveness,
     ) = args
     return _dock_conformer_core(
         receptor_pdbqt,
@@ -538,6 +543,7 @@ def _dock_conformer_worker(
         energy_range,
         seed,
         timeout,
+        auto_exhaustiveness,
     )
 
 
@@ -551,6 +557,7 @@ def _dock_conformer_core(
     energy_range: float,
     seed: int | None,
     timeout: int,
+    auto_exhaustiveness: bool = True,
 ) -> tuple[list[tuple[float, str]], int]:
     """Core docking logic for a single conformer."""
     if not os.path.isfile(conf_path):
@@ -566,6 +573,7 @@ def _dock_conformer_core(
             energy_range=energy_range,
             seed=seed,
             timeout=timeout,
+            auto_exhaustiveness=auto_exhaustiveness,
         )
         pool = []
         for i, pose in enumerate(poses):
@@ -590,6 +598,7 @@ def dock_ligand_multi_conformer(
     compound_name: str | None = None,
     skip_consensus: bool = False,
     max_workers: int = -1,
+    auto_exhaustiveness: bool = True,
 ) -> DockingResult:
     """
     Dock multiple ligand conformers and return the globally best pose.
@@ -631,6 +640,7 @@ def dock_ligand_multi_conformer(
             energy_range,
             seed,
             timeout,
+            auto_exhaustiveness,
         )
         for conf_path in conformer_pdbqts
     ]
@@ -670,6 +680,7 @@ def dock_ligand_multi_conformer(
                 item[6],
                 item[7],
                 item[8],
+                auto_exhaustiveness=item[9] if len(item) > 9 else True,
             )
             all_poses_pool.extend(pool)
             n_success += ok
