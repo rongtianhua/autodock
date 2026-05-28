@@ -527,10 +527,29 @@ class TestCmdFindPockets:
         mock_find.return_value = [
             {
                 "pocket_num": 1,
+                "pocket_source": "p2rank",
                 "center": (1.0, 2.0, 3.0),
                 "box_size": (20.0, 20.0, 20.0),
                 "druggability": 0.85,
+                "druggability_level": "high",
                 "p2rank_prob": 0.92,
+                "consensus": True,
+                "consensus_distance": 2.5,
+                "volume": 500.0,
+                "depth": 12.0,
+                "openings": 2,
+                "n_apolar": 45,
+                "n_polar": 12,
+                "residue_ids": [{"chain": "A", "resid": 100}, {"chain": "A", "resid": 120}],
+                "shape_circularity": 0.45,
+                "shape_aspect_ratio": 1.8,
+                "flexibility": "rigid",
+                "induced_fit_likely": False,
+                "af_suitable": True,
+                "af_mean_plddt": 92.5,
+                "af_min_plddt": 85.0,
+                "pocket_type": "orthosteric",
+                "distance_to_active": 3.2,
             }
         ]
         args = _ns(
@@ -538,13 +557,19 @@ class TestCmdFindPockets:
             ligand=None,
             padding=5.0,
             max_pockets=3,
+            consensus=False,
+            method="auto",
+            known_active_site=None,
             quiet=False,
             verbose=False,
             log_file=None,
         )
         rc = cli.cmd_find_pockets(args)
         assert rc == 0
-        mock_find.assert_called_once_with("rec.pdb", ligand_pdb=None, padding=5.0, max_pockets=3)
+        mock_find.assert_called_once_with(
+            "rec.pdb", ligand_pdb=None, padding=5.0, max_pockets=3,
+            consensus=False, method="auto", known_active_site=None,
+        )
         out = capsys.readouterr().out
         assert "Found 1 pocket(s)" in out
         assert "P2Rank prob:  0.920" in out
@@ -554,9 +579,29 @@ class TestCmdFindPockets:
         mock_find.return_value = [
             {
                 "pocket_num": 1,
+                "pocket_source": "fpocket",
                 "center": (0.0, 0.0, 0.0),
                 "box_size": (20.0, 20.0, 20.0),
                 "druggability": 0.5,
+                "druggability_level": "medium",
+                "p2rank_prob": None,
+                "consensus": None,
+                "consensus_distance": None,
+                "volume": 300.0,
+                "depth": 8.0,
+                "openings": 1,
+                "n_apolar": 20,
+                "n_polar": 5,
+                "residue_ids": [],
+                "shape_circularity": None,
+                "shape_aspect_ratio": None,
+                "flexibility": "moderate",
+                "induced_fit_likely": True,
+                "af_suitable": None,
+                "af_mean_plddt": None,
+                "af_min_plddt": None,
+                "pocket_type": "unclassified",
+                "distance_to_active": None,
             }
         ]
         args = _ns(
@@ -564,13 +609,18 @@ class TestCmdFindPockets:
             ligand="lig.pdb",
             padding=4.0,
             max_pockets=1,
+            consensus=False,
+            method="auto",
+            known_active_site=None,
             quiet=False,
             verbose=False,
             log_file=None,
         )
         rc = cli.cmd_find_pockets(args)
         assert rc == 0
-        assert "P2Rank prob:  N/A" in capsys.readouterr().out
+        out = capsys.readouterr().out
+        assert "Found 1 pocket(s)" in out
+        assert "Druggability: 0.500 [medium]" in out
 
 
 # ────────────────────────────────

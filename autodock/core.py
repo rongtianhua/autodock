@@ -779,8 +779,20 @@ _POCKET_MIN_DIM = 5.0
 _POCKET_MAX_DIM = 40.0
 _POCKET_MAX_VOLUME = 2000.0
 _POCKET_MIN_DEPTH = 3.0
-_P2RANK_PROB_THRESHOLD = 0.15
-_DRUGGABILITY_THRESHOLD = 0.15
+# P2Rank probability threshold (Krivák & Hoksza 2018: ≥0.5 high confidence)
+_P2RANK_PROB_THRESHOLD = 0.5
+# Druggability threshold (fpocket: ≥0.3 druggable, adapted from Schmidtke et al. 2010)
+_DRUGGABILITY_THRESHOLD = 0.3
+
+# Ensemble consensus distance threshold (Å)
+_POCKET_CONSENSUS_DISTANCE = 8.0
+# Druggability classification thresholds (adapted from Schmidtke & Barril 2010)
+_DRUGGABILITY_HIGH = 0.7
+_DRUGGABILITY_MEDIUM = 0.3
+# Allosteric pocket minimum distance from known active site (Å)
+_ALLOSTERIC_MIN_DISTANCE = 15.0
+# Pocket shape defaults
+_POCKET_DEFAULT_BFACTOR = 40.0  # Å², threshold for flexible classification
 
 # Vina / publication defaults
 VINA_DEFAULT_EXHAUSTIVENESS = 32
