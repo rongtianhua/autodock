@@ -46,6 +46,8 @@ def prepare_receptor(
     force: bool = False,
     ph: float = 7.4,
     forcefield: str = "amber14-all.xml",
+    restraint_center: tuple[float, float, float] | None = None,
+    restraint_radius: float = 8.0,
 ) -> str:
     """
     Prepare a protein structure for docking (PDB/mmCIF → PDBQT).
@@ -77,6 +79,16 @@ def prepare_receptor(
             (e.g. cathepsin B at pH ~5.5), use the appropriate value.
         forcefield: OpenMM force field XML for energy minimisation
             (default ``"amber14-all.xml"``).
+        restraint_center: Optional (x, y, z) pocket centre in Å for
+            **pocket-restrained minimisation**.  Atoms within
+            ``restraint_radius`` of this point have their backbone
+            restrained (10 kcal/mol/Å²) while side chains move freely;
+            atoms outside have all heavy atoms restrained.  If *None*
+            (default), a uniform heavy-atom restraint (10 kcal/mol/Å²)
+            is applied to the entire protein.  Provide the crystal-ligand
+            centroid or fpocket pocket centre for best results.
+        restraint_radius: Radius (Å) around ``restraint_center`` defining
+            the pocket region for differential restraints (default 8.0).
 
     Returns:
         Absolute path to the prepared PDBQT file.
@@ -187,30 +199,83 @@ def prepare_receptor(
         logger.warning(f"Reduce step skipped ({exc}) — using PDBFixer output")
         tmp_reduced = tmp_fixed
 
-    # ── Step 5: OpenMM short energy minimisation ─────────────────────────
+    # ── Step 5: OpenMM pocket-restrained energy minimisation ─────────────
     tmp_min = write_temp_file("", suffix="_minimized.pdb")
     try:
-        from openmm import LangevinIntegrator
+        from openmm import CustomExternalForce, LangevinIntegrator
         from openmm import unit as _omm_unit
         from openmm.app import ForceField, PDBFile, Simulation
 
-        # Use the force field for energy terms — only protein atoms matter
-        # Reload from Reduce output for OpenMM (needs PDBFixer topology + positions)
+        # Reload from Reduce output for OpenMM
         from pdbfixer import PDBFixer as _PBFixer
         _reduce_fixer = _PBFixer(filename=tmp_reduced)
+        _top = _reduce_fixer.topology
+        _pos = _reduce_fixer.positions  # OpenMM: units in nm
+
         ff = ForceField(forcefield)
-        system = ff.createSystem(_reduce_fixer.topology)
+        system = ff.createSystem(_top)
+
+        # ── Positional restraints ─────────────────────────────────────────
+        # Pocket region: backbone restrained (10 kcal/mol/Å²), side chains free
+        # Outside pocket: all heavy atoms restrained (10 kcal/mol/Å²)
+        # Keeps crystal structure globally while relieving local strain.
+        k_kcal = 10.0  # restraint force constant (kcal/mol/Å²)
+        _K = k_kcal * _omm_unit.kilocalories_per_mole / _omm_unit.angstrom ** 2
+        BACKBONE_NAMES = {"N", "CA", "C", "O", "OXT"}
+
+        rest_force = CustomExternalForce(
+            "k * ((x - x0)^2 + (y - y0)^2 + (z - z0)^2)"
+        )
+        rest_force.addGlobalParameter("k", _K)
+        rest_force.addPerParticleParameter("x0")
+        rest_force.addPerParticleParameter("y0")
+        rest_force.addPerParticleParameter("z0")
+
+        # Convert centre & radius from Å → nm for OpenMM distance check
+        if restraint_center is not None:
+            cx_nm, cy_nm, cz_nm = (c / 10.0 for c in restraint_center)
+            r_sq_nm = (restraint_radius / 10.0) ** 2
+        else:
+            cx_nm = cy_nm = cz_nm = r_sq_nm = None
+
+        n_restrained = 0
+        for atom in _top.atoms():
+            if atom.element.symbol == "H":
+                continue  # never restrain hydrogens
+            if _pos is None:
+                continue
+            p = _pos[atom.index]
+            px, py, pz = p.x, p.y, p.z
+
+            # Decide whether to apply restraint
+            apply_restraint = True  # default: restrain outside pocket
+            if restraint_center is not None:
+                # Inside pocket: backbone only; side chains free
+                d_sq = (px - cx_nm) ** 2 + (py - cy_nm) ** 2 + (pz - cz_nm) ** 2
+                if d_sq < r_sq_nm and atom.name not in BACKBONE_NAMES:
+                    apply_restraint = False  # side chain inside pocket → free
+
+            if apply_restraint:
+                rest_force.addParticle(atom.index, [px, py, pz])
+                n_restrained += 1
+
+        system.addForce(rest_force)
+        logger.info(
+            f"OpenMM restraints: {n_restrained} heavy atoms restrained"
+            + (f" (pocket radius {restraint_radius} Å)" if restraint_center else " (uniform)")
+        )
+
         integrator = LangevinIntegrator(
             300 * _omm_unit.kelvin,
             1.0 / _omm_unit.picosecond,
             0.002 * _omm_unit.picosecond,
         )
-        simulation = Simulation(_reduce_fixer.topology, system, integrator)
-        simulation.context.setPositions(_reduce_fixer.positions)
+        simulation = Simulation(_top, system, integrator)
+        simulation.context.setPositions(_pos)
         simulation.minimizeEnergy(maxIterations=200)
         min_positions = simulation.context.getState(getPositions=True).getPositions()
         with open(tmp_min, "w") as fh:
-            PDBFile.writeFile(fixer.topology, min_positions, fh)
+            PDBFile.writeFile(_top, min_positions, fh)
         logger.info("OpenMM: receptor energy minimised (200 steps L-BFGS)")
     except Exception as exc:
         logger.warning(f"OpenMM minimisation skipped ({exc}) — using PDBFixer output")
