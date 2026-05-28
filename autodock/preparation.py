@@ -29,7 +29,7 @@ from autodock.core import (
     logger,
     safe_subprocess,
 )
-from autodock.utils import ensure_dir, obabel_convert
+from autodock.utils import ensure_dir, obabel_convert, safe_pdb_slice
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Receptor Preparation
@@ -98,13 +98,11 @@ def prepare_receptor(
 
     # Step 2: Filter waters / hetatms
     if remove_water or remove_hetatms or keep_residues:
-        tmp_pdb = tempfile.mktemp(suffix="_filtered.pdb")
-        # Write filtered content to temp file
         lines = pdb_content.splitlines(keepends=True)
         filtered = []
         for line in lines:
             if line.startswith("ATOM  "):
-                resn = line[17:20].strip()
+                resn = safe_pdb_slice(line, 17, 20)
                 if keep_residues and resn not in keep_residues:
                     continue
                 if remove_water and resn in _SKIP_WATER:
@@ -113,7 +111,7 @@ def prepare_receptor(
             elif line.startswith("HETATM"):
                 if remove_hetatms:
                     continue
-                resn = line[17:20].strip()
+                resn = safe_pdb_slice(line, 17, 20)
                 if keep_residues and resn not in keep_residues:
                     continue
                 if remove_water and resn in _SKIP_WATER:
@@ -121,18 +119,14 @@ def prepare_receptor(
                 filtered.append(line)
             else:
                 filtered.append(line)
-        with open(tmp_pdb, "w") as fh:
-            fh.writelines(filtered)
         pdb_content = "".join(filtered)
-        with contextlib.suppress(Exception):
-            os.remove(tmp_pdb)
 
     # Step 3: Remove known problematic additives that crash Meeko
     lines = pdb_content.splitlines()
     filtered = []
     for line in lines:
         if line.startswith(("ATOM  ", "HETATM")):
-            resn = line[17:20].strip()
+            resn = safe_pdb_slice(line, 17, 20)
             if resn in _SKIP_ADDITIVES:
                 continue
         filtered.append(line)
@@ -353,6 +347,76 @@ def prepare_ligand(
         fh.write(pdbqt_str)
 
     logger.info(f"Ligand prepared: {output_pdbqt}")
+    return os.path.abspath(output_pdbqt)
+
+
+def prepare_ligand_from_sdf(
+    sdf_path: str,
+    output_pdbqt: str,
+    name: str = "LIG",
+) -> str:
+    """
+    Prepare a ligand from an SDF file, preserving existing 3D coordinates.
+
+    Unlike ``prepare_ligand()``, this skips conformer generation and uses
+    the coordinates already present in the SDF file.
+
+    Args:
+        sdf_path: Path to SDF file (single molecule).
+        output_pdbqt: Output PDBQT file path.
+        name: Residue name in PDBQT.
+
+    Returns:
+        Absolute path to the prepared PDBQT file.
+    """
+    try:
+        from meeko import MoleculePreparation, PDBQTWriterLegacy
+        from rdkit import Chem
+        from rdkit.Chem import rdPartialCharges
+    except ImportError as exc:
+        raise PreparationError(f"Required package missing: {exc}")
+
+    mol = Chem.MolFromMolFile(str(sdf_path), removeHs=False)
+    if mol is None:
+        # Try SDMolSupplier for multi-molecule SDF (take first)
+        supplier = Chem.SDMolSupplier(str(sdf_path), removeHs=False)
+        for m in supplier:
+            if m is not None:
+                mol = m
+                break
+    if mol is None:
+        raise PreparationError(f"Could not parse SDF: {sdf_path}")
+
+    # Ensure hydrogens are present (SDF may lack them)
+    mol = Chem.AddHs(mol, addCoords=True)
+
+    rdPartialCharges.ComputeGasteigerCharges(mol)
+    if _has_nan_charges(mol):
+        logger.warning("Gasteiger charges contain NaN — falling back to Open Babel")
+        return _prepare_ligand_with_obabel(Chem.MolToSmiles(mol), output_pdbqt, name=name)
+
+    params_mk = MoleculePreparation(charge_model="gasteiger")
+    try:
+        mol_setup = params_mk.prepare(mol)
+    except Exception as exc:
+        err_str = str(exc)
+        if "non finite charge" in err_str or "charge" in err_str.lower():
+            logger.warning(f"Meeko charge failure ({exc}) — falling back to Open Babel")
+            return _prepare_ligand_with_obabel(Chem.MolToSmiles(mol), output_pdbqt, name=name)
+        raise PreparationError(f"Meeko ligand prep failed: {exc}")
+
+    setup = mol_setup[0] if isinstance(mol_setup, list) else mol_setup
+    pdbqt_str, success, err = PDBQTWriterLegacy.write_string(setup)
+    if not success:
+        if "non finite charge" in err or "charge" in err.lower():
+            logger.warning("Meeko charge error — falling back to Open Babel")
+            return _prepare_ligand_with_obabel(Chem.MolToSmiles(mol), output_pdbqt, name=name)
+        raise PreparationError(f"PDBQT export failed: {err}")
+
+    pdbqt_str = pdbqt_str.replace("UNL", name)
+    with open(output_pdbqt, "w") as fh:
+        fh.write(pdbqt_str)
+    logger.info(f"Prepared ligand from SDF: {output_pdbqt}")
     return os.path.abspath(output_pdbqt)
 
 
@@ -694,7 +758,8 @@ def prepare_ligand_adaptive(
     # Scheme C: >50 atoms — force single conformer to avoid Vina timeout/hang
     if n_heavy > 50:
         logger.info(
-            f"Very large ligand ({n_heavy} heavy atoms) — forcing single conformer to avoid Vina hang"
+            f"Very large ligand ({n_heavy} heavy atoms)"
+            " — forcing single conformer to avoid Vina hang"
         )
         single_path = os.path.join(output_dir, "ligand.pdbqt")
         return prepare_ligand(smiles, single_path, name=name, seed=seed)
@@ -702,7 +767,8 @@ def prepare_ligand_adaptive(
     if n_heavy > 45:
         effective_max_reps = min(effective_max_reps, 2)
         logger.info(
-            f"Large ligand ({n_heavy} heavy atoms) — capping representatives to {effective_max_reps}"
+            f"Large ligand ({n_heavy} heavy atoms)"
+            f" — capping representatives to {effective_max_reps}"
         )
 
     return prepare_ligand_multi(
@@ -733,13 +799,15 @@ def _compute_box_size(
 
 
 def _prepare_pdb_for_fpocket(pdb_in: str, pdb_out: str) -> None:
-    """Strip waters and keep only ATOM/HETATM for fpocket."""
-    with open(pdb_in) as fin, open(pdb_out, "w") as fout:
-        for line in fin:
-            if line.startswith(("ATOM  ", "HETATM")):
-                resn = line[17:20].strip()
-                if resn not in _SKIP_WATER:
-                    fout.write(line)
+    """Strip waters and keep only ATOM/HETATM for fpocket.
+
+    Supports both PDB and mmCIF input via ``read_pdb_atoms``.
+    """
+    from autodock.utils import read_pdb_atoms, write_pdb_atoms
+
+    atoms = read_pdb_atoms(pdb_in)
+    filtered = [a for a in atoms if a["res_name"] not in _SKIP_WATER]
+    write_pdb_atoms(filtered, pdb_out)
 
 
 def _parse_fpocket_info(info_path: str) -> list[dict[str, Any]]:
@@ -1005,7 +1073,8 @@ def find_top_pockets(
             if p2rank_probs:
                 logger.info(
                     f"P2Rank rescored {len(p2rank_probs)} pockets "
-                    f"(prob range: {min(p2rank_probs.values()):.3f} - {max(p2rank_probs.values()):.3f})"
+                    f"(prob range: {min(p2rank_probs.values()):.3f}"
+                    f" - {max(p2rank_probs.values()):.3f})"
                 )
 
         # Sort: primary P2Rank probability, secondary druggability - opening_penalty
@@ -1025,7 +1094,8 @@ def find_top_pockets(
             # Volume validation
             if p.get("volume") is not None and p["volume"] > _POCKET_MAX_VOLUME:
                 logger.warning(
-                    f"Pocket #{p['num']} oversized ({p['volume']:.0f} Å³ > {_POCKET_MAX_VOLUME}), skipping"
+                    f"Pocket #{p['num']} oversized"
+                    f" ({p['volume']:.0f} Å³ > {_POCKET_MAX_VOLUME}), skipping"
                 )
                 continue
             # Depth warning
@@ -1066,11 +1136,14 @@ def find_top_pockets(
             prob_str = f"P2Rank={prob:.3f}" if prob is not None else "P2Rank=N/A"
             if prob is not None and prob < _P2RANK_PROB_THRESHOLD:
                 logger.warning(
-                    f"Pocket {i+1} (#{pk['pocket_num']}): LOW P2Rank confidence ({prob:.3f} < {_P2RANK_PROB_THRESHOLD})"
+                    f"Pocket {i+1} (#{pk['pocket_num']}):"
+                    f" LOW P2Rank confidence ({prob:.3f} < {_P2RANK_PROB_THRESHOLD})"
                 )
             if pk["druggability"] < _DRUGGABILITY_THRESHOLD:
                 logger.warning(
-                    f"Pocket {i+1} (#{pk['pocket_num']}): LOW druggability ({pk['druggability']:.3f} < {_DRUGGABILITY_THRESHOLD})"
+                    f"Pocket {i+1} (#{pk['pocket_num']}):"
+                    f" LOW druggability ({pk['druggability']:.3f}"
+                    f" < {_DRUGGABILITY_THRESHOLD})"
                 )
             logger.info(
                 f"Pocket {i+1} (#{pk['pocket_num']}): center={pk['center']}, box={pk['box_size']} "

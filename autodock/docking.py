@@ -7,6 +7,7 @@ with consensus scoring and structured result output.
 
 from __future__ import annotations
 
+import concurrent.futures
 import contextlib
 import multiprocessing
 import os
@@ -185,7 +186,8 @@ def _run_vina_dock(
             t.join(timeout=timeout)
             if t.is_alive():
                 raise DockingCalculationError(
-                    f"Docking timed out after {timeout}s. Try smaller search space or lower exhaustiveness."
+                    f"Docking timed out after {timeout}s."
+                    " Try smaller search space or lower exhaustiveness."
                 )
             if "error" in result_state:
                 raise DockingCalculationError(f"Docking failed: {result_state['error']}") from None
@@ -240,12 +242,15 @@ def _run_vina_dock(
             f"Docking timed out after {timeout}s. Try smaller search space or lower exhaustiveness."
         )
 
-    if p.exitcode != 0:
-        raise DockingCalculationError(f"Docking subprocess exited with code {p.exitcode}")
-
+    # Read queue first — even if exitcode != 0 the worker may have posted a
+    # detailed error message before crashing.
     try:
         status, payload1, payload2 = result_queue.get(timeout=30)
     except Exception:
+        if p.exitcode != 0:
+            raise DockingCalculationError(
+                f"Docking subprocess exited with code {p.exitcode}"
+            ) from None
         raise DockingCalculationError(
             "Docking subprocess completed but result queue was empty"
         ) from None
@@ -510,9 +515,8 @@ def dock_ligand(
 
 def _dock_conformer_worker(
     args: tuple,
-    result_queue=None,
-) -> tuple[list[tuple[float, str]], int] | None:
-    """Worker for parallel multi-conformer docking."""
+) -> tuple[list[tuple[float, str]], int]:
+    """Worker for parallel multi-conformer docking (picklable top-level function)."""
     (
         receptor_pdbqt,
         conf_path,
@@ -524,7 +528,7 @@ def _dock_conformer_worker(
         seed,
         timeout,
     ) = args
-    result = _dock_conformer_core(
+    return _dock_conformer_core(
         receptor_pdbqt,
         conf_path,
         center,
@@ -535,9 +539,6 @@ def _dock_conformer_worker(
         seed,
         timeout,
     )
-    if result_queue is not None:
-        result_queue.put(result)
-    return result
 
 
 def _dock_conformer_core(
@@ -635,53 +636,27 @@ def dock_ligand_multi_conformer(
     ]
 
     if max_workers > 1:
-        ctx = multiprocessing.get_context("spawn")
-        result_queue = ctx.Queue()
-        processes: list[multiprocessing.Process] = []
-
-        for item in work_items:
-            p = ctx.Process(target=_dock_conformer_worker, args=(item, result_queue))
-            p.start()
-            processes.append(p)
-
-        # Collect results as processes finish (with timeout)
-        finished = 0
-        start = __import__("time").time()
-        while finished < len(processes):
-            # Check for completed processes
-            for p in processes:
-                if p.is_alive():
-                    continue
-                # Process finished — try to get result
+        mp_ctx = multiprocessing.get_context("spawn")
+        with concurrent.futures.ProcessPoolExecutor(
+            max_workers=max_workers, mp_context=mp_ctx
+        ) as executor:
+            future_to_item = {
+                executor.submit(_dock_conformer_worker, item): item for item in work_items
+            }
+            for future in concurrent.futures.as_completed(
+                future_to_item, timeout=timeout * len(work_items) + 10
+            ):
                 try:
-                    pool, ok = result_queue.get(timeout=1)
-                    all_poses_pool.extend(pool)
-                    n_success += ok
-                    if ok:
-                        best_e = min(e for e, _ in pool)
-                        logger.debug(
-                            f"Conformer done: {len(pool)} poses, best={best_e:.2f} kcal/mol"
-                        )
-                except Exception:
-                    logger.warning("Conformer process finished but result queue was empty")
-                finished += 1
-
-            # Check global timeout
-            elapsed = __import__("time").time() - start
-            if elapsed > timeout * len(processes):
-                logger.error(f"Global multi-conformer timeout after {elapsed:.0f}s")
-                break
-
-            __import__("time").sleep(0.5)
-
-        # Terminate any still-running processes
-        for p in processes:
-            if p.is_alive():
-                p.terminate()
-                p.join(timeout=3)
-                if p.is_alive():
-                    p.kill()
-                    p.join(timeout=3)
+                    pool, ok = future.result(timeout=timeout + 5)
+                except Exception as exc:
+                    conf_path = future_to_item[future][1]
+                    logger.warning(f"Conformer docking failed for {conf_path}: {exc}")
+                    continue
+                all_poses_pool.extend(pool)
+                n_success += ok
+                if ok:
+                    best_e = min(e for e, _ in pool)
+                    logger.debug(f"Conformer done: {len(pool)} poses, best={best_e:.2f} kcal/mol")
     else:
         # Sequential fallback
         for item in work_items:

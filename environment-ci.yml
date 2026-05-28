@@ -1,0 +1,24 @@
+name: autodock-ci
+channels:
+  - conda-forge
+  - bioconda
+  - defaults
+dependencies:
+  - python=3.12
+  - pip
+  # Core scientific stack
+  - numpy>=1.24
+  - pandas>=2.0
+  - scipy>=1.10
+  # Cheminformatics & docking (required for tests)
+  - rdkit>=2023.03
+  - vina>=1.2.0
+  - meeko>=0.6.0
+  # Utilities
+  - pillow>=10.0
+  - pyyaml>=6.0
+  # Dev / test tools
+  - pytest>=8.0
+  - pytest-cov>=4.1
+  - ruff>=0.4.0
+  - black>=24.0

@@ -103,7 +103,18 @@ def download_pdb(
 
     out_path = os.path.join(output_dir, f"{pdb_id}{ext}")
     ensure_dir(output_dir)
-    _download_url(url, out_path)
+    try:
+        _download_url(url, out_path)
+    except StructureFetchError:
+        # Fallback: if PDB format failed, try mmCIF
+        if fmt == "pdb":
+            cif_url = f"https://files.rcsb.org/download/{pdb_id}.cif"
+            cif_path = os.path.join(output_dir, f"{pdb_id}.cif")
+            logger.warning(f"PDB format download failed — trying mmCIF fallback for {pdb_id}")
+            _download_url(cif_url, cif_path)
+            logger.info(f"Downloaded PDB (cif fallback): {cif_path}")
+            return cif_path
+        raise
     logger.info(f"Downloaded PDB ({fmt}): {out_path}")
     return out_path
 
@@ -490,6 +501,33 @@ def read_sdf_library(path: str) -> dict[str, str]:
         try:
             smiles = Chem.MolToSmiles(mol)
             results[name] = smiles
+        except Exception:
+            continue
+    return results
+
+
+def read_sdf_3d_library(path: str) -> dict[str, tuple[str, Any]]:
+    """
+    Read a multi-molecule SDF file preserving 3D coordinates.
+
+    Args:
+        path: Path to SDF file.
+
+    Returns:
+        Dictionary mapping compound name to (SMILES, RDKit Mol with 3D coords).
+        Molecules that cannot be parsed are silently skipped.
+    """
+    from rdkit import Chem
+
+    results: dict[str, tuple[str, Any]] = {}
+    supplier = Chem.SDMolSupplier(str(path), removeHs=False)
+    for i, mol in enumerate(supplier):
+        if mol is None:
+            continue
+        name = mol.GetProp("_Name") or f"compound_{i}"
+        try:
+            smiles = Chem.MolToSmiles(mol)
+            results[name] = (smiles, mol)
         except Exception:
             continue
     return results

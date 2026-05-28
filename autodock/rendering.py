@@ -62,6 +62,7 @@ def _build_pymol_script(
     width: int = DEFAULT_RAY_WIDTH,
     height: int = DEFAULT_RAY_HEIGHT,
     pocket_distance: float = 5.0,
+    save_pse: str | None = None,
 ) -> str:
     """Build a PyMOL command script for publication-quality rendering."""
 
@@ -91,7 +92,9 @@ def _build_pymol_script(
     if scene == "pocket" and center:
         cx, cy, cz = center
         lines.append(
-            f"cmd.select('pocket_surf', 'br. receptor and center {cx},{cy},{cz} around {pocket_distance}')"
+            "cmd.select('pocket_surf',"
+            f"'br. receptor and center {cx},{cy},{cz}"
+            f" around {pocket_distance}')"
         )
         lines.append("cmd.show('surface', 'pocket_surf')")
         lines.append("cmd.set('transparency', 0.25, 'pocket_surf')")
@@ -176,6 +179,8 @@ def _build_pymol_script(
     # Render
     lines.append(f"cmd.ray({width}, {height})")
     lines.append(f'cmd.png("{output_png}", dpi={DEFAULT_DPI})')
+    if save_pse:
+        lines.append(f'cmd.save("{save_pse}")')
     lines.append("cmd.quit()")
 
     return "\n".join(lines)
@@ -190,6 +195,7 @@ def render_scene_pymol(
     interactions: list[dict[str, Any]] | None = None,
     width: int = DEFAULT_RAY_WIDTH,
     height: int = DEFAULT_RAY_HEIGHT,
+    save_pse: str | None = None,
 ) -> str:
     """
     Render a 3D scene using PyMOL CLI.
@@ -203,6 +209,7 @@ def render_scene_pymol(
         interactions: List of interaction dicts (for 'interaction' scene).
         width: Image width in pixels.
         height: Image height in pixels.
+        save_pse: Optional path to save a PyMOL session (.pse) file.
 
     Returns:
         Path to output PNG.
@@ -213,6 +220,8 @@ def render_scene_pymol(
         )
 
     ensure_dir(os.path.dirname(output_png) or ".")
+    if save_pse:
+        ensure_dir(os.path.dirname(save_pse) or ".")
 
     script = _build_pymol_script(
         receptor_pdb,
@@ -223,6 +232,7 @@ def render_scene_pymol(
         interactions=interactions,
         width=width,
         height=height,
+        save_pse=save_pse,
     )
 
     script_path = tempfile.mktemp(suffix=".pml")
@@ -279,12 +289,226 @@ def _parse_pdbqt_coords(ligand_pdbqt: str) -> dict[tuple[float, float, float], i
     with open(ligand_pdbqt) as fh:
         for line in fh:
             if line.startswith(("ATOM  ", "HETATM")):
-                serial = int(line[6:11].strip())
-                x = float(line[30:38])
-                y = float(line[38:46])
-                z = float(line[46:54])
+                try:
+                    serial = int(line[6:11].strip())
+                    x = float(line[30:38])
+                    y = float(line[38:46])
+                    z = float(line[46:54])
+                except ValueError:
+                    continue
                 coords_map[(round(x, 3), round(y, 3), round(z, 3))] = serial
     return coords_map
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# LigPlot+ style drawing primitives
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+def _draw_dashed_line(
+    draw: Any,
+    x1: int,
+    y1: int,
+    x2: int,
+    y2: int,
+    fill: tuple[int, int, int],
+    width: int = 2,
+    dash_len: int = 6,
+    gap_len: int = 4,
+) -> None:
+    """Draw a dashed line on a PIL ImageDraw."""
+    dx = x2 - x1
+    dy = y2 - y1
+    dist = math.hypot(dx, dy)
+    if dist < 1:
+        return
+    nx = dx / dist
+    ny = dy / dist
+    step = dash_len + gap_len
+    n_dashes = int(dist / step)
+    for i in range(n_dashes + 1):
+        s0 = i * step
+        s1 = min(s0 + dash_len, dist)
+        draw.line(
+            [
+                (x1 + nx * s0, y1 + ny * s0),
+                (x1 + nx * s1, y1 + ny * s1),
+            ],
+            fill=fill,
+            width=width,
+        )
+
+
+def _draw_spoked_arc(
+    draw: Any,
+    cx: int,
+    cy: int,
+    radius: int,
+    start_angle: float,
+    end_angle: float,
+    fill: tuple[int, int, int],
+    width: int = 2,
+    n_spokes: int = 7,
+) -> None:
+    """Draw a red spoked arc (semicircle with radial spikes) as used by
+    LigPlot+ for hydrophobic contacts.
+    """
+    # Draw the arc using short line segments
+    n_segments = max(24, int(radius * abs(end_angle - start_angle) / 3))
+    arc_points: list[tuple[int, int]] = []
+    for i in range(n_segments + 1):
+        t = start_angle + (end_angle - start_angle) * i / n_segments
+        arc_points.append((int(cx + radius * math.cos(t)), int(cy + radius * math.sin(t))))
+    for i in range(len(arc_points) - 1):
+        draw.line([arc_points[i], arc_points[i + 1]], fill=fill, width=width)
+
+    # Draw radial spokes (spikes pointing outward)
+    for i in range(n_spokes):
+        t = start_angle + (end_angle - start_angle) * i / (n_spokes - 1)
+        sx = cx + radius * math.cos(t)
+        sy = cy + radius * math.sin(t)
+        ex = cx + (radius + 12) * math.cos(t)
+        ey = cy + (radius + 12) * math.sin(t)
+        draw.line([(int(sx), int(sy)), (int(ex), int(ey))], fill=fill, width=width)
+
+
+def _draw_rounded_label(
+    draw: Any,
+    x: int,
+    y: int,
+    text: str,
+    font: Any,
+    border_color: tuple[int, int, int],
+    bg_color: tuple[int, int, int, int] = (255, 255, 255, 235),
+    radius: int = 8,
+    padding: int = 4,
+) -> tuple[int, int, int, int]:
+    """Draw a text label inside a rounded rectangle.
+
+    Returns the bounding box (x1, y1, x2, y2).
+    """
+    bbox = draw.textbbox((0, 0), text, font=font)
+    tw = bbox[2] - bbox[0]
+    th = bbox[3] - bbox[1]
+    x1 = x - padding
+    y1 = y - padding
+    x2 = x + tw + padding
+    y2 = y + th + padding
+
+    # Rounded rectangle
+    draw.rounded_rectangle(
+        [(x1, y1), (x2, y2)],
+        radius=radius,
+        fill=bg_color,
+        outline=border_color,
+        width=2,
+    )
+    draw.text((x, y), text, fill=(0, 0, 0), font=font)
+    return (x1, y1, x2, y2)
+
+
+def _compute_label_positions(
+    groups: list[dict[str, Any]],
+    atom_coords: dict[int, tuple[float, float]],
+    canvas_w: int,
+    canvas_h: int,
+    margin: int = 100,
+) -> dict[int, tuple[int, int]]:
+    """Compute radial label positions around ligand centre.
+
+    Uses angular sector assignment with collision nudging.
+    Returns mapping: group index -> (x, y) top-left of label.
+    """
+    if not groups:
+        return {}
+
+    # Ligand centre (mean of ALL atoms, not just interacting ones)
+    all_atom_x = [c[0] for c in atom_coords.values()]
+    all_atom_y = [c[1] for c in atom_coords.values()]
+    if all_atom_x:
+        cx = sum(all_atom_x) / len(all_atom_x)
+        cy = sum(all_atom_y) / len(all_atom_y)
+    else:
+        cx, cy = canvas_w / 2, canvas_h / 2
+
+    # Compute centroid angle for each group (from ligand centre)
+    group_angles: list[tuple[int, float]] = []
+    for i, g in enumerate(groups):
+        atoms = [a for a in g.get("rdkit_atoms", set()) if a in atom_coords]
+        if not atoms:
+            continue
+        gx = sum(atom_coords[a][0] for a in atoms) / len(atoms)
+        gy = sum(atom_coords[a][1] for a in atoms) / len(atoms)
+        angle = math.atan2(gy - cy, gx - cx)
+        group_angles.append((i, angle))
+
+    # Sort by angle for even distribution
+    group_angles.sort(key=lambda x: x[1])
+
+    # Assign sectors evenly around the circle
+    n = len(group_angles)
+    positions: dict[int, tuple[int, int]] = {}
+    placed: list[tuple[int, int, int, int]] = []
+
+    for rank, (gi, _orig_angle) in enumerate(group_angles):
+        # Even angular spacing starting from top
+        sector_angle = 2 * math.pi * rank / n - math.pi / 2
+        g = groups[gi]
+        atoms = [a for a in g.get("rdkit_atoms", set()) if a in atom_coords]
+        if not atoms:
+            continue
+
+        # Anchor at centroid of group's atoms
+        gx = sum(atom_coords[a][0] for a in atoms) / len(atoms)
+        gy = sum(atom_coords[a][1] for a in atoms) / len(atoms)
+
+        # Estimate text size
+        label = f"{g['resn']}{g['resi']}"
+        est_tw = len(label) * 11
+        est_th = 18
+
+        # Distance from ligand centre (not from atom)
+        base_dist = max(canvas_w, canvas_h) * 0.40
+        # H-bonds need room for dashed line + distance text
+        if g.get("type") == "H-bond":
+            base_dist *= 1.02
+        elif g.get("type") == "Hydrophobic":
+            base_dist *= 1.08
+
+        # Try angles with nudging for collision avoidance
+        best_pos = None
+        for nudge in range(0, 31):
+            angle = sector_angle + (nudge * 0.06 if nudge % 2 == 1 else -nudge * 0.06)
+            # Position relative to ligand centre
+            lx = int(cx + base_dist * math.cos(angle)) - est_tw // 2
+            ly = int(cy + base_dist * math.sin(angle)) - est_th // 2
+
+            # Margin clamp
+            lx = max(margin, min(lx, canvas_w - margin - est_tw))
+            ly = max(margin, min(ly, canvas_h - margin - est_th))
+
+            box = (lx - 6, ly - 6, lx + est_tw + 6, ly + est_th + 6)
+            overlap = False
+            for bx1, by1, bx2, by2 in placed:
+                if not (box[2] < bx1 or box[0] > bx2 or box[3] < by1 or box[1] > by2):
+                    overlap = True
+                    break
+            if not overlap:
+                best_pos = (lx, ly)
+                placed.append(box)
+                break
+
+        if best_pos is None:
+            # Fallback: stack vertically at right margin
+            best_pos = (canvas_w - margin - est_tw, margin + gi * 30)
+            placed.append((
+                best_pos[0] - 6, best_pos[1] - 6,
+                best_pos[0] + est_tw + 6, best_pos[1] + est_th + 6,
+            ))
+
+        positions[gi] = best_pos
+
+    return positions
 
 
 def render_interactions_2d(
@@ -327,9 +551,8 @@ def render_interactions_2d(
     with open(ligand_pdbqt) as fh:
         for line in fh:
             if line.startswith("REMARK SMILES ") and not line.startswith("REMARK SMILES IDX"):
-                parts = line.strip().split()
-                if len(parts) >= 3:
-                    smiles = parts[2]
+                # SMILES may contain spaces — slice after the prefix instead of split()
+                smiles = line[14:].strip()
                 break
 
     if smiles:
@@ -362,6 +585,7 @@ def render_interactions_2d(
                 "resi": inter.get("resi"),
                 "chain": inter.get("chain"),
                 "color": inter.get("color"),
+                "distance": inter.get("distance"),
                 "rdkit_atoms": set(),
             }
         for atom_info in inter.get("ligand_atoms", []):
@@ -375,6 +599,8 @@ def render_interactions_2d(
     # ── Build RDKit highlight dictionaries ────────────────────────────────────
     highlight_atoms: set[int] = set()
     highlight_atom_colors: dict[int, tuple[float, float, float]] = {}
+    highlight_bonds: set[int] = set()
+    highlight_bond_colors: dict[int, tuple[float, float, float]] = {}
 
     color_rgb_float = {
         "cyan": (0.0, 0.75, 0.75),
@@ -387,14 +613,32 @@ def render_interactions_2d(
         "grey": (0.5, 0.5, 0.5),
     }
 
+    # Build a quick atom-pair -> bond-idx lookup
+    bond_lookup: dict[tuple[int, int], int] = {}
+    for bond in mol.GetBonds():
+        a1, a2 = bond.GetBeginAtomIdx(), bond.GetEndAtomIdx()
+        bond_lookup[(min(a1, a2), max(a1, a2))] = bond.GetIdx()
+
     for group in interaction_groups.values():
         color_name = group["color"]
         rgb = color_rgb_float.get(color_name, (0.5, 0.5, 0.5))
-        for rdkit_idx in group["rdkit_atoms"]:
+        group_atoms = group["rdkit_atoms"]
+        for rdkit_idx in group_atoms:
             highlight_atoms.add(rdkit_idx)
             # If atom already has a color, keep the first one encountered
             if rdkit_idx not in highlight_atom_colors:
                 highlight_atom_colors[rdkit_idx] = rgb
+        # Highlight bonds where both atoms are in this interaction group
+        group_atom_list = list(group_atoms)
+        for i in range(len(group_atom_list)):
+            for j in range(i + 1, len(group_atom_list)):
+                a1, a2 = group_atom_list[i], group_atom_list[j]
+                key = (min(a1, a2), max(a1, a2))
+                if key in bond_lookup:
+                    bidx = bond_lookup[key]
+                    highlight_bonds.add(bidx)
+                    if bidx not in highlight_bond_colors:
+                        highlight_bond_colors[bidx] = rgb
 
     # ── Draw molecule with highlights ─────────────────────────────────────────
     # Scale canvas by DPI for publication-quality output (RDKit Cairo works in px)
@@ -409,6 +653,8 @@ def render_interactions_2d(
             mol,
             highlightAtoms=list(highlight_atoms),
             highlightAtomColors=highlight_atom_colors,
+            highlightBonds=list(highlight_bonds) if highlight_bonds else None,
+            highlightBondColors=highlight_bond_colors if highlight_bonds else None,
         )
     else:
         drawer.DrawMolecule(mol)
@@ -418,7 +664,7 @@ def render_interactions_2d(
     img = Image.open(__import__("io").BytesIO(png_data))
     draw = ImageDraw.Draw(img)
 
-    # ── Fonts ─────────────────────────────────────────────────────────────────
+    # ── Fonts (publication hierarchy) ─────────────────────────────────────────
     def _load_font(size: int):
         """Cross-platform font loader with sensible fallbacks."""
         candidates = [
@@ -437,99 +683,27 @@ def render_interactions_2d(
                     continue
         return ImageFont.load_default()
 
-    font = _load_font(16)
+    # Scaled font sizes based on canvas (reference: 1200x900 -> 16px label)
+    scale = max(canvas_w, canvas_h) / 1500
+    font_label = _load_font(max(14, int(18 * scale)))
+    font_distance = _load_font(max(11, int(13 * scale)))
+    font_legend = _load_font(max(12, int(15 * scale)))
+    font_symbol = _load_font(max(16, int(22 * scale)))
+    font = font_label
 
-    # ── Draw residue labels near atoms ────────────────────────────────────────
-    # Sort groups so that labels with fewer atoms (more specific) are placed first
-    sorted_groups = sorted(
-        interaction_groups.values(),
-        key=lambda g: len(g["rdkit_atoms"]),
+    # ── Collect atom 2D coordinates from RDKit drawer ─────────────────────────
+    atom_coords: dict[int, tuple[float, float]] = {}
+    for i in range(mol.GetNumAtoms()):
+        pos = drawer.GetDrawCoords(i)
+        atom_coords[i] = (pos.x, pos.y)
+
+    # ── LigPlot+ style residue labels ─────────────────────────────────────────
+    group_list = list(interaction_groups.values())
+    label_positions = _compute_label_positions(
+        group_list, atom_coords, canvas_w, canvas_h, margin=80
     )
 
-    placed_boxes: list[tuple[int, int, int, int]] = []
-
-    # Count how many labels anchor to each atom (for fan-out placement)
-    atom_label_counts: dict[int, int] = {}
-    for group in sorted_groups:
-        if not group["rdkit_atoms"]:
-            continue
-        best_atom = min(group["rdkit_atoms"], key=lambda idx: drawer.GetDrawCoords(idx).y)
-        atom_label_counts[best_atom] = atom_label_counts.get(best_atom, 0) + 1
-
-    atom_label_indices: dict[int, int] = {}
-
-    for group in sorted_groups:
-        if not group["rdkit_atoms"]:
-            continue
-
-        label = f"{group['resn']}{group['resi']}"
-        color_name = group["color"]
-        rgb = tuple(int(c * 255) for c in color_rgb_float.get(color_name, (0.5, 0.5, 0.5)))
-
-        # Pick the atom closest to the top of the canvas for this group
-        best_atom = min(group["rdkit_atoms"], key=lambda idx: drawer.GetDrawCoords(idx).y)
-        pos = drawer.GetDrawCoords(best_atom)
-        ax, ay = int(pos.x), int(pos.y)
-
-        bbox = draw.textbbox((0, 0), label, font=font)
-        text_w = bbox[2] - bbox[0]
-        text_h = bbox[3] - bbox[1]
-        padding = 3
-
-        # Fan-out labels that share the same anchor atom
-        total_for_atom = atom_label_counts.get(best_atom, 1)
-        idx_for_atom = atom_label_indices.get(best_atom, 0)
-        atom_label_indices[best_atom] = idx_for_atom + 1
-
-        base_angle = -math.pi / 2  # straight up
-        if total_for_atom > 1:
-            spread = min(math.pi * 0.6, 0.35 * total_for_atom)
-            base_angle = -math.pi / 2 + (idx_for_atom - (total_for_atom - 1) / 2) * spread / (
-                total_for_atom - 1
-            )
-
-        dist = 55
-        lx = ax + int(dist * math.cos(base_angle)) - text_w // 2
-        ly = ay + int(dist * math.sin(base_angle)) - text_h // 2
-
-        # Check overlap with already-placed boxes and nudge if needed
-        for _ in range(15):
-            box = (lx - padding, ly - padding, lx + text_w + padding, ly + text_h + padding)
-            overlap = False
-            for bx1, by1, bx2, by2 in placed_boxes:
-                if not (box[2] < bx1 or box[0] > bx2 or box[3] < by1 or box[1] > by2):
-                    overlap = True
-                    lx += 10
-                    ly -= 6
-                    break
-            if not overlap:
-                break
-
-        # Keep within canvas margins
-        lx = max(5, min(lx, width - text_w - 5))
-        ly = max(5, min(ly, height - text_h - 5))
-
-        # Draw leader line from atom to label centre
-        draw.line([(ax, ay), (lx + text_w // 2, ly + text_h // 2)], fill=rgb, width=1)
-
-        # Draw label background box
-        draw.rectangle(
-            [(lx - padding, ly - padding), (lx + text_w + padding, ly + text_h + padding)],
-            fill=(255, 255, 255, 220),
-            outline=rgb,
-        )
-        draw.text((lx, ly), label, fill=(0, 0, 0), font=font)
-
-        placed_boxes.append(
-            (
-                lx - padding,
-                ly - padding,
-                lx + text_w + padding,
-                ly + text_h + padding,
-            )
-        )
-
-    # ── Draw legend box ───────────────────────────────────────────────────────
+    # LigPlot+ canonical colors (int RGB)
     color_rgb_int = {
         "cyan": (0, 190, 190),
         "orange": (255, 140, 0),
@@ -541,28 +715,237 @@ def render_interactions_2d(
         "grey": (128, 128, 128),
     }
 
+    # Pre-compute label sizes
+    label_sizes: dict[int, tuple[int, int]] = {}
+    for gi, g in enumerate(group_list):
+        label = f"{g['resn']}{g['resi']}"
+        bbox = draw.textbbox((0, 0), label, font=font)
+        label_sizes[gi] = (bbox[2] - bbox[0], bbox[3] - bbox[1])
+
+    # Draw each interaction group with LigPlot+ style graphics
+    for gi, g in enumerate(group_list):
+        atoms = [a for a in g.get("rdkit_atoms", set()) if a in atom_coords]
+        if not atoms:
+            continue
+
+        itype = g.get("type", "")
+        color_name = g.get("color", "grey")
+        rgb_int = color_rgb_int.get(color_name, (128, 128, 128))
+        label = f"{g['resn']}{g['resi']}"
+        pos = label_positions.get(gi)
+        if pos is None:
+            continue
+        lx, ly = pos
+        tw, th = label_sizes[gi]
+
+        # Atom centroid for this group
+        ax = int(sum(atom_coords[a][0] for a in atoms) / len(atoms))
+        ay = int(sum(atom_coords[a][1] for a in atoms) / len(atoms))
+
+        # Label centre
+        lcx = lx + tw // 2
+        lcy = ly + th // 2
+
+        if itype == "H-bond":
+            # LigPlot+ style: green dashed line with distance label
+            _draw_dashed_line(draw, ax, ay, lcx, lcy, (0, 170, 0), width=2)
+            # Distance annotation at midpoint
+            dist = g.get("distance")
+            if dist is not None:
+                mid_x = (ax + lcx) // 2
+                mid_y = (ay + lcy) // 2
+                dist_text = f"{dist:.1f}"
+                db = draw.textbbox((0, 0), dist_text, font=font_distance)
+                dw = db[2] - db[0]
+                dh = db[3] - db[1]
+                # White background for distance text
+                draw.rectangle(
+                    [(mid_x - dw // 2 - 2, mid_y - dh // 2 - 2),
+                     (mid_x + dw // 2 + 2, mid_y + dh // 2 + 2)],
+                    fill=(255, 255, 255),
+                )
+                draw.text(
+                    (mid_x - dw // 2, mid_y - dh // 2),
+                    dist_text,
+                    fill=(0, 100, 0),
+                    font=font_distance,
+                )
+
+        elif itype == "Hydrophobic":
+            # LigPlot+ style: red spoked arc emanating from ligand atom
+            angle_to_label = math.atan2(lcy - ay, lcx - ax)
+            arc_span = math.pi / 2.5
+            # Dynamic radius: ~35% of distance to label, with minimum
+            dist_to_label = math.hypot(lcx - ax, lcy - ay)
+            arc_radius = max(70, int(dist_to_label * 0.38))
+            _draw_spoked_arc(
+                draw,
+                ax,
+                ay,
+                radius=arc_radius,
+                start_angle=angle_to_label - arc_span / 2,
+                end_angle=angle_to_label + arc_span / 2,
+                fill=(210, 30, 50),
+                width=2,
+                n_spokes=7,
+            )
+            # Leader line from arc end toward label
+            mid_arc_x = int(ax + arc_radius * math.cos(angle_to_label))
+            mid_arc_y = int(ay + arc_radius * math.sin(angle_to_label))
+            draw.line(
+                [(mid_arc_x, mid_arc_y), (lcx, lcy)],
+                fill=(210, 30, 50),
+                width=1,
+            )
+
+        elif itype == "Salt bridge":
+            # Salt bridge: dashed line with +/- symbols
+            _draw_dashed_line(draw, ax, ay, lcx, lcy, (210, 30, 50), width=2)
+            # Place charge symbols near atom and label
+            charge_font = font  # reuse same font
+            # Atom side: ligand charge (assume negative for saltbridge_lneg)
+            draw.text((ax - 8, ay - 12), "−", fill=(210, 30, 50), font=charge_font)
+            # Label side: protein charge (positive)
+            draw.text((lcx + 4, lcy - 12), "+", fill=(210, 30, 50), font=charge_font)
+
+        elif itype == "π-π":
+            # π-π stacking: purple dashed arc between aromatic systems
+            _draw_dashed_line(draw, ax, ay, lcx, lcy, (140, 40, 230), width=2)
+            mid_x = (ax + lcx) // 2
+            mid_y = (ay + lcy) // 2
+            pi_text = "π-π"
+            pb = draw.textbbox((0, 0), pi_text, font=font_symbol)
+            pw = pb[2] - pb[0]
+            ph = pb[3] - pb[1]
+            draw.rectangle(
+                [(mid_x - pw // 2 - 2, mid_y - ph // 2 - 2),
+                 (mid_x + pw // 2 + 2, mid_y + ph // 2 + 2)],
+                fill=(255, 255, 255),
+            )
+            draw.text(
+                (mid_x - pw // 2, mid_y - ph // 2),
+                pi_text,
+                fill=(100, 20, 160),
+                font=font_symbol,
+            )
+
+        elif itype == "π-cation":
+            # π-cation interaction
+            _draw_dashed_line(draw, ax, ay, lcx, lcy, (140, 40, 230), width=2)
+            mid_x = (ax + lcx) // 2
+            mid_y = (ay + lcy) // 2
+            pc_text = "π-cat"
+            pb = draw.textbbox((0, 0), pc_text, font=font_symbol)
+            pw = pb[2] - pb[0]
+            ph = pb[3] - pb[1]
+            draw.rectangle(
+                [(mid_x - pw // 2 - 2, mid_y - ph // 2 - 2),
+                 (mid_x + pw // 2 + 2, mid_y + ph // 2 + 2)],
+                fill=(255, 255, 255),
+            )
+            draw.text(
+                (mid_x - pw // 2, mid_y - ph // 2),
+                pc_text,
+                fill=(100, 20, 160),
+                font=font_symbol,
+            )
+
+        elif itype == "Water bridge":
+            # Water bridge: blue dashed line via water molecule
+            # Draw water as small circle at midpoint
+            mid_x = (ax + lcx) // 2
+            mid_y = (ay + lcy) // 2
+            _draw_dashed_line(draw, ax, ay, mid_x, mid_y, (40, 115, 255), width=2)
+            _draw_dashed_line(draw, mid_x, mid_y, lcx, lcy, (40, 115, 255), width=2)
+            # Water molecule symbol (larger for visibility)
+            w_radius = max(12, int(16 * scale))
+            draw.ellipse(
+                [(mid_x - w_radius, mid_y - w_radius),
+                 (mid_x + w_radius, mid_y + w_radius)],
+                fill=(200, 220, 255),
+                outline=(40, 115, 255),
+                width=2,
+            )
+            wb = draw.textbbox((0, 0), "W", font=font_symbol)
+            ww = wb[2] - wb[0]
+            wh = wb[3] - wb[1]
+            draw.text(
+                (mid_x - ww // 2, mid_y - wh // 2),
+                "W",
+                fill=(0, 60, 150),
+                font=font_symbol,
+            )
+
+        elif itype == "Metal complex":
+            # Metal complex: grey dashed line
+            _draw_dashed_line(draw, ax, ay, lcx, lcy, (100, 100, 100), width=2)
+
+        elif itype == "Halogen bond":
+            # Halogen bond: cyan dashed line
+            _draw_dashed_line(draw, ax, ay, lcx, lcy, (0, 190, 190), width=2)
+
+        else:
+            # Default: thin colored leader line
+            draw.line([(ax, ay), (lcx, lcy)], fill=rgb_int, width=1)
+
+        # Draw rounded label box (LigPlot+ style: prominent border)
+        _draw_rounded_label(
+            draw, lx, ly, label, font, border_color=rgb_int, radius=10, padding=5
+        )
+
+    # ── Legend box (compact, top-right) ───────────────────────────────────────
     type_counts: dict[str, int] = {}
-    for group in interaction_groups.values():
-        t = group["type"]
-        type_counts[t] = type_counts.get(t, 0) + 1
+    for g in group_list:
+        t = g.get("type")
+        if t:
+            type_counts[t] = type_counts.get(t, 0) + 1
 
-    legend_x = width - 280
-    legend_y = 20
-    legend_h = 30 + len(type_counts) * 24
-    draw.rectangle(
-        [(legend_x - 10, legend_y - 10), (legend_x + 260, legend_y + legend_h)],
-        fill=(255, 255, 255, 230),
-        outline=(100, 100, 100),
-    )
-    draw.text((legend_x, legend_y), "Interactions", fill=(0, 0, 0), font=font)
+    if type_counts:
+        legend_x = canvas_w - 220
+        legend_y = 20
+        legend_h = 28 + len(type_counts) * 22
+        draw.rounded_rectangle(
+            [(legend_x - 10, legend_y - 10),
+             (legend_x + 200, legend_y + legend_h)],
+            radius=6,
+            fill=(255, 255, 255, 230),
+            outline=(120, 120, 120),
+            width=1,
+        )
+        draw.text(
+            (legend_x, legend_y), "Interactions", fill=(0, 0, 0), font=font_legend
+        )
 
-    y_off = legend_y + 28
-    for itype, count in sorted(type_counts.items()):
-        color_name = INTERACTION_COLORS.get(itype, "grey")
-        rgb = color_rgb_int.get(color_name, (128, 128, 128))
-        draw.ellipse([(legend_x, y_off), (legend_x + 14, y_off + 14)], fill=rgb)
-        draw.text((legend_x + 20, y_off), f"{itype}: {count}", fill=(0, 0, 0), font=font)
-        y_off += 24
+        y_off = legend_y + 26
+        # LigPlot+ canonical display colours (matching drawn elements)
+        legend_display_rgb = {
+            "H-bond": (0, 170, 0),
+            "Hydrophobic": (210, 30, 50),
+            "π-π": (140, 40, 230),
+            "π-cation": (140, 40, 230),
+            "Salt bridge": (210, 30, 50),
+            "Halogen bond": (0, 190, 190),
+            "Water bridge": (40, 115, 255),
+            "Metal complex": (128, 128, 128),
+        }
+        for itype, count in sorted(type_counts.items()):
+            rgb = legend_display_rgb.get(
+                itype,
+                color_rgb_int.get(INTERACTION_COLORS.get(itype, "grey"), (128, 128, 128)),
+            )
+            # Swatch: small rounded rect
+            draw.rounded_rectangle(
+                [(legend_x, y_off), (legend_x + 14, y_off + 14)],
+                radius=3,
+                fill=rgb,
+            )
+            draw.text(
+                (legend_x + 20, y_off),
+                f"{itype}: {count}",
+                fill=(0, 0, 0),
+                font=font_legend,
+            )
+            y_off += 22
 
     ensure_dir(os.path.dirname(output_png) or ".")
     img.save(output_png, dpi=(dpi, dpi))
@@ -618,12 +1001,26 @@ def composite_summary(
     composite = Image.new("RGB", (total_w, total_h), (255, 255, 255))
     draw = ImageDraw.Draw(composite)
 
-    try:
-        title_font = ImageFont.truetype("/System/Library/Fonts/Helvetica.ttc", 28)
-        label_font = ImageFont.truetype("/System/Library/Fonts/Helvetica.ttc", 20)
-    except Exception:
-        title_font = ImageFont.load_default()
-        label_font = ImageFont.load_default()
+    def _load_font(size: int):
+        """Cross-platform font loader with sensible fallbacks."""
+        candidates = [
+            "/System/Library/Fonts/Helvetica.ttc",
+            "/System/Library/Fonts/HelveticaNeue.ttc",
+            "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+            "/usr/share/fonts/TTF/DejaVuSans.ttf",
+            "C:/Windows/Fonts/arial.ttf",
+            "C:/Windows/Fonts/segoeui.ttf",
+        ]
+        for path in candidates:
+            if os.path.isfile(path):
+                try:
+                    return ImageFont.truetype(path, size)
+                except Exception:
+                    continue
+        return ImageFont.load_default()
+
+    title_font = _load_font(28)
+    label_font = _load_font(20)
 
     if figure_title:
         draw.text((20, 20), figure_title, fill=(0, 0, 0), font=title_font)

@@ -11,7 +11,7 @@ import tempfile
 from typing import Any
 
 from autodock.core import _HAVE_MDANALYSIS, _HAVE_PLIP, _HAVE_PROLIF, VisualizationError, logger
-from autodock.utils import _AD4_ELEMENT_MAP
+from autodock.utils import _AD4_ELEMENT_MAP, safe_pdb_slice
 
 # ─────────────────────────────────────────────────────────────────────────────
 # PLIP-based interaction detection (primary / authoritative)
@@ -97,12 +97,13 @@ def _build_complex_pdb(receptor_pdb: str, ligand_pdbqt: str, output_pdb: str) ->
                 z = float(line[46:54])
             except ValueError:
                 continue
-            atom_name = line[12:16].strip() if len(line) > 16 else "C"
-            # Use sanitized element: check PDBQT atom-type column first, then fallback
-            ad_type = line[77:79].strip() if len(line) > 78 else ""
+            atom_name = safe_pdb_slice(line, 12, 16, default="C")
+            # Use sanitized element: read last token (most robust across generators)
+            stripped_tail = line[71:].strip() if len(line) > 71 else ""
+            ad_type = stripped_tail.split()[-1] if stripped_tail else ""
             elem = _AD4_ELEMENT_MAP.get(ad_type, ad_type)
             if not elem:
-                elem = atom_name[0]
+                elem = atom_name[0] if atom_name else "C"
             new_line = (
                 f"HETATM{atom_num:5d} {atom_name:>4s} LIG A   1    "
                 f"{x:8.3f}{y:8.3f}{z:8.3f}  1.00  0.00          {elem:>2s}\n"
@@ -231,7 +232,8 @@ def detect_interactions_prolif(
     """
     if not _HAVE_MDANALYSIS or not _HAVE_PROLIF:
         raise VisualizationError(
-            "ProLIF requires MDAnalysis + prolif. Install: conda install mdanalysis; pip install prolif"
+            "ProLIF requires MDAnalysis + prolif."
+            " Install: conda install mdanalysis; pip install prolif"
         )
 
     import MDAnalysis as mda

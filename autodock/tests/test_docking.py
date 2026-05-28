@@ -29,8 +29,12 @@ class TestRunVinaDock:
 
         # Mock pose file output
         poses_content = (
-            "MODEL 1\nREMARK VINA RESULT: -8.0\nATOM      1  C   LIG A   1      0.000   0.000   0.000\nENDMDL\n"
-            "MODEL 2\nREMARK VINA RESULT: -7.5\nATOM      1  C   LIG A   1      1.000   1.000   1.000\nENDMDL\n"
+            "MODEL 1\nREMARK VINA RESULT: -8.0\n"
+            "ATOM      1  C   LIG A   1"
+            "      0.000   0.000   0.000\nENDMDL\n"
+            "MODEL 2\nREMARK VINA RESULT: -7.5\n"
+            "ATOM      1  C   LIG A   1"
+            "      1.000   1.000   1.000\nENDMDL\n"
         )
         out_file = tmp_path / "poses.pdbqt"
         out_file.write_text(poses_content)

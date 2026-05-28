@@ -256,7 +256,9 @@ def test_run_md_stability_explicit_solvent(tmp_path):
 
     # Explicit solvent should call addSolvent and add MonteCarloBarostat
     mock_app.Modeller.return_value.addSolvent.assert_called_once()
-    mock_simulation.context.reinitialize.assert_called_once_with(preserveState=True)
+    # reinitialize is called when adding restraints, during NPT, and when removing restraints
+    assert mock_simulation.context.reinitialize.call_count >= 1
+    mock_simulation.context.reinitialize.assert_called_with(preserveState=True)
     assert "trajectory" in result
 
 

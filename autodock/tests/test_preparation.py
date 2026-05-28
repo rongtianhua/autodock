@@ -201,8 +201,10 @@ class TestPreparePdbForFpocket:
         out = tmp_path / "out.pdb"
         prep._prepare_pdb_for_fpocket(str(inp), str(out))
         lines = out.read_text().splitlines()
-        assert len(lines) == 1
+        # write_pdb_atoms appends an END record
+        assert len(lines) == 2
         assert "SER" in lines[0]
+        assert lines[1] == "END"
 
 
 class TestParseFpocketInfo:

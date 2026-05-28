@@ -24,6 +24,18 @@ def ensure_dir(path: str | Path) -> Path:
     return p
 
 
+def safe_pdb_slice(line: str, start: int, end: int, default: str = "") -> str:
+    """
+    Safely slice a PDB-format line by column indices (0-based, end exclusive).
+
+    PDB lines are defined as 80+ character fixed-width records.  Truncated
+    lines (malformed downloads, header lines, etc.) must not cause IndexError.
+    """
+    if len(line) < start:
+        return default
+    return line[start:end].strip() if len(line) >= end else line[start:].strip()
+
+
 def write_temp_file(content: str, suffix: str = ".tmp") -> str:
     """Write content to a temporary file and return the path."""
     fd, path = tempfile.mkstemp(suffix=suffix)
@@ -36,35 +48,165 @@ def write_temp_file(content: str, suffix: str = ".tmp") -> str:
     return path
 
 
-def read_pdb_atoms(pdb_path: str) -> list[dict[str, Any]]:
-    """
-    Parse ATOM / HETATM records from a PDB file.
-
-    Returns a list of dicts with keys: record, atom_num, atom_name, res_name,
-    chain, res_seq, x, y, z, element.
-    """
+def _read_pdb_atoms_impl(pdb_path: str) -> list[dict[str, Any]]:
+    """Low-level PDB ATOM/HETATM parser (PDB format only)."""
     atoms = []
     with open(pdb_path) as fh:
         for line in fh:
             if not line.startswith(("ATOM  ", "HETATM")):
                 continue
+            if len(line) < 54:
+                logger.debug(f"Skipping truncated PDB line ({len(line)} chars)")
+                continue
             try:
                 atom = {
-                    "record": line[:6].strip(),
-                    "atom_num": int(line[6:11]),
-                    "atom_name": line[12:16].strip(),
-                    "res_name": line[17:20].strip(),
-                    "chain": line[21].strip() or "A",
-                    "res_seq": int(line[22:26]),
-                    "x": float(line[30:38]),
-                    "y": float(line[38:46]),
-                    "z": float(line[46:54]),
-                    "element": line[76:78].strip() or line[12:14].strip()[0],
+                    "record": safe_pdb_slice(line, 0, 6),
+                    "atom_num": int(safe_pdb_slice(line, 6, 11)),
+                    "atom_name": safe_pdb_slice(line, 12, 16),
+                    "res_name": safe_pdb_slice(line, 17, 20),
+                    "chain": safe_pdb_slice(line, 21, 22) or "A",
+                    "res_seq": int(safe_pdb_slice(line, 22, 26)),
+                    "x": float(safe_pdb_slice(line, 30, 38)),
+                    "y": float(safe_pdb_slice(line, 38, 46)),
+                    "z": float(safe_pdb_slice(line, 46, 54)),
+                    "element": safe_pdb_slice(line, 76, 78) or safe_pdb_slice(line, 12, 14, "C")[0],
                 }
                 atoms.append(atom)
             except (ValueError, IndexError):
                 continue
     return atoms
+
+
+def read_cif_atoms(cif_path: str) -> list[dict[str, Any]]:
+    """
+    Parse ATOM / HETATM records from an mmCIF file using gemmi.
+
+    Returns a list of dicts with the same keys as ``read_pdb_atoms()``:
+    record, atom_num, atom_name, res_name, chain, res_seq, x, y, z, element.
+    """
+    try:
+        import gemmi
+    except ImportError as exc:
+        raise ImportError(
+            "gemmi required for mmCIF parsing."
+            " Install: conda install -c conda-forge gemmi"
+        ) from exc
+
+    doc = gemmi.cif.read(str(cif_path))
+    block = doc.sole_block()
+    structure = gemmi.make_structure_from_block(block)
+
+    atoms = []
+    atom_counter = 0
+    for model in structure:
+        for chain in model:
+            for residue in chain:
+                for atom in residue:
+                    atom_counter += 1
+                    atoms.append(
+                        {
+                            "record": (
+                                "ATOM"
+                                if residue.entity_type == gemmi.EntityType.Polymer
+                                else "HETATM"
+                            ),
+                            "atom_num": atom_counter,
+                            "atom_name": atom.name,
+                            "res_name": residue.name,
+                            "chain": chain.name or "A",
+                            "res_seq": residue.seqid.num,
+                            "x": float(atom.pos.x),
+                            "y": float(atom.pos.y),
+                            "z": float(atom.pos.z),
+                            "element": atom.element.name,
+                        }
+                    )
+    return atoms
+
+
+def cif_to_pdb_string(cif_path: str) -> str:
+    """Convert an mmCIF file to a PDB-format string using gemmi."""
+    try:
+        import gemmi
+    except ImportError as exc:
+        raise ImportError(
+            "gemmi required for mmCIF parsing."
+            " Install: conda install -c conda-forge gemmi"
+        ) from exc
+
+    doc = gemmi.cif.read(str(cif_path))
+    block = doc.sole_block()
+    structure = gemmi.make_structure_from_block(block)
+    return structure.make_pdb_string()
+
+
+def cif_to_pdb(cif_path: str, output_pdb: str) -> str:
+    """Convert an mmCIF file to a PDB file. Returns the output path."""
+    pdb_str = cif_to_pdb_string(cif_path)
+    with open(output_pdb, "w") as fh:
+        fh.write(pdb_str)
+    return output_pdb
+
+
+def read_pdb_atoms(pdb_path: str) -> list[dict[str, Any]]:
+    """
+    Parse ATOM / HETATM records from a structure file (PDB or mmCIF).
+
+    Auto-detects format by file extension (.cif / .pdbx → mmCIF).
+    Returns a list of dicts with keys: record, atom_num, atom_name, res_name,
+    chain, res_seq, x, y, z, element.
+    """
+    ext = os.path.splitext(pdb_path)[1].lower()
+    if ext in (".cif", ".pdbx"):
+        return read_cif_atoms(pdb_path)
+    return _read_pdb_atoms_impl(pdb_path)
+
+
+def _atom_dict_to_pdb_line(atom: dict[str, Any]) -> str:
+    """Convert an atom dict to a fixed-width PDB ATOM/HETATM line."""
+    record = atom.get("record", "ATOM")[:6].ljust(6)
+    atom_num = int(atom.get("atom_num", 1))
+    atom_name = atom.get("atom_name", "")[:4]
+    # Left-justify atom name for 1-3 char names, right-justify for 4-char
+    atom_name = " " + atom_name.ljust(3) if len(atom_name) <= 3 else atom_name.rjust(4)
+    res_name = atom.get("res_name", "")[:3].rjust(3)
+    chain = atom.get("chain", "A")[:1]
+    res_seq = int(atom.get("res_seq", 1))
+    x = float(atom.get("x", 0.0))
+    y = float(atom.get("y", 0.0))
+    z = float(atom.get("z", 0.0))
+    element = atom.get("element", "")[:2]
+
+    return (
+        f"{record}{atom_num:5d} {atom_name} {res_name} {chain}{res_seq:4d}    "
+        f"{x:8.3f}{y:8.3f}{z:8.3f}                      {element:>2}\n"
+    )
+
+
+def write_pdb_atoms(
+    atoms: list[dict[str, Any]],
+    output_path: str,
+    header_lines: list[str] | None = None,
+) -> str:
+    """
+    Write atom dicts to a PDB-format file.
+
+    Args:
+        atoms: List of atom dicts (same format as ``read_pdb_atoms``).
+        output_path: Output file path.
+        header_lines: Optional list of header/REMARK lines to prepend.
+
+    Returns:
+        Path to the written file.
+    """
+    with open(output_path, "w") as fh:
+        if header_lines:
+            for line in header_lines:
+                fh.write(line if line.endswith("\n") else line + "\n")
+        for atom in atoms:
+            fh.write(_atom_dict_to_pdb_line(atom))
+        fh.write("END\n")
+    return output_path
 
 
 def compute_bounding_box(
@@ -152,14 +294,14 @@ def filter_pdb_lines(
     with open(pdb_path) as fh:
         for line in fh:
             if line.startswith("ATOM  "):
-                res_name = line[17:20].strip()
+                res_name = safe_pdb_slice(line, 17, 20)
                 if keep_residues and res_name not in keep_residues:
                     continue
                 if remove_water and res_name in water_names:
                     continue
                 out_lines.append(line)
             elif line.startswith("HETATM"):
-                res_name = line[17:20].strip()
+                res_name = safe_pdb_slice(line, 17, 20)
                 if remove_hetatms:
                     continue
                 if keep_residues and res_name not in keep_residues:
@@ -256,13 +398,18 @@ def _sanitize_pdbqt_for_rdkit(pdbqt_path: str) -> str:
                 continue
             # Read AutoDock atom type from the PDBQT extension position
             # (may be 1-3 chars depending on the generator; e.g. G0, CG0, Cl0)
-            ad_type = line[77:].strip().split()[0] if len(line) > 77 else ""
+            # Read AutoDock atom type from the last token on the line.
+            # Different generators (Meeko, Open Babel, Vina) place the atom type
+            # at slightly different positions, so reading the final token is the
+            # most robust approach.
+            stripped_tail = line[71:].strip() if len(line) > 71 else ""
+            ad_type = stripped_tail.split()[-1] if stripped_tail else ""
             elem = _AD4_ELEMENT_MAP.get(ad_type, ad_type)
 
             # Skip ghost/virtual atoms added by some AutoDock preparation tools
             # (atom name "G" with type "G0" — these duplicate real carbons and
             # break substructure matching in post-processing).
-            atom_name = line[12:16].strip() if len(line) > 15 else ""
+            atom_name = safe_pdb_slice(line, 12, 16)
             if atom_name == "G" and ad_type == "G0":
                 continue
 
@@ -332,7 +479,7 @@ def extract_ligand_from_pdb(
     output_sdf: str | None = None,
 ) -> tuple[Any, str | None]:
     """
-    Extract a ligand from a PDB complex file and optionally save as SDF.
+    Extract a ligand from a structure file (PDB or mmCIF) and optionally save as SDF.
 
     PDB asymmetric units often contain multiple copies of the same ligand
     (different chains / residue numbers).  We group by (chain, res_seq) and
@@ -344,17 +491,23 @@ def extract_ligand_from_pdb(
     """
     from rdkit import Chem
 
-    with open(pdb_path) as fh:
-        lines = fh.readlines()
+    # Auto-convert mmCIF → PDB block if needed
+    ext = os.path.splitext(pdb_path)[1].lower()
+    if ext in (".cif", ".pdbx"):
+        pdb_content = cif_to_pdb_string(pdb_path)
+        lines = pdb_content.splitlines(keepends=True)
+    else:
+        with open(pdb_path) as fh:
+            lines = fh.readlines()
 
     # Group HETATM lines by (chain, res_seq) to handle multi-copy ASUs
     from collections import defaultdict
 
     groups: dict[tuple[str, str], list[str]] = defaultdict(list)
     for line in lines:
-        if line.startswith("HETATM") and ligand_resname in line[17:20]:
-            chain = line[21].strip()
-            res_seq = line[22:26].strip()
+        if line.startswith("HETATM") and ligand_resname in safe_pdb_slice(line, 17, 20):
+            chain = safe_pdb_slice(line, 21, 22)
+            res_seq = safe_pdb_slice(line, 22, 26)
             groups[(chain, res_seq)].append(line)
 
     if not groups:
@@ -403,11 +556,11 @@ def extract_chain_from_pdb(
     include_connect: bool = True,
 ) -> str:
     """
-    Extract a specific chain from a PDB file, preserving ATOM, HETATM,
-    and optional CONECT records.
+    Extract a specific chain from a structure file (PDB or mmCIF),
+    preserving ATOM, HETATM, and optional CONECT records.
 
     Args:
-        pdb_path: Input PDB file.
+        pdb_path: Input structure file (.pdb or .cif).
         chain_id: Chain identifier (e.g., 'C').
         output_pdb: Output PDB file path. If None, returns PDB block as string.
         include_connect: Whether to include CONECT records.
@@ -416,21 +569,28 @@ def extract_chain_from_pdb(
         Path to output PDB file, or PDB block string if output_pdb is None.
     """
     chain_id = chain_id.strip()
-    with open(pdb_path) as fh:
-        lines = fh.readlines()
+
+    # Auto-convert mmCIF → PDB block if needed
+    ext = os.path.splitext(pdb_path)[1].lower()
+    if ext in (".cif", ".pdbx"):
+        pdb_content = cif_to_pdb_string(pdb_path)
+        lines = pdb_content.splitlines(keepends=True)
+    else:
+        with open(pdb_path) as fh:
+            lines = fh.readlines()
 
     # Collect atom serial numbers in the target chain
     chain_atom_nums = set()
     out_lines = []
     for line in lines:
         if line.startswith(("ATOM  ", "HETATM")):
-            if line[21].strip() == chain_id:
+            if safe_pdb_slice(line, 21, 22) == chain_id:
                 out_lines.append(line)
                 with contextlib.suppress(ValueError):
-                    chain_atom_nums.add(int(line[6:11]))
+                    chain_atom_nums.add(int(safe_pdb_slice(line, 6, 11)))
         elif line.startswith("TER   "):
             # Include TER if it matches the chain
-            ter_chain = line[21].strip() if len(line) > 21 else ""
+            ter_chain = safe_pdb_slice(line, 21, 22)
             if ter_chain == chain_id:
                 out_lines.append(line)
         elif line.startswith("CONECT") and include_connect:

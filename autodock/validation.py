@@ -590,44 +590,61 @@ def run_redocking_validation(
     # ── 2. Prepare apo receptor ────────────────────────────────────────────
     apo_pdb = os.path.join(output_dir, "apo_receptor.pdb")
 
-    with open(holo_pdb) as fh:
-        lines = fh.readlines()
+    from autodock.utils import read_pdb_atoms, write_pdb_atoms
 
-    filtered = []
-    for line in lines:
-        if line.startswith(("ATOM  ", "HETATM")):
-            # Remove water
-            res_name = line[17:20].strip()
-            if res_name in {"HOH", "WAT", "H2O", "DOD", "TIP", "SOL"}:
-                continue
-            # Remove target ligand/chain
-            if chain_id and line[21].strip() == chain_id:
-                continue
-            if ligand_resname and line.startswith("HETATM") and ligand_resname in line[17:20]:
-                continue
-            # Remove all other HETATM (crystallographic additives, alternate ligands,
-            # detergents, etc.) to ensure a clean apo receptor.
-            # Retain common physiologically relevant metal ions and cofactors.
-            if line.startswith("HETATM"):
-                if res_name not in {
-                    # Metal ions
-                    "NA", "K", "CA", "MG", "ZN", "FE", "MN", "CO", "CU", "NI",
-                    "CL", "BR", "IOD", "F",
-                    # Common cofactors (minimal set)
-                    "HEM", "FAD", "NAD", "NAP", "SAM", "ATP", "ADP", "AMP",
-                    # Sulfate, phosphate
-                    "SO4", "PO4", "GOL",
-                }:
-                    continue
-            filtered.append(line)
-        elif line.startswith("CONECT"):
-            # Skip CONECTs involving removed atoms (optional simplification)
-            filtered.append(line)
-        else:
-            filtered.append(line)
+    atoms = read_pdb_atoms(holo_pdb)
+    filtered_atoms = []
+    for atom in atoms:
+        res_name = atom["res_name"]
+        # Remove water
+        if res_name in {"HOH", "WAT", "H2O", "DOD", "TIP", "SOL"}:
+            continue
+        # Remove target ligand/chain
+        if chain_id and atom["chain"] == chain_id:
+            continue
+        if (
+            ligand_resname
+            and atom["record"] == "HETATM"
+            and atom["res_name"] == ligand_resname
+        ):
+            continue
+        # Remove all other HETATM (crystallographic additives, alternate ligands,
+        # detergents, etc.) to ensure a clean apo receptor.
+        # Retain common physiologically relevant metal ions and cofactors.
+        if atom["record"] == "HETATM" and res_name not in {
+            # Metal ions
+            "NA",
+            "K",
+            "CA",
+            "MG",
+            "ZN",
+            "FE",
+            "MN",
+            "CO",
+            "CU",
+            "NI",
+            "CL",
+            "BR",
+            "IOD",
+            "F",
+            # Common cofactors (minimal set)
+            "HEM",
+            "FAD",
+            "NAD",
+            "NAP",
+            "SAM",
+            "ATP",
+            "ADP",
+            "AMP",
+            # Sulfate, phosphate
+            "SO4",
+            "PO4",
+            "GOL",
+        }:
+            continue
+        filtered_atoms.append(atom)
 
-    with open(apo_pdb, "w") as fh:
-        fh.writelines(filtered)
+    write_pdb_atoms(filtered_atoms, apo_pdb)
 
     receptor_pdbqt = os.path.join(output_dir, "apo_receptor.pdbqt")
     prepare_receptor(apo_pdb, receptor_pdbqt, remove_water=False, remove_hetatms=False)
@@ -713,7 +730,9 @@ def run_redocking_validation(
             receptor_pdb=apo_pdb,
             ligand_pdbqt=result.best_pose_pdbqt,
             ligand_smiles=crystal_smiles,
-            ligand_sdf=ligand_sdf_path if ligand_sdf_path and os.path.isfile(ligand_sdf_path) else None,
+            ligand_sdf=(
+                ligand_sdf_path if ligand_sdf_path and os.path.isfile(ligand_sdf_path) else None
+            ),
             output_pdb=os.path.join(output_dir, "docking_best_minimized.pdb"),
             max_iterations=500,
         )
@@ -724,9 +743,7 @@ def run_redocking_validation(
                 f"{min_result['final_energy_kJ_mol']:.1f} kJ/mol"
             )
         else:
-            logger.warning(
-                f"Pose minimisation failed: {min_result.get('error', 'unknown')}"
-            )
+            logger.warning(f"Pose minimisation failed: {min_result.get('error', 'unknown')}")
 
     # ── 7. Compute RMSD (raw + optional minimized) ─────────────────────────
     # Always compute raw RMSD from the un-minimized best pose for transparency

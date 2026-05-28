@@ -8,6 +8,7 @@ from __future__ import annotations
 import argparse
 import logging
 import os
+from pathlib import Path
 
 from autodock.config import write_default_config
 from autodock.core import (
@@ -121,7 +122,7 @@ def cmd_prepare_receptor(args: argparse.Namespace) -> int:
     """Prepare receptor PDB → PDBQT."""
     from autodock.preparation import prepare_receptor
 
-    output = args.output or args.pdb.replace(".pdb", ".pdbqt")
+    output = args.output or str(Path(args.pdb).with_suffix(".pdbqt"))
     prepare_receptor(
         args.pdb,
         output,
@@ -173,7 +174,15 @@ def cmd_dock(args: argparse.Namespace) -> int:
 
     # Auto-detect pocket if center not provided
     if center is None:
-        pockets = find_top_pockets(args.receptor.replace(".pdbqt", ".pdb"))
+        receptor_base = Path(args.receptor).with_suffix("")
+        pocket_input = str(receptor_base.with_suffix(".pdb"))
+        if not Path(pocket_input).exists():
+            for ext in (".cif", ".pdbx"):
+                candidate = receptor_base.with_suffix(ext)
+                if candidate.exists():
+                    pocket_input = str(candidate)
+                    break
+        pockets = find_top_pockets(pocket_input)
         center = pockets[0]["center"]
         box_size = pockets[0]["box_size"]
         print(f"Auto-detected pocket: center={center}, box={box_size}")
@@ -338,11 +347,14 @@ def cmd_benchmark_redock(args: argparse.Namespace) -> int:
         print(f"  Mean RMSD:         {summary['mean_rmsd']:.2f} Å ± {summary['rmsd_std']:.2f}")
     print("\n  By family:")
     for fam, stats in summary.get("by_family", {}).items():
-        print(
-            f"    {fam:20s}  {stats['n_success']}/{stats['n_total']}  ({stats['success_rate']*100:.1f}%)  mean={stats['mean_rmsd']:.2f}Å"
-            if stats["mean_rmsd"]
-            else f"    {fam:20s}  {stats['n_success']}/{stats['n_total']}"
-        )
+        if stats["mean_rmsd"]:
+            print(
+                f"    {fam:20s}  {stats['n_success']}/{stats['n_total']}"
+                f"  ({stats['success_rate']*100:.1f}%)"
+                f"  mean={stats['mean_rmsd']:.2f}Å"
+            )
+        else:
+            print(f"    {fam:20s}  {stats['n_success']}/{stats['n_total']}")
     print(f"{'='*55}")
     print(f"  JSON: {summary['json_path']}")
     if summary.get("csv_path"):
@@ -415,7 +427,15 @@ def cmd_ensemble_dock(args: argparse.Namespace) -> int:
     box_size = tuple(args.box_size) if args.box_size else None
 
     if center is None:
-        pockets = find_top_pockets(args.receptor.replace(".pdbqt", ".pdb"))
+        receptor_base = Path(args.receptor).with_suffix("")
+        pocket_input = str(receptor_base.with_suffix(".pdb"))
+        if not Path(pocket_input).exists():
+            for ext in (".cif", ".pdbx"):
+                candidate = receptor_base.with_suffix(ext)
+                if candidate.exists():
+                    pocket_input = str(candidate)
+                    break
+        pockets = find_top_pockets(pocket_input)
         center = pockets[0]["center"]
         box_size = pockets[0]["box_size"]
         print(f"Auto-detected pocket: center={center}, box={box_size}")
@@ -438,15 +458,18 @@ def cmd_ensemble_dock(args: argparse.Namespace) -> int:
     print(f"{'='*60}")
     print(f"  Repeats:          {summary['n_repeats']} ({summary['n_successful']} successful)")
     print(
-        f"  Best affinity:    {summary['ensemble_best_affinity_mean']:.3f} ± {summary['ensemble_best_affinity_std']:.3f} kcal/mol"
+        f"  Best affinity:    {summary['ensemble_best_affinity_mean']:.3f}"
+        f" ± {summary['ensemble_best_affinity_std']:.3f} kcal/mol"
     )
     print(
-        f"  Range:            {summary['ensemble_best_affinity_min']:.3f} → {summary['ensemble_best_affinity_max']:.3f} kcal/mol"
+        f"  Range:            {summary['ensemble_best_affinity_min']:.3f}"
+        f" → {summary['ensemble_best_affinity_max']:.3f} kcal/mol"
     )
     print(f"  CV:               {summary['ensemble_best_affinity_cv']:.3f}")
     if summary["pose_stability_rmsd_mean"] is not None:
         print(
-            f"  Pose RMSD:        {summary['pose_stability_rmsd_mean']:.2f} ± {summary['pose_stability_rmsd_std']:.2f} Å"
+            f"  Pose RMSD:        {summary['pose_stability_rmsd_mean']:.2f}"
+            f" ± {summary['pose_stability_rmsd_std']:.2f} Å"
         )
     print(f"  Clusters:         {summary['n_clusters']}")
     print(f"  Confidence:       {summary['confidence'].upper()}")
@@ -467,10 +490,15 @@ def cmd_virtual_screen(args: argparse.Namespace) -> int:
     outdir = ensure_dir(args.outdir)
     receptor_name = args.receptor.upper()
 
-    # Fetch / use cached receptor
+    # Fetch / use cached receptor (PDB or mmCIF)
     receptor_pdb = os.path.join(outdir, f"{receptor_name}.pdb")
-    if not os.path.exists(receptor_pdb):
-        download_pdb(receptor_name, outdir)
+    receptor_cif = os.path.join(outdir, f"{receptor_name}.cif")
+    if not os.path.exists(receptor_pdb) and not os.path.exists(receptor_cif):
+        downloaded = download_pdb(receptor_name, outdir)
+        if isinstance(downloaded, str) and downloaded.endswith(".cif"):
+            receptor_pdb = downloaded
+    elif os.path.exists(receptor_cif) and not os.path.exists(receptor_pdb):
+        receptor_pdb = receptor_cif
 
     # Prepare receptor
     receptor_pdbqt = os.path.join(outdir, f"{receptor_name}.pdbqt")
@@ -554,7 +582,8 @@ def cmd_md(args: argparse.Namespace) -> int:
     print(f"  Final structure: {result.get('final_structure')}")
     if "ligand_rmsd_mean" in result:
         print(
-            f"  Ligand RMSD:    {result['ligand_rmsd_mean']:.2f} ± {result.get('ligand_rmsd_std', 0):.2f} Å"
+            f"  Ligand RMSD:    {result['ligand_rmsd_mean']:.2f}"
+            f" ± {result.get('ligand_rmsd_std', 0):.2f} Å"
         )
     if "receptor_ca_rmsd_mean" in result:
         print(f"  Receptor RMSD:  {result['receptor_ca_rmsd_mean']:.2f} Å")
@@ -581,8 +610,13 @@ def cmd_run(args: argparse.Namespace) -> int:
     print("📥  Step 1: Fetching structures")
     print("=" * 55)
     receptor_pdb = os.path.join(outdir, f"{receptor_name}.pdb")
-    if not os.path.exists(receptor_pdb):
-        download_pdb(receptor_name, outdir)
+    receptor_cif = os.path.join(outdir, f"{receptor_name}.cif")
+    if not os.path.exists(receptor_pdb) and not os.path.exists(receptor_cif):
+        downloaded = download_pdb(receptor_name, outdir)
+        if isinstance(downloaded, str) and downloaded.endswith(".cif"):
+            receptor_pdb = downloaded
+    elif os.path.exists(receptor_cif) and not os.path.exists(receptor_pdb):
+        receptor_pdb = receptor_cif
     else:
         print(f"  Using cached: {receptor_pdb}")
 

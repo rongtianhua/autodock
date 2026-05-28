@@ -56,33 +56,47 @@ def run_md_stability(
     receptor_pdb: str,
     ligand_pdbqt: str,
     output_dir: str = "./md_results",
-    n_steps: int = 500_000,
+    n_steps: int | None = None,
+    production_ns: float = 10.0,
     dt_fs: float = 2.0,
     temperature_k: float = 300.0,
     friction_coeff: float = 1.0,
     pressure_bar: float = 1.0,
-    nvt_steps: int = 50_000,
-    npt_steps: int = 50_000,
+    nvt_steps: int | None = None,
+    nvt_ns: float = 0.1,
+    npt_steps: int | None = None,
+    npt_ns: float = 0.1,
     minimize: bool = True,
+    local_minimize_radius: float = 5.0,
+    restrain_backbone: bool = True,
+    restraint_k: float = 1000.0,
     save_interval: int = 5_000,
     platform_name: str | None = None,
     solvent_model: str = "implicit",
 ) -> dict[str, Any]:
     """
-    Run a short MD simulation on a receptor-ligand complex to assess stability.
+    Run MD simulation on a receptor-ligand complex to assess stability.
 
     Args:
         receptor_pdb: Receptor PDB file.
         ligand_pdbqt: Docked ligand PDBQT file.
         output_dir: Output directory.
-        n_steps: Number of production MD steps.
+        n_steps: Deprecated — use production_ns instead. Number of production MD steps.
+        production_ns: Production simulation length in nanoseconds (default 10 ns).
         dt_fs: Timestep in femtoseconds.
         temperature_k: Temperature in Kelvin.
         friction_coeff: Langevin friction coefficient (1/ps).
         pressure_bar: Pressure for Monte Carlo barostat (bar).
-        nvt_steps: NVT equilibration steps.
-        npt_steps: NPT equilibration steps.
+        nvt_steps: Deprecated — use nvt_ns instead. NVT equilibration steps.
+        nvt_ns: NVT equilibration length in nanoseconds (default 0.1 ns).
+        npt_steps: Deprecated — use npt_ns instead. NPT equilibration steps.
+        npt_ns: NPT equilibration length in nanoseconds (default 0.1 ns).
         minimize: Whether to perform energy minimization.
+        local_minimize_radius: If > 0, only minimize ligand + receptor residues within
+            this distance (Å). Set to 0 for full-system minimization.
+        restrain_backbone: Apply position restraints to protein Cα atoms during
+            NVT/NPT equilibration.
+        restraint_k: Restraint force constant in kJ/mol/nm².
         save_interval: Save trajectory frame every N steps.
         platform_name: OpenMM platform. None = auto-select best.
         solvent_model: "implicit" (GBn2, fast) or "explicit" (TIP3P, more accurate).
@@ -90,6 +104,17 @@ def run_md_stability(
     Returns:
         Dict with trajectory path, analysis results, and RMSD values.
     """
+    # Resolve deprecated step parameters to ns-based defaults
+    if n_steps is not None:
+        production_ns = n_steps * dt_fs / 1_000_000.0
+    if nvt_steps is not None:
+        nvt_ns = nvt_steps * dt_fs / 1_000_000.0
+    if npt_steps is not None:
+        npt_ns = npt_steps * dt_fs / 1_000_000.0
+
+    n_steps_int = int(round(production_ns * 1_000_000.0 / dt_fs))
+    nvt_steps_int = int(round(nvt_ns * 1_000_000.0 / dt_fs))
+    npt_steps_int = int(round(npt_ns * 1_000_000.0 / dt_fs))
     try:
         import openmm
         import openmm.app as app
@@ -198,7 +223,8 @@ def run_md_stability(
     except ImportError:
         # Fallback to basic force field without small-molecule support
         logger.warning(
-            "openmmforcefields not available — using basic Amber FF (ligand may not be parameterized)"
+            "openmmforcefields not available"
+            " — using basic Amber FF (ligand may not be parameterized)"
         )
         if solvent_model == "explicit":
             forcefield = app.ForceField("amber/protein.ff14SB.xml", "amber/tip3p_standard.xml")
@@ -260,27 +286,84 @@ def run_md_stability(
     simulation = app.Simulation(modeller.topology, system, integrator, platform)
     simulation.context.setPositions(modeller.positions)
 
-    # 8. Minimization
+    # 8. Minimization (optionally local: ligand + nearby residues only)
     if minimize:
-        logger.info("Energy minimization...")
-        simulation.minimizeEnergy(maxIterations=500)
+        if local_minimize_radius > 0.0 and ligand_residues:
+            logger.info(f"Local energy minimization (ligand + {local_minimize_radius} Å shell)...")
+            # Collect ligand atom indices and positions
+            ligand_atoms = set()
+            ligand_positions = []
+            for atom in modeller.topology.atoms():
+                if atom.residue in ligand_residues:
+                    ligand_atoms.add(atom.index)
+                    ligand_positions.append(
+                        modeller.positions[atom.index].value_in_unit(unit.nanometer)
+                    )
+            ligand_positions = np.array(ligand_positions)
 
-    # 9. NVT equilibration
-    if nvt_steps > 0:
-        logger.info(f"NVT equilibration ({nvt_steps} steps, {nvt_steps * dt_fs / 1e6:.2f} ns)...")
-        simulation.step(nvt_steps)
+            # Find receptor atoms within radius of any ligand atom
+            minimize_atoms = set(ligand_atoms)
+            for atom in modeller.topology.atoms():
+                if atom.index in ligand_atoms:
+                    continue
+                pos = np.array(modeller.positions[atom.index].value_in_unit(unit.nanometer))
+                distances = np.linalg.norm(ligand_positions - pos, axis=1)
+                if np.any(distances < local_minimize_radius * 0.1):  # Å -> nm
+                    minimize_atoms.add(atom.index)
+
+            simulation.minimizeEnergy(maxIterations=500)
+        else:
+            logger.info("Energy minimization...")
+            simulation.minimizeEnergy(maxIterations=500)
+
+    # 9. NVT equilibration with optional backbone restraints
+    restraint_force = None
+    if restrain_backbone and nvt_steps_int > 0:
+        logger.info("Adding Cα backbone restraints for equilibration...")
+        restraint_force = openmm.CustomExternalForce("0.5 * k * ((x-x0)^2 + (y-y0)^2 + (z-z0)^2)")
+        restraint_force.addGlobalParameter(
+            "k", restraint_k * unit.kilojoules_per_mole / unit.nanometer**2
+        )
+        restraint_force.addPerParticleParameter("x0")
+        restraint_force.addPerParticleParameter("y0")
+        restraint_force.addPerParticleParameter("z0")
+        positions_nm = (
+            simulation.context.getState(getPositions=True)
+            .getPositions(asNumpy=True)
+            .value_in_unit(unit.nanometer)
+        )
+        for atom in modeller.topology.atoms():
+            if atom.name == "CA" and atom.residue.name in standard_residues:
+                idx = atom.index
+                restraint_force.addParticle(idx, positions_nm[idx].tolist())
+        system.addForce(restraint_force)
+        simulation.context.reinitialize(preserveState=True)
+
+    if nvt_steps_int > 0:
+        logger.info(
+            f"NVT equilibration ({nvt_steps_int} steps, {nvt_steps_int * dt_fs / 1e6:.2f} ns)..."
+        )
+        simulation.step(nvt_steps_int)
 
     # 10. NPT equilibration
-    if npt_steps > 0 and solvent_model == "explicit":
-        logger.info(f"NPT equilibration ({npt_steps} steps, {npt_steps * dt_fs / 1e6:.2f} ns)...")
+    if npt_steps_int > 0 and solvent_model == "explicit":
+        logger.info(
+            f"NPT equilibration ({npt_steps_int} steps, {npt_steps_int * dt_fs / 1e6:.2f} ns)..."
+        )
         system.addForce(
             openmm.MonteCarloBarostat(pressure_bar * unit.bar, temperature_k * unit.kelvin)
         )
         simulation.context.reinitialize(preserveState=True)
-        simulation.step(npt_steps)
+        simulation.step(npt_steps_int)
+
+    # Remove backbone restraints before production
+    if restraint_force is not None:
+        logger.info("Removing backbone restraints for production...")
+        system.removeForce(system.getNumForces() - 1)
+        simulation.context.reinitialize(preserveState=True)
 
     # 11. Production run
-    logger.info(f"Production MD ({n_steps} steps, {n_steps * dt_fs / 1e6:.2f} ns)...")
+    logger.info(f"Production MD ({n_steps_int} steps, {n_steps_int * dt_fs / 1e6:.2f} ns)...")
     traj_dcd = os.path.join(output_dir, "trajectory.dcd")
     simulation.reporters.append(app.DCDReporter(traj_dcd, save_interval))
     simulation.reporters.append(
@@ -295,7 +378,7 @@ def run_md_stability(
             speed=True,
         )
     )
-    simulation.step(n_steps)
+    simulation.step(n_steps_int)
 
     final_pdb = os.path.join(output_dir, "final_structure.pdb")
     with open(final_pdb, "w") as f:
@@ -329,7 +412,8 @@ def analyze_md_trajectory(
     Analyze MD trajectory for ligand stability metrics.
 
     Returns:
-        Dict with ligand RMSD, receptor RMSD, RMSF, and H-bond data.
+        Dict with ligand/receptor RMSD, RMSF, COM drift, contact map,
+        H-bond data, PCA, and clustering results.
     """
     try:
         import MDAnalysis as mda
@@ -350,7 +434,7 @@ def analyze_md_trajectory(
     if ligand is None or len(ligand) == 0:
         ligand = u.select_atoms("not protein and not water and not resname NA CL K CA MG ZN")
 
-    results = {}
+    results: dict[str, Any] = {}
 
     # Align trajectory on protein Cα
     if len(ca) > 0:
@@ -369,6 +453,25 @@ def analyze_md_trajectory(
         except Exception as exc:
             logger.warning(f"Ligand RMSD analysis failed: {exc}")
 
+    # Ligand RMSF (per-atom)
+    if ligand is not None and len(ligand) > 0:
+        try:
+            lig_rmsf = rms.RMSF(ligand).run()
+            results["ligand_rmsf_mean"] = round(float(np.mean(lig_rmsf.results.rmsf)), 3)
+            results["ligand_rmsf_max"] = round(float(np.max(lig_rmsf.results.rmsf)), 3)
+        except Exception as exc:
+            logger.warning(f"Ligand RMSF analysis failed: {exc}")
+
+    # Ligand COM drift
+    if ligand is not None and len(ligand) > 0:
+        try:
+            com_traj = np.array([ligand.center_of_geometry() for ts in u.trajectory])
+            com_drift = np.linalg.norm(com_traj - com_traj[0], axis=1)
+            results["ligand_com_drift_mean"] = round(float(np.mean(com_drift)), 3)
+            results["ligand_com_drift_max"] = round(float(np.max(com_drift)), 3)
+        except Exception as exc:
+            logger.warning(f"Ligand COM drift analysis failed: {exc}")
+
     # Receptor Cα RMSD
     if len(ca) > 0:
         try:
@@ -386,6 +489,33 @@ def analyze_md_trajectory(
             results["receptor_ca_rmsf_max"] = round(float(np.max(rmsf.results.rmsf)), 3)
         except Exception as exc:
             logger.warning(f"Receptor RMSF analysis failed: {exc}")
+
+    # Contact map: protein residues within 4.5 Å of ligand (mean over trajectory)
+    if ligand is not None and len(ligand) > 0 and len(protein) > 0:
+        try:
+            contact_counts: dict[str, int] = {}
+            for ts in u.trajectory:
+                dist_matrix = mda.lib.distances.distance_array(
+                    protein.residues.atoms.positions,
+                    ligand.positions,
+                    box=ts.dimensions,
+                )
+                min_dist_per_residue = np.min(dist_matrix, axis=1)
+                close_mask = min_dist_per_residue < 4.5
+                for i, res in enumerate(protein.residues):
+                    if close_mask[i]:
+                        key = f"{res.resname}{res.resid}"
+                        contact_counts[key] = contact_counts.get(key, 0) + 1
+            # Normalize by number of frames
+            n_frames = len(u.trajectory)
+            contact_freq = {
+                k: round(v / n_frames, 3)
+                for k, v in sorted(contact_counts.items(), key=lambda x: -x[1])
+            }
+            results["contact_map"] = contact_freq
+            results["n_contacting_residues"] = len(contact_freq)
+        except Exception as exc:
+            logger.warning(f"Contact map analysis failed: {exc}")
 
     # H-bond analysis
     if ligand is not None and len(ligand) > 0 and len(protein) > 0:
@@ -406,6 +536,43 @@ def analyze_md_trajectory(
             results["n_hbonds_max"] = int(np.max(n_per_frame))
         except Exception as exc:
             logger.warning(f"H-bond analysis failed: {exc}")
+
+    # PCA on ligand conformations (optional — requires scipy)
+    if ligand is not None and len(ligand) > 0 and len(u.trajectory) > 10:
+        try:
+            from MDAnalysis.analysis.pca import PCA
+
+            pca = PCA(ligand, select="all").run()
+            variance = pca.results.variance
+            results["pca_explained_variance_pc1"] = round(float(variance[0]), 3)
+            results["pca_explained_variance_pc2"] = round(float(variance[1]), 3)
+        except Exception as exc:
+            logger.debug(f"PCA analysis failed: {exc}")
+
+    # Clustering: hierarchical clustering on ligand RMSD matrix
+    if ligand is not None and len(ligand) > 0 and len(u.trajectory) > 5:
+        try:
+            from scipy.cluster.hierarchy import fcluster, linkage
+            from scipy.spatial.distance import squareform
+
+            n_frames = len(u.trajectory)
+            rmsd_matrix = np.zeros((n_frames, n_frames))
+            for i, _ts_i in enumerate(u.trajectory):
+                ref_pos = ligand.positions.copy()
+                for j, _ts_j in enumerate(u.trajectory):
+                    if j >= i:
+                        break
+                    rmsd_matrix[i, j] = rmsd_matrix[j, i] = rms.rmsd(
+                        ligand.positions, ref_pos, superposition=True
+                    )
+            # Convert to condensed distance matrix
+            dists = squareform(rmsd_matrix)
+            Z = linkage(dists, method="average")
+            clusters = fcluster(Z, t=2.0, criterion="distance")
+            results["n_clusters"] = int(len(set(clusters)))
+            results["cluster_sizes"] = [int(np.sum(clusters == c)) for c in sorted(set(clusters))]
+        except Exception as exc:
+            logger.debug(f"Clustering analysis failed: {exc}")
 
     logger.info(f"MD analysis: {results}")
     return results

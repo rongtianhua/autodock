@@ -45,14 +45,17 @@ def _parse_pose_to_mol(pose_str: str) -> Any | None:
         return None
 
     # Sanitize AutoDock atom types → element symbols for RDKit
-    from autodock.utils import _AD4_ELEMENT_MAP
+    from autodock.utils import _AD4_ELEMENT_MAP, safe_pdb_slice
 
     sanitized = []
     for line in clean_lines:
-        ad_type = line[77:79].strip() if len(line) > 78 else ""
+        # Read last token for atom type (robust across generators)
+        stripped_tail = line[71:].strip() if len(line) > 71 else ""
+        ad_type = stripped_tail.split()[-1] if stripped_tail else ""
         elem = _AD4_ELEMENT_MAP.get(ad_type, ad_type)
         if not elem:
-            elem = line[12:16].strip()[0] if len(line) > 16 else "C"
+            atom_name = safe_pdb_slice(line, 12, 16)
+            elem = atom_name[0] if atom_name else "C"
         # Reconstruct with element at cols 77-78 (0-based 76-77)
         new_line = line[:76] + f"{elem:>2}\n"
         sanitized.append(new_line)

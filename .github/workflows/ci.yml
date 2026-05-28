@@ -32,9 +32,26 @@ jobs:
       - name: Black check
         run: black --check autodock
 
-  # Note: Full test suite requires a conda environment with RDKit, Vina,
-  # OpenMM, and other cheminformatics tools. These cannot be installed via
-  # pip on GitHub Actions runners. Run tests locally:
-  #   conda env create -f environment.yml
-  #   conda activate autodock
-  #   pytest autodock/tests/ -q
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up micromamba
+        uses: mamba-org/setup-micromamba@v2
+        with:
+          micromamba-version: "1.5.10-0"
+          environment-file: environment-ci.yml
+          init-shell: bash
+          post-cleanup: "all"
+
+      - name: Run tests
+        shell: bash -el {0}
+        run: |
+          pytest autodock/tests/ -q --tb=short --cov=autodock --cov-report=xml
+
+      - name: Upload coverage
+        uses: codecov/codecov-action@v4
+        with:
+          files: ./coverage.xml
+          fail_ci_if_error: false

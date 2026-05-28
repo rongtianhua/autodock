@@ -83,6 +83,15 @@ class TestRenderScenePymol:
                 rend.render_scene_pymol("rec.pdb", "lig.pdbqt", str(tmp_path / "out.png"))
 
 
+def _have_rdkit() -> bool:
+    try:
+        import rdkit
+        return True
+    except ImportError:
+        return False
+
+
+@pytest.mark.skipif(not _have_rdkit(), reason="rdkit not installed")
 class TestRenderInteractions2d:
     @patch("rdkit.Chem.MolFromSmiles")
     @patch("rdkit.Chem.RemoveHs")

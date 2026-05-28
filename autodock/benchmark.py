@@ -19,6 +19,7 @@ from typing import Any
 import numpy as np
 
 from autodock.core import REDocking_RMSD_THRESHOLD, ValidationError, logger
+from autodock.utils import safe_pdb_slice
 from autodock.validation import run_redocking_validation
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -210,14 +211,8 @@ def run_redocking_benchmark(
     summary["median_rmsd_raw"] = float(np.median(raw_rmsds)) if raw_rmsds else None
 
     # Minimization impact: rescued (raw fail → min pass) vs degraded (raw pass → min fail)
-    n_rescued = sum(
-        1 for r in raw_results
-        if not r.get("success_raw") and r.get("success")
-    )
-    n_degraded = sum(
-        1 for r in raw_results
-        if r.get("success_raw") and not r.get("success")
-    )
+    n_rescued = sum(1 for r in raw_results if not r.get("success_raw") and r.get("success"))
+    n_degraded = sum(1 for r in raw_results if r.get("success_raw") and not r.get("success"))
     summary["n_rescued"] = n_rescued
     summary["n_degraded"] = n_degraded
 
@@ -299,6 +294,36 @@ def run_redocking_benchmark(
 
 
 # Common non-ligand HET residues to ignore
+# Standard amino-acid residues (3-letter). Used to spot chain-mode ligands in ATOM records.
+_STANDARD_RESIDUES = {
+    "ALA",
+    "ARG",
+    "ASN",
+    "ASP",
+    "CYS",
+    "GLN",
+    "GLU",
+    "GLY",
+    "HIS",
+    "ILE",
+    "LEU",
+    "LYS",
+    "MET",
+    "PHE",
+    "PRO",
+    "SER",
+    "THR",
+    "TRP",
+    "TYR",
+    "VAL",
+    "SEC",
+    "PYL",
+    "UNK",
+    "ACE",
+    "NME",
+    "NH2",
+}
+
 _NON_LIGAND_HETS = {
     "HOH",
     "WAT",
@@ -397,8 +422,18 @@ def auto_detect_ligand_resname(pdb_path: str) -> str | None:
     with open(pdb_path) as fh:
         for line in fh:
             if line.startswith("HETATM"):
-                resname = line[17:20].strip()
+                resname = safe_pdb_slice(line, 17, 20)
                 if resname and resname not in _NON_LIGAND_HETS:
+                    atom_counts[resname] += 1
+            # Chain-mode ligands (e.g. 6LU7 N3) use ATOM records for non-standard residues.
+            # Treat any ATOM with a non-standard residue name as a potential ligand.
+            elif line.startswith("ATOM  "):
+                resname = safe_pdb_slice(line, 17, 20)
+                if (
+                    resname
+                    and resname not in _STANDARD_RESIDUES
+                    and resname not in _NON_LIGAND_HETS
+                ):
                     atom_counts[resname] += 1
     if atom_counts:
         most_common = atom_counts.most_common(1)[0][0]
@@ -420,11 +455,15 @@ def _run_single_benchmark(item: dict[str, Any]) -> dict[str, Any]:
     outdir = item["output_dir"]
     os.makedirs(outdir, exist_ok=True)
 
-    # Download holo structure
+    # Download holo structure (PDB or mmCIF)
     holo_pdb = os.path.join(outdir, f"{pdb_id}.pdb")
-    if not os.path.exists(holo_pdb):
+    holo_cif = os.path.join(outdir, f"{pdb_id}.cif")
+    if not os.path.exists(holo_pdb) and not os.path.exists(holo_cif):
         try:
-            download_pdb(pdb_id, outdir)
+            downloaded = download_pdb(pdb_id, outdir)
+            # If mmCIF was returned, use that path for downstream
+            if isinstance(downloaded, str) and downloaded.endswith(".cif"):
+                holo_pdb = downloaded
         except Exception as exc:
             logger.error(f"[{pdb_id}] Download failed: {exc}")
             return {
@@ -435,6 +474,8 @@ def _run_single_benchmark(item: dict[str, Any]) -> dict[str, Any]:
                 "rmsd": None,
                 "error": f"download: {exc}",
             }
+    elif os.path.exists(holo_cif) and not os.path.exists(holo_pdb):
+        holo_pdb = holo_cif
 
     # Auto-detect ligand if not provided
     if not ligand_resname and not chain_id:

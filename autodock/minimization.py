@@ -49,8 +49,9 @@ try:
         CustomExternalForce,
         Vec3,
         VerletIntegrator,
+        app,
+        unit,
     )
-    from openmm import app, unit
 
     _HAVE_OPENMM = True
 except Exception:
@@ -58,7 +59,6 @@ except Exception:
 
 try:
     from rdkit import Chem
-    from rdkit.Chem import AllChem
 
     _HAVE_RDKIT = True
 except Exception:
@@ -202,19 +202,13 @@ def _minimize_ligand_only(
     system = system_generator.create_system(topology)
 
     # Restrain heavy atoms to their docked coordinates
-    restraint = CustomExternalForce(
-        "k*periodicdistance(x, y, z, x0, y0, z0)^2"
-    )
-    restraint.addGlobalParameter(
-        "k", restraint_k * unit.kilojoules_per_mole / unit.nanometer**2
-    )
+    restraint = CustomExternalForce("k*periodicdistance(x, y, z, x0, y0, z0)^2")
+    restraint.addGlobalParameter("k", restraint_k * unit.kilojoules_per_mole / unit.nanometer**2)
     restraint.addPerParticleParameter("x0")
     restraint.addPerParticleParameter("y0")
     restraint.addPerParticleParameter("z0")
 
-    heavy_indices = [
-        a.molecule_atom_index for a in offmol.atoms if a.atomic_number > 1
-    ]
+    heavy_indices = [a.molecule_atom_index for a in offmol.atoms if a.atomic_number > 1]
     for i in heavy_indices:
         restraint.addParticle(
             i,
@@ -227,20 +221,14 @@ def _minimize_ligand_only(
     simulation.context.setPositions(ligand_positions)
 
     state = simulation.context.getState(getEnergy=True)
-    initial_energy = state.getPotentialEnergy().value_in_unit(
-        unit.kilojoule_per_mole
-    )
+    initial_energy = state.getPotentialEnergy().value_in_unit(unit.kilojoule_per_mole)
 
     simulation.minimizeEnergy(maxIterations=max_iterations)
 
     state = simulation.context.getState(getEnergy=True)
-    final_energy = state.getPotentialEnergy().value_in_unit(
-        unit.kilojoule_per_mole
-    )
+    final_energy = state.getPotentialEnergy().value_in_unit(unit.kilojoule_per_mole)
 
-    minimized_positions = simulation.context.getState(
-        getPositions=True
-    ).getPositions()
+    minimized_positions = simulation.context.getState(getPositions=True).getPositions()
 
     with open(output_pdb, "w") as fh:
         app.PDBFile.writeFile(topology, minimized_positions, fh)
@@ -303,19 +291,13 @@ def _minimize_complex(
 
     # Fix receptor, minimise ligand
     positions = modeller.positions
-    restraint = CustomExternalForce(
-        "k*periodicdistance(x, y, z, x0, y0, z0)^2"
-    )
-    restraint.addGlobalParameter(
-        "k", restraint_k * unit.kilojoules_per_mole / unit.nanometer**2
-    )
+    restraint = CustomExternalForce("k*periodicdistance(x, y, z, x0, y0, z0)^2")
+    restraint.addGlobalParameter("k", restraint_k * unit.kilojoules_per_mole / unit.nanometer**2)
     restraint.addPerParticleParameter("x0")
     restraint.addPerParticleParameter("y0")
     restraint.addPerParticleParameter("z0")
     for i in range(receptor_n):
-        restraint.addParticle(
-            i, [positions[i][0], positions[i][1], positions[i][2]]
-        )
+        restraint.addParticle(i, [positions[i][0], positions[i][1], positions[i][2]])
     system.addForce(restraint)
 
     integrator = VerletIntegrator(0.001)
@@ -323,24 +305,16 @@ def _minimize_complex(
     simulation.context.setPositions(positions)
 
     state = simulation.context.getState(getEnergy=True)
-    initial_energy = state.getPotentialEnergy().value_in_unit(
-        unit.kilojoule_per_mole
-    )
+    initial_energy = state.getPotentialEnergy().value_in_unit(unit.kilojoule_per_mole)
 
     simulation.minimizeEnergy(maxIterations=max_iterations)
 
     state = simulation.context.getState(getEnergy=True)
-    final_energy = state.getPotentialEnergy().value_in_unit(
-        unit.kilojoule_per_mole
-    )
+    final_energy = state.getPotentialEnergy().value_in_unit(unit.kilojoule_per_mole)
 
-    minimized_positions = simulation.context.getState(
-        getPositions=True
-    ).getPositions()
+    minimized_positions = simulation.context.getState(getPositions=True).getPositions()
     ligand_start = receptor_n
-    ligand_positions_out = minimized_positions[
-        ligand_start : ligand_start + offmol.n_atoms
-    ]
+    ligand_positions_out = minimized_positions[ligand_start : ligand_start + offmol.n_atoms]
 
     with open(output_pdb, "w") as fh:
         app.PDBFile.writeFile(ligand_topology, ligand_positions_out, fh)
@@ -451,9 +425,7 @@ def _build_ligand(
 
         aligned_mol = Chem.RWMol(template_mol)
         for i in range(aligned_mol.GetNumAtoms()):
-            aligned_mol.GetConformer().SetAtomPosition(
-                i, aligned_coords[i].tolist()
-            )
+            aligned_mol.GetConformer().SetAtomPosition(i, aligned_coords[i].tolist())
 
         fd, tmp_sdf = tempfile.mkstemp(suffix=".sdf")
         os.close(fd)
@@ -462,16 +434,12 @@ def _build_ligand(
         w.close()
 
         try:
-            offmol = OpenFFMolecule.from_file(
-                tmp_sdf, allow_undefined_stereo=True
-            )
+            offmol = OpenFFMolecule.from_file(tmp_sdf, allow_undefined_stereo=True)
         finally:
             os.remove(tmp_sdf)
 
         offmol.assign_partial_charges("gasteiger")
-        ligand_positions = [
-            Vec3(x, y, z) for x, y, z in offmol.conformers[0].m
-        ] * unit.angstrom
+        ligand_positions = [Vec3(x, y, z) for x, y, z in offmol.conformers[0].m] * unit.angstrom
         return offmol, ligand_positions
 
     # ── Case B: use SMILES ────────────────────────────────────────────
@@ -486,9 +454,7 @@ def _build_ligand_from_smiles(
         return None, []
 
     try:
-        offmol = OpenFFMolecule.from_smiles(
-            ligand_smiles, allow_undefined_stereo=True
-        )
+        offmol = OpenFFMolecule.from_smiles(ligand_smiles, allow_undefined_stereo=True)
     except Exception as exc:
         logger.warning(f"OpenFF Molecule.from_smiles failed: {exc}")
         return None, []
@@ -504,12 +470,8 @@ def _build_ligand_from_smiles(
     docked_conf = docked_no_h.GetConformer()
     coords = np.zeros((offmol.n_atoms, 3))
 
-    template_heavy = [
-        a.GetIdx() for a in template_no_h.GetAtoms() if a.GetAtomicNum() > 1
-    ]
-    docked_heavy = [
-        a.GetIdx() for a in docked_mol.GetAtoms() if a.GetAtomicNum() > 1
-    ]
+    template_heavy = [a.GetIdx() for a in template_no_h.GetAtoms() if a.GetAtomicNum() > 1]
+    docked_heavy = [a.GetIdx() for a in docked_mol.GetAtoms() if a.GetAtomicNum() > 1]
     for i in range(len(match)):
         docked_idx = docked_heavy[i]
         template_idx = template_heavy[match[i]]
@@ -528,15 +490,11 @@ def _build_ligand_from_smiles(
                 else:
                     continue
                 if coords[parent].any():
-                    coords[a.molecule_atom_index] = coords[parent] + rng.normal(
-                        0, 0.3, 3
-                    )
+                    coords[a.molecule_atom_index] = coords[parent] + rng.normal(0, 0.3, 3)
                     break
 
     offmol.add_conformer(coords * unit.angstrom)
     offmol.assign_partial_charges("gasteiger")
 
-    ligand_positions = [
-        Vec3(x, y, z) for x, y, z in offmol.conformers[0].m
-    ] * unit.angstrom
+    ligand_positions = [Vec3(x, y, z) for x, y, z in offmol.conformers[0].m] * unit.angstrom
     return offmol, ligand_positions

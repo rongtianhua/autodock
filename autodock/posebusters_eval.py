@@ -152,14 +152,19 @@ def _run_single_posebuster(item: dict[str, Any]) -> dict[str, Any]:
     outdir = item["output_dir"]
     os.makedirs(outdir, exist_ok=True)
 
-    # Download holo structure
+    # Download holo structure (PDB or mmCIF)
     holo_pdb = os.path.join(outdir, f"{pdb_id}.pdb")
-    if not os.path.exists(holo_pdb):
+    holo_cif = os.path.join(outdir, f"{pdb_id}.cif")
+    if not os.path.exists(holo_pdb) and not os.path.exists(holo_cif):
         try:
-            download_pdb(pdb_id, outdir)
+            downloaded = download_pdb(pdb_id, outdir)
+            if isinstance(downloaded, str) and downloaded.endswith(".cif"):
+                holo_pdb = downloaded
         except Exception as exc:
             logger.error(f"[{pdb_id}] Download failed: {exc}")
             return {"pdb_id": pdb_id, "success": False, "error": f"download: {exc}"}
+    elif os.path.exists(holo_cif) and not os.path.exists(holo_pdb):
+        holo_pdb = holo_cif
 
     # Auto-detect ligand if CCD not found
     ligand_resname = ccd
