@@ -26,7 +26,7 @@ class TestDownloadPDB:
     @patch("autodock.fetchers.ensure_dir")
     def test_download_pdb_default_format(self, mock_ensure, mock_dl, tmp_path):
         out = fetchers.download_pdb("6LU7", str(tmp_path))
-        assert out.endswith("6LU7.pdb")
+        assert out.endswith("6LU7.cif")  # default changed from pdb to cif
         mock_dl.assert_called_once()
 
     @patch("autodock.fetchers._download_url")
@@ -59,9 +59,9 @@ class TestDownloadAlphaFold:
             }
         ]
         out = fetchers.download_alphafold("P68871", str(tmp_path))
-        assert out.endswith("AF-P68871-F1.pdb")
+        assert out.endswith("AF-P68871-F1.cif")
         mock_dl.assert_called_once_with(
-            "https://example.com/AF-P68871-F1-model_v6.pdb",
+            "https://example.com/AF-P68871-F1-model_v6.cif",
             out,
         )
 

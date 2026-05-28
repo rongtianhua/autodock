@@ -343,10 +343,11 @@ def download_pdb(
     format: str = "cif",
 ) -> str:
     """
-    Download a coordinate file from RCSB PDB.
+    Download a coordinate file from RCSB PDB (the Protein Data Bank).
 
     .. note::
-       Default format is **mmCIF** (``"cif"``).  RCSB recommends mmCIF for
+       The function name reflects the **database** (PDB), not the file format.
+       Default format is **mmCIF** (``"cif"``) — RCSB recommends mmCIF for
        all new depositions.  Use ``format="pdb"`` for legacy PDB format.
 
     Args:
