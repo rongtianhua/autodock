@@ -656,65 +656,19 @@ def _prepare_ligand_with_obabel(smiles: str, output_pdbqt: str, name: str = "LIG
     return os.path.abspath(output_pdbqt)
 
 
-def prepare_ligand(
-    smiles: str,
-    output_pdbqt: str,
-    name: str = "LIG",
-    seed: int = 42,
+def _embed_and_select_best_conf(
+    mol_h: Any,
     n_conformer_attempts: int = 20,
-    ph: float = 7.4,
-) -> str:
+    seed: int = 42,
+    label: str = "",
+) -> tuple[Any, float] | None:
+    """Helper: ETKDGv3 multi-round → MMFF94 → best-conformer RDKit Mol.
+
+    Returns ``(mol_with_best_conformer, mmff_energy)`` or *None*.
+    The molecule retains Hs and only the best conformer.
     """
-    Prepare a ligand for docking (SMILES → PDBQT).
+    from rdkit.Chem import AllChem
 
-    Uses RDKit ETKDGv3 for 3D conformer generation **with multi-round
-    energy sorting**: generates ``n_conformer_attempts`` conformers,
-    optimises each with MMFF94, and selects the lowest-energy one for
-    PDBQT export.  This follows the best practice of not accepting the
-    first valid conformer without quality assessment (see Rinciker et al.
-    2004, J. Med. Chem.; Hawkins 2017, J. Chem. Inf. Model.).
-
-    Falls back to Open Babel if Gasteiger charge calculation fails
-    (e.g. for phosphorylated ligands such as 5GP in 1C9K).
-
-    .. note::
-       Protonation states are assigned by RDKit's default neutral model
-       (pH 7.4).  For pH-dependent ionisation (carboxylic acids, amines),
-       consider pre-treating the SMILES string with Dimorphite-DL or
-       passing the pH-adjusted SMILES explicitly.  The OpenBabel fallback
-       uses the ``ph`` argument for protonation.
-
-    Args:
-        smiles: SMILES string.
-        output_pdbqt: Output PDBQT file path.
-        name: Residue name in PDBQT.
-        seed: Random seed for reproducible conformer generation.
-        n_conformer_attempts: Number of ETKDGv3 attempts; the lowest-energy
-            conformer after MMFF94 optimisation is selected.  More attempts
-            improve the chance of finding the global energy minimum.
-        ph: Target pH for ligand protonation.  Passed to OpenBabel in the
-            fallback path; RDKit always uses neutral model (7.4).
-
-    Returns:
-        Absolute path to the prepared PDBQT file.
-    """
-    try:
-        from meeko import MoleculePreparation, PDBQTWriterLegacy
-        from rdkit import Chem
-        from rdkit.Chem import AllChem, rdPartialCharges
-    except ImportError as exc:
-        raise PreparationError(f"Required package missing: {exc}")
-
-    mol = Chem.MolFromSmiles(smiles)
-    if mol is None:
-        raise PreparationError(f"Could not parse SMILES: {smiles}")
-
-    mol_h = Chem.AddHs(mol, addCoords=True)
-
-    # ── Multi-round ETKDGv3 + energy selection ────────────────────────────
-    # Publication best practice: generate N conformers, evaluate MMFF94 energy,
-    # and keep the lowest-energy one.  Single-shot ETKDG may produce a strained
-    # conformer that biases subsequent docking (Issue #4 from scientific audit).
     params = AllChem.ETKDGv3()
     params.randomSeed = seed
     params.numThreads = 0
@@ -722,64 +676,181 @@ def prepare_ligand(
     cids = AllChem.EmbedMultipleConfs(mol_h, numConfs=n_conformer_attempts, params=params)
 
     if len(cids) == 0:
-        logger.warning(
-            f"ETKDGv3 produced zero conformers after {n_conformer_attempts} attempts"
-            " — trying fallback"
-        )
-        fallback_ok = AllChem.EmbedMolecule(mol_h, randomSeed=seed)
-        if fallback_ok != 0:
-            logger.warning("RDKit embedding failed — falling back to Open Babel")
-            return _prepare_ligand_with_obabel(smiles, output_pdbqt, name=name)
-        cids = [0]
+        return None
 
-    # Optimise all conformers and select lowest-energy one
     mmff_results = AllChem.MMFFOptimizeMoleculeConfs(mol_h, maxIters=500, numThreads=0)
-    energies: list[tuple[int, float]] = []
+    best_cid: int | None = None
+    best_energy = float("inf")
     for i, cid in enumerate(cids):
         status = mmff_results[i][0] if i < len(mmff_results) else -1
         energy = mmff_results[i][1] if i < len(mmff_results) else float("inf")
-        if status != -1 and energy is not None:
-            energies.append((cid, float(energy)))
-        else:
-            energies.append((cid, float("inf")))
+        if status != -1 and energy is not None and energy < best_energy:
+            best_cid = cid
+            best_energy = float(energy)
 
-    if energies:
-        energies.sort(key=lambda x: x[1])
-        best_cid = energies[0][0]
-        best_energy = energies[0][1]
-        logger.debug(
-            f"Multi-round conformer selection: {len(energies)} evaluated,"
-            f" best energy={best_energy:.2f} kcal/mol (cid={best_cid})"
+    if best_cid is None:
+        return None
+
+    logger.debug(
+        f"{label}Multi-round conformer: {len(cids)} evaluated,"
+        f" lowest energy={best_energy:.2f} kcal/mol"
+    )
+
+    # Keep only the best conformer to avoid MMFF invalidation later
+    for c in cids:
+        if c != best_cid:
+            mol_h.RemoveConformer(c)
+    return (mol_h, best_energy)
+
+
+def prepare_ligand(
+    smiles: str,
+    output_pdbqt: str,
+    name: str = "LIG",
+    seed: int = 42,
+    n_conformer_attempts: int = 20,
+    ph: float = 7.4,
+    ph_range: float | None = 1.5,
+    molscrub_states: bool = True,
+) -> str:
+    """
+    Prepare a ligand for docking (SMILES → PDBQT).
+
+    Uses RDKit ETKDGv3 for 3D conformer generation **with multi-round
+    energy sorting**: generates ``n_conformer_attempts`` conformers,
+    optimises each with MMFF94, and selects the lowest-energy one for
+    PDBQT export.
+
+    When **molscrub_states=True** (default), the pipeline also handles:
+
+    * **Salt/counterion removal** — strips HCl, Na⁺, etc. from database
+      SMILES that may represent salt forms.
+    * **Tautomer enumeration** — generates all relevant keto-enol,
+      imine-enamine, etc. tautomers and selects the MMFF94-stablest one.
+    * **Protonation-state enumeration** — evaluates all protonation
+      states in the pH range (``ph ± ph_range/2``); crucial for
+      carboxylic acids, amines, His, and other titratable groups.
+
+    References:
+        - Riniker et al. (2004) J. Med. Chem.
+        - Hawkins (2017) J. Chem. Inf. Model.
+        - molscrub: https://github.com/whitead/molscrub
+
+    Args:
+        smiles: SMILES string.
+        output_pdbqt: Output PDBQT file path.
+        name: Residue name in PDBQT.
+        seed: Random seed for reproducible conformer generation.
+        n_conformer_attempts: Number of ETKDGv3 attempts per state;
+            the lowest-energy conformer after MMFF94 is selected.
+        ph: Target pH for ligand protonation (default 7.4).
+        ph_range: pH range for protonation-state enumeration
+            (``ph - ph_range/2`` to ``ph + ph_range/2``).
+            Set *None* for a single pH point.
+        molscrub_states: If True, run molscrub to enumerate tautomers,
+            protonation states, and strip counterions before conformer
+            generation.  The lowest-energy state × conformer is selected.
+
+    Returns:
+        Absolute path to the prepared PDBQT file.
+    """
+    try:
+        from meeko import MoleculePreparation, PDBQTWriterLegacy
+        from rdkit import Chem
+        from rdkit.Chem import rdPartialCharges
+    except ImportError as exc:
+        raise PreparationError(f"Required package missing: {exc}")
+
+    mol_base = Chem.MolFromSmiles(smiles)
+    if mol_base is None:
+        raise PreparationError(f"Could not parse SMILES: {smiles}")
+
+    # ── State enumeration (molscrub: salt stripping + tautomers + protonation) ──
+    candidate_mols: list[tuple[Any, float, str]] = []  # (rdkit_mol, mmff_energy, label)
+
+    if molscrub_states:
+        try:
+            from molscrub import Scrub
+
+            if ph_range is not None:
+                ph_low = max(0.0, ph - ph_range / 2.0)
+                ph_high = ph + ph_range / 2.0
+            else:
+                ph_low = ph
+                ph_high = ph + 0.01  # single-point
+
+            scrubber = Scrub(
+                ph_low=ph_low,
+                ph_high=ph_high,
+                skip_acidbase=False,
+                skip_tautomers=False,
+                debug=False,
+            )
+            scrubbed_list = scrubber(input_mol=mol_base)
+            n_states = len(scrubbed_list)
+            logger.info(f"molscrub: {n_states} tautomer/protomer state(s) for {smiles[:50]}...")
+
+            for i, state_mol in enumerate(scrubbed_list):
+                if state_mol is None:
+                    continue
+                state_mol_h = Chem.AddHs(state_mol, addCoords=True)
+                result_tup = _embed_and_select_best_conf(
+                    state_mol_h,
+                    n_conformer_attempts=n_conformer_attempts,
+                    seed=seed + i,
+                    label=f"[state {i}] ",
+                )
+                if result_tup is not None:
+                    state_mol, state_energy = result_tup
+                    candidate_mols.append((state_mol, state_energy, f"state_{i}"))
+        except ImportError:
+            logger.debug("molscrub not installed — skipping state enumeration")
+            molscrub_states = False
+        except Exception as exc:
+            logger.warning(f"molscrub failed ({exc}) — falling back to single-state")
+
+    # ── Single-state fallback ─────────────────────────────────────────────
+    if not candidate_mols:
+        mol_h = Chem.AddHs(mol_base, addCoords=True)
+        result_tup = _embed_and_select_best_conf(
+            mol_h,
+            n_conformer_attempts=n_conformer_attempts,
+            seed=seed,
         )
-    else:
-        # Fallback: use first conformer
-        best_cid = cids[0]
+        if result_tup is None:
+            logger.warning("RDKit embedding failed — falling back to Open Babel")
+            return _prepare_ligand_with_obabel(smiles, output_pdbqt, name=name)
+        single_mol, single_energy = result_tup
+        candidate_mols = [(single_mol, single_energy, "single")]
 
-    # Extract the best conformer into a single-conformer molecule
-    mol = Chem.Mol(mol_h)
-    conf = mol_h.GetConformer(best_cid)
-    from rdkit import Geometry
+    # Compute Gasteiger charges and pick the best across all candidates
+    best_mol: Any | None = None
+    best_energy = float("inf")
+    best_label = ""
+    for cand_mol, energy, label in candidate_mols:
+        try:
+            rdPartialCharges.ComputeGasteigerCharges(cand_mol)
+            if _has_nan_charges(cand_mol):
+                continue
+            if not best_mol or energy < best_energy:
+                best_mol = cand_mol
+                best_energy = energy
+                best_label = label
+        except Exception:
+            continue
 
-    new_conf = Chem.Conformer(mol.GetNumAtoms())
-    new_conf.SetId(0)
-    for i in range(mol.GetNumAtoms()):
-        pos = conf.GetAtomPosition(i)
-        new_conf.SetAtomPosition(i, Geometry.Point3D(pos.x, pos.y, pos.z))
-    mol.RemoveAllConformers()
-    mol.AddConformer(new_conf)
-
-    rdPartialCharges.ComputeGasteigerCharges(mol)
-
-    # If Gasteiger produced NaN charges, skip Meeko and use Open Babel
-    if _has_nan_charges(mol):
-        logger.warning(
-            "Gasteiger charges contain NaN — falling back to Open Babel ligand preparation"
-        )
+    if best_mol is None:
+        # All candidates had NaN charges — fall through to OBabel
+        logger.warning("Gasteiger charges contain NaN — falling back to Open Babel")
         return _prepare_ligand_with_obabel(smiles, output_pdbqt, name=name)
 
+    if molscrub_states and len(candidate_mols) > 1:
+        logger.info(f"Selected best state: {best_label} (MMFF={best_energy:.1f} kcal/mol)")
+
+    # ── Meeko → PDBQT ─────────────────────────────────────────────────────
     params_mk = MoleculePreparation(charge_model="gasteiger")
     try:
-        mol_setup = params_mk.prepare(mol)
+        mol_setup = params_mk.prepare(best_mol)
     except Exception as exc:
         err_str = str(exc)
         if "non finite charge" in err_str or "charge" in err_str.lower():
@@ -788,7 +859,6 @@ def prepare_ligand(
         raise PreparationError(f"Meeko ligand prep failed: {exc}")
 
     setup = mol_setup[0] if isinstance(mol_setup, list) else mol_setup
-
     pdbqt_str, success, err = PDBQTWriterLegacy.write_string(setup)
     if not success:
         if "non finite charge" in err or "charge" in err.lower():
@@ -796,7 +866,6 @@ def prepare_ligand(
             return _prepare_ligand_with_obabel(smiles, output_pdbqt, name=name)
         raise PreparationError(f"Meeko ligand prep failed: {err}")
 
-    # Inject residue name if requested (PDB format: cols 18-20 = resname, max 3 chars)
     safe_name = (name or "LIG")[:3]
     if safe_name != "LIG":
         lines = pdbqt_str.splitlines()
@@ -892,6 +961,8 @@ def prepare_ligand_conformers(
     name: str = "LIG",
     seed_start: int = 42,
     ph: float = 7.4,
+    ph_range: float | None = 1.5,
+    molscrub_states: bool = True,
 ) -> list[str]:
     """
     Generate multiple 3D conformers of a ligand for multi-conformer docking.

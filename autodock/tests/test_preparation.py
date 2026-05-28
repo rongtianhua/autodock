@@ -140,7 +140,7 @@ class TestPrepareLigand:
         mock_writer_cls.write_string.return_value = ("ATOM 1 C LIG\n", True, "")
 
         out = tmp_path / "lig.pdbqt"
-        result = prep.prepare_ligand("CCO", str(out), name="LIG", seed=42)
+        result = prep.prepare_ligand("CCO", str(out), name="LIG", seed=42, molscrub_states=False)
         assert out.exists()
         assert result == str(out.resolve())
 
@@ -181,7 +181,7 @@ class TestPrepareLigandObabelFallback:
         mock_obabel.side_effect = obabel_side_effect
 
         out = tmp_path / "lig.pdbqt"
-        result = prep.prepare_ligand("CCO", str(out), name="LIG", seed=42)
+        result = prep.prepare_ligand("CCO", str(out), name="LIG", seed=42, molscrub_states=False)
         assert out.exists()
         assert "obabel" in out.read_text()
         assert result == str(out.resolve())
