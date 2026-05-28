@@ -32,7 +32,7 @@ pip install -e ".[all]"
 # Check environment
 autodock status
 
-# Single-ligand docking from PDB ID
+# Single-ligand docking from PDB ID (downloads mmCIF by default)
 autodock run --receptor 6LU7 --ligand "CC(C)Cc1ccc(C(C)C(=O)O)cc1" --outdir ./demo
 
 # Virtual screening
@@ -50,11 +50,11 @@ from autodock.core import print_environment_status
 print_environment_status()
 
 # Prepare structures
-receptor = prepare_receptor("6LU7.pdb", "receptor.pdbqt")
+receptor = prepare_receptor("6LU7.cif", "receptor.pdbqt")
 ligand = prepare_ligand("CC(C)Cc1ccc(C(C)C(=O)O)cc1", "ligand.pdbqt")
 
 # Detect pocket
-pockets = find_top_pockets("6LU7.pdb")
+pockets = find_top_pockets("6LU7.cif")
 center, box = pockets[0]["center"], pockets[0]["box_size"]
 
 # Dock (deterministic by default)

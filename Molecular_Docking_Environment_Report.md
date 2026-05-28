@@ -276,7 +276,7 @@ python -c "import posebusters; print(posebusters.__version__)"  # 0.6.5
 
 ```bash
 # 1. 下载 PDB
-wget https://files.rcsb.org/download/6LU7.pdb
+wget https://files.rcsb.org/download/6LU7.cif
 
 # 2. 使用 PDBFixer 准备 (含补全残基、加氢、能量最小化)
 python -c "
@@ -385,9 +385,9 @@ def download_and_prepare_receptor(pdb_id, output_dir="."):
     """下载 PDB 结构并运行 PDBFixer 准备。"""
     os.makedirs(output_dir, exist_ok=True)
 
-    # 下载 PDB
+    # 下载 PDB (默认 mmCIF，RCSB 推荐格式)
     pdbl = PDBList()
-    pdb_file = pdbl.retrieve_pdb_file(pdb_id, pdir=output_dir, file_format="pdb")
+    pdb_file = pdbl.retrieve_pdb_file(pdb_id, pdir=output_dir, file_format="mmCif")
     print(f"Downloaded: {pdb_file}")
 
     # PDBFixer 准备
@@ -431,10 +431,10 @@ import requests
 
 def download_alphafold_structure(uniprot_id, output_dir="."):
     """从 AlphaFold DB 下载预测结构 (pLDDT 着色)。"""
-    url = f"https://alphafold.ebi.ac.uk/files/AF-{uniprot_id}-F1-model_v4.pdb"
+    url = f"https://alphafold.ebi.ac.uk/files/AF-{uniprot_id}-F1-model_v4.cif"
     response = requests.get(url)
     if response.status_code == 200:
-        output_path = f"{output_dir}/AF_{uniprot_id}.pdb"
+        output_path = f"{output_dir}/AF_{uniprot_id}.cif"
         with open(output_path, "w") as f:
             f.write(response.text)
         print(f"Downloaded AlphaFold structure: {output_path}")
