@@ -294,7 +294,7 @@ def find_best_pdb_structure(
 def fetch_protein_structure(
     query: str,
     output_dir: str = ".",
-    format: str = "pdb",
+    format: str = "cif",
     max_resolution: float = 3.0,
     require_ligand: bool = True,
     method: str = "X-RAY DIFFRACTION",
@@ -305,7 +305,7 @@ def fetch_protein_structure(
     Args:
         query: Protein name, gene symbol, or PDB ID.
         output_dir: Output directory for downloaded structure.
-        format: ``"pdb"`` or ``"cif"``.
+        format: ``"cif"`` (default, mmCIF) or ``"pdb"``.
         max_resolution: Maximum resolution in Å (default 3.0).
         require_ligand: Require bound small molecules (default True).
         method: Experimental method (default ``"X-RAY DIFFRACTION"``).
@@ -340,15 +340,19 @@ def download_pdb(
     pdb_id: str,
     output_dir: str = ".",
     *,
-    format: str = "pdb",
+    format: str = "cif",
 ) -> str:
     """
     Download a coordinate file from RCSB PDB.
 
+    .. note::
+       Default format is **mmCIF** (``"cif"``).  RCSB recommends mmCIF for
+       all new depositions.  Use ``format="pdb"`` for legacy PDB format.
+
     Args:
         pdb_id: 4-character PDB identifier.
         output_dir: Destination directory.
-        format: ``"pdb"``, ``"cif"`` (mmCIF), or ``"bcif"`` (BinaryCIF).
+        format: ``"cif"`` (default, mmCIF), ``"pdb"``, or ``"bcif"`` (BinaryCIF).
 
     Returns:
         Path to downloaded file.
@@ -378,8 +382,19 @@ def download_pdb(
     try:
         _download_url(url, out_path)
     except StructureFetchError:
-        # Fallback: if PDB format failed, try mmCIF
-        if fmt == "pdb":
+        # Bidirectional fallback between cif and pdb
+        if fmt in ("cif", "mmcif"):
+            # CIF failed → try PDB
+            pdb_url = f"https://files.rcsb.org/download/{pdb_id}.pdb"
+            pdb_path = os.path.join(output_dir, f"{pdb_id}.pdb")
+            logger.warning(f"mmCIF download failed — trying PDB fallback for {pdb_id}")
+            try:
+                _download_url(pdb_url, pdb_path)
+                logger.info(f"Downloaded PDB (fallback): {pdb_path}")
+                return pdb_path
+            except StructureFetchError:
+                raise
+        elif fmt == "pdb":
             cif_url = f"https://files.rcsb.org/download/{pdb_id}.cif"
             cif_path = os.path.join(output_dir, f"{pdb_id}.cif")
             logger.warning(f"PDB format download failed — trying mmCIF fallback for {pdb_id}")
@@ -395,7 +410,7 @@ def download_alphafold(
     uniprot_id: str,
     output_dir: str = ".",
     *,
-    format: str = "pdb",
+    format: str = "cif",
 ) -> str:
     """
     Download an AlphaFold-predicted structure from the AlphaFold DB.
@@ -406,7 +421,7 @@ def download_alphafold(
     Args:
         uniprot_id: UniProt accession (e.g. ``"P68871"``).
         output_dir: Destination directory.
-        format: ``"pdb"`` or ``"cif"``.
+        format: ``"cif"`` (default, mmCIF) or ``"pdb"``.
 
     Returns:
         Path to downloaded file.
