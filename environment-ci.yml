@@ -24,3 +24,6 @@ dependencies:
   # Pip-only packages (conda versions incompatible with Python 3.12)
   - pip:
     - meeko>=0.6.0
+    # Test dependences: installed in pip because conda channels lag
+    - gemmi>=0.6.0
+    - pubchempy>=1.0.4

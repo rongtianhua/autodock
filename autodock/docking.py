@@ -668,8 +668,8 @@ def dock_ligand_multi_conformer(
             seed,
             timeout,
             auto_exhaustiveness,
-            "vina",   # default scoring_function for conformer docking
-            1.0,       # default min_rmsd for conformer docking
+            "vina",  # default scoring_function for conformer docking
+            1.0,  # default min_rmsd for conformer docking
         )
         for conf_path in conformer_pdbqts
     ]

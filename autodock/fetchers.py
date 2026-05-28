@@ -99,39 +99,47 @@ def search_pdb_by_name(
 
     # Build the RCSB Search API v2 query payload
     nodes: list[dict] = [
-        {"type": "terminal", "service": "full_text",
-         "parameters": {"value": query}},
+        {"type": "terminal", "service": "full_text", "parameters": {"value": query}},
     ]
 
     if max_resolution < 99:
-        nodes.append({
-            "type": "terminal", "service": "text",
-            "parameters": {
-                "attribute": "rcsb_entry_info.resolution_combined",
-                "operator": "less_or_equal",
-                "value": max_resolution,
-            },
-        })
+        nodes.append(
+            {
+                "type": "terminal",
+                "service": "text",
+                "parameters": {
+                    "attribute": "rcsb_entry_info.resolution_combined",
+                    "operator": "less_or_equal",
+                    "value": max_resolution,
+                },
+            }
+        )
 
     if method:
-        nodes.append({
-            "type": "terminal", "service": "text",
-            "parameters": {
-                "attribute": "exptl.method",
-                "operator": "exact_match",
-                "value": method,
-            },
-        })
+        nodes.append(
+            {
+                "type": "terminal",
+                "service": "text",
+                "parameters": {
+                    "attribute": "exptl.method",
+                    "operator": "exact_match",
+                    "value": method,
+                },
+            }
+        )
 
     if require_ligand:
-        nodes.append({
-            "type": "terminal", "service": "text",
-            "parameters": {
-                "attribute": "rcsb_entry_info.deposited_nonpolymer_entity_instance_count",
-                "operator": "greater_or_equal",
-                "value": 1,
-            },
-        })
+        nodes.append(
+            {
+                "type": "terminal",
+                "service": "text",
+                "parameters": {
+                    "attribute": "rcsb_entry_info.deposited_nonpolymer_entity_instance_count",
+                    "operator": "greater_or_equal",
+                    "value": 1,
+                },
+            }
+        )
 
     payload = {
         "query": {
@@ -149,7 +157,8 @@ def search_pdb_by_name(
     data = json.dumps(payload).encode("utf-8")
     try:
         req = urllib.request.Request(
-            url, data=data,
+            url,
+            data=data,
             headers={"Content-Type": "application/json"},
         )
         with urllib.request.urlopen(req, timeout=30) as resp:
@@ -157,14 +166,9 @@ def search_pdb_by_name(
     except Exception as exc:
         raise StructureFetchError(f"RCSB search query failed: {exc}")
 
-    raw_ids = [
-        e["identifier"] for e in result.get("result_set", [])
-        if "identifier" in e
-    ]
+    raw_ids = [e["identifier"] for e in result.get("result_set", []) if "identifier" in e]
     if not raw_ids:
-        raise StructureFetchError(
-            f"No PDB structures found for '{query}' with the given filters."
-        )
+        raise StructureFetchError(f"No PDB structures found for '{query}' with the given filters.")
 
     pdb_ids = [pid.upper() for pid in raw_ids]
     logger.info(
@@ -227,9 +231,7 @@ def _fetch_entry_metadata(pdb_id: str) -> dict | None:
     # Parse resolution
     resolution = 99.0
     if "rcsb_entry_info" in data:
-        resolution = (
-            data["rcsb_entry_info"].get("resolution_combined", [99.0]) or [99.0]
-        )
+        resolution = data["rcsb_entry_info"].get("resolution_combined", [99.0]) or [99.0]
         if isinstance(resolution, list):
             resolution = resolution[0]
 
@@ -323,10 +325,7 @@ def _resolve_to_uniprot(query: str) -> str | None:
         pass
 
     # Fallback: try without reviewed filter
-    url2 = (
-        f"https://rest.uniprot.org/uniprotkb/search?"
-        f"query=({encoded})&format=json&size=5"
-    )
+    url2 = f"https://rest.uniprot.org/uniprotkb/search?" f"query=({encoded})&format=json&size=5"
     try:
         data2 = _http_get_json(url2, timeout=15)
         results2 = data2.get("results", []) if isinstance(data2, dict) else []
@@ -393,9 +392,7 @@ def fetch_protein_structure(
         return path
 
     if not fallback_alphafold and not fallback_swissmodel:
-        raise StructureFetchError(
-            f"No PDB structure found for '{query}' and fallbacks disabled."
-        )
+        raise StructureFetchError(f"No PDB structure found for '{query}' and fallbacks disabled.")
 
     # ── Level 2: AlphaFold ─────────────────────────────────────────────────
     uniprot_id = _resolve_to_uniprot(query)
@@ -435,8 +432,13 @@ def fetch_protein_structure(
     # ── All sources exhausted ──────────────────────────────────────────────
     raise StructureFetchError(
         f"Could not obtain a structure for '{query}' from any source. "
-        + (f"Resolved to UniProt {uniprot_id}." if uniprot_id else "Could not resolve to UniProt ID.")
-        + " Tried: RCSB PDB" + (" → AlphaFold DB" if fallback_alphafold else "")
+        + (
+            f"Resolved to UniProt {uniprot_id}."
+            if uniprot_id
+            else "Could not resolve to UniProt ID."
+        )
+        + " Tried: RCSB PDB"
+        + (" → AlphaFold DB" if fallback_alphafold else "")
         + (" → SWISS-MODEL" if fallback_swissmodel else "")
     )
 

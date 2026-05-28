@@ -34,9 +34,10 @@ from autodock.utils import ensure_dir
 
 class PLDDTThresholds:
     """AlphaFold pLDDT confidence thresholds (Jumper et al. 2021)."""
-    VERY_HIGH = 90.0   # comparable to experimental ~2.0 Å
-    HIGH = 70.0        # acceptable for docking
-    LOW = 50.0         # low confidence, exclude from pocket definition
+
+    VERY_HIGH = 90.0  # comparable to experimental ~2.0 Å
+    HIGH = 70.0  # acceptable for docking
+    LOW = 50.0  # low confidence, exclude from pocket definition
 
 
 def assess_alphafold_quality(
@@ -112,20 +113,24 @@ def assess_alphafold_quality(
                     _min_p = min(_min_p, plddt)
             else:
                 if _in_low:
-                    low_regions.append({
-                        "chain": _chain,
-                        "start": _start_res,
-                        "end": resi,
-                        "min_plddt": _min_p,
-                    })
+                    low_regions.append(
+                        {
+                            "chain": _chain,
+                            "start": _start_res,
+                            "end": resi,
+                            "min_plddt": _min_p,
+                        }
+                    )
                     _in_low = False
         if _in_low:
-            low_regions.append({
-                "chain": _chain,
-                "start": _start_res,
-                "end": residues[-1][1],
-                "min_plddt": _min_p,
-            })
+            low_regions.append(
+                {
+                    "chain": _chain,
+                    "start": _start_res,
+                    "end": residues[-1][1],
+                    "min_plddt": _min_p,
+                }
+            )
 
     # Determine suitability
     suitable = mean_p >= plddt_threshold_high and low_conf < 20.0
@@ -320,6 +325,7 @@ def relax_alphafold_structure(
         structure = gemmi.make_structure_from_block(block)
         pdb_str = structure.make_pdb_string()
         import tempfile
+
         tmp_in = tempfile.mktemp(suffix="_af_raw.pdb")
         with open(tmp_in, "w") as f:
             f.write(pdb_str)
@@ -334,6 +340,7 @@ def relax_alphafold_structure(
         import tempfile
 
         from pdbfixer import PDBFixer
+
         tmp_pdb = tempfile.mktemp(suffix="_af_fix.pdb")
         with open(tmp_pdb, "w") as f:
             app.PDBFile.writeFile(pdb.topology, pdb.positions, f)
@@ -458,6 +465,7 @@ def _build_af_system(
     import openmm.app as _app
     import openmm.unit as _u
     from openmm import CustomExternalForce
+
     if solvent_model == "implicit":
         ff = _app.ForceField(forcefield, "amber14_obc2.xml")
         system = ff.createSystem(
@@ -475,10 +483,8 @@ def _build_af_system(
         )
 
     if restraint_c_alpha:
-        k_val = restraint_k * _u.kilocalories_per_mole / _u.angstrom ** 2
-        rest_force = CustomExternalForce(
-            "k * ((x - x0)^2 + (y - y0)^2 + (z - z0)^2)"
-        )
+        k_val = restraint_k * _u.kilocalories_per_mole / _u.angstrom**2
+        rest_force = CustomExternalForce("k * ((x - x0)^2 + (y - y0)^2 + (z - z0)^2)")
         rest_force.addGlobalParameter("k", k_val)
         rest_force.addPerParticleParameter("x0")
         rest_force.addPerParticleParameter("y0")

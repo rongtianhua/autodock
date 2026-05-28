@@ -516,10 +516,14 @@ def _compute_label_positions(
         if best_pos is None:
             # Fallback: stack vertically at right margin
             best_pos = (canvas_w - margin - est_tw, margin + gi * 30)
-            placed.append((
-                best_pos[0] - 6, best_pos[1] - 6,
-                best_pos[0] + est_tw + 6, best_pos[1] + est_th + 6,
-            ))
+            placed.append(
+                (
+                    best_pos[0] - 6,
+                    best_pos[1] - 6,
+                    best_pos[0] + est_tw + 6,
+                    best_pos[1] + est_th + 6,
+                )
+            )
 
         positions[gi] = best_pos
 
@@ -777,8 +781,10 @@ def render_interactions_2d(
                 dh = db[3] - db[1]
                 # White background for distance text
                 draw.rectangle(
-                    [(mid_x - dw // 2 - 2, mid_y - dh // 2 - 2),
-                     (mid_x + dw // 2 + 2, mid_y + dh // 2 + 2)],
+                    [
+                        (mid_x - dw // 2 - 2, mid_y - dh // 2 - 2),
+                        (mid_x + dw // 2 + 2, mid_y + dh // 2 + 2),
+                    ],
                     fill=(255, 255, 255),
                 )
                 draw.text(
@@ -835,8 +841,10 @@ def render_interactions_2d(
             pw = pb[2] - pb[0]
             ph = pb[3] - pb[1]
             draw.rectangle(
-                [(mid_x - pw // 2 - 2, mid_y - ph // 2 - 2),
-                 (mid_x + pw // 2 + 2, mid_y + ph // 2 + 2)],
+                [
+                    (mid_x - pw // 2 - 2, mid_y - ph // 2 - 2),
+                    (mid_x + pw // 2 + 2, mid_y + ph // 2 + 2),
+                ],
                 fill=(255, 255, 255),
             )
             draw.text(
@@ -856,8 +864,10 @@ def render_interactions_2d(
             pw = pb[2] - pb[0]
             ph = pb[3] - pb[1]
             draw.rectangle(
-                [(mid_x - pw // 2 - 2, mid_y - ph // 2 - 2),
-                 (mid_x + pw // 2 + 2, mid_y + ph // 2 + 2)],
+                [
+                    (mid_x - pw // 2 - 2, mid_y - ph // 2 - 2),
+                    (mid_x + pw // 2 + 2, mid_y + ph // 2 + 2),
+                ],
                 fill=(255, 255, 255),
             )
             draw.text(
@@ -877,8 +887,7 @@ def render_interactions_2d(
             # Water molecule symbol (larger for visibility)
             w_radius = max(12, int(16 * scale))
             draw.ellipse(
-                [(mid_x - w_radius, mid_y - w_radius),
-                 (mid_x + w_radius, mid_y + w_radius)],
+                [(mid_x - w_radius, mid_y - w_radius), (mid_x + w_radius, mid_y + w_radius)],
                 fill=(200, 220, 255),
                 outline=(40, 115, 255),
                 width=2,
@@ -906,9 +915,7 @@ def render_interactions_2d(
             draw.line([(ax, ay), (lcx, lcy)], fill=rgb_int, width=1)
 
         # Draw rounded label box (LigPlot+ style: prominent border)
-        _draw_rounded_label(
-            draw, lx, ly, label, font, border_color=rgb_int, radius=10, padding=5
-        )
+        _draw_rounded_label(draw, lx, ly, label, font, border_color=rgb_int, radius=10, padding=5)
 
     # ── Legend box (compact, top-right) ───────────────────────────────────────
     type_counts: dict[str, int] = {}
@@ -922,16 +929,13 @@ def render_interactions_2d(
         legend_y = 20
         legend_h = 28 + len(type_counts) * 22
         draw.rounded_rectangle(
-            [(legend_x - 10, legend_y - 10),
-             (legend_x + 200, legend_y + legend_h)],
+            [(legend_x - 10, legend_y - 10), (legend_x + 200, legend_y + legend_h)],
             radius=6,
             fill=(255, 255, 255, 230),
             outline=(120, 120, 120),
             width=1,
         )
-        draw.text(
-            (legend_x, legend_y), "Interactions", fill=(0, 0, 0), font=font_legend
-        )
+        draw.text((legend_x, legend_y), "Interactions", fill=(0, 0, 0), font=font_legend)
 
         y_off = legend_y + 26
         # LigPlot+ canonical display colours (matching drawn elements)

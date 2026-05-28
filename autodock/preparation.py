@@ -246,6 +246,7 @@ def prepare_receptor(
 
         # Reload from Reduce output for OpenMM
         from pdbfixer import PDBFixer as _PBFixer
+
         _reduce_fixer = _PBFixer(filename=tmp_reduced)
         _top = _reduce_fixer.topology
         _pos = _reduce_fixer.positions  # OpenMM: units in nm
@@ -258,12 +259,10 @@ def prepare_receptor(
         # Outside pocket: all heavy atoms restrained (10 kcal/mol/Å²)
         # Keeps crystal structure globally while relieving local strain.
         k_kcal = 10.0  # restraint force constant (kcal/mol/Å²)
-        _K = k_kcal * _omm_unit.kilocalories_per_mole / _omm_unit.angstrom ** 2
+        _K = k_kcal * _omm_unit.kilocalories_per_mole / _omm_unit.angstrom**2
         BACKBONE_NAMES = {"N", "CA", "C", "O", "OXT"}
 
-        rest_force = CustomExternalForce(
-            "k * ((x - x0)^2 + (y - y0)^2 + (z - z0)^2)"
-        )
+        rest_force = CustomExternalForce("k * ((x - x0)^2 + (y - y0)^2 + (z - z0)^2)")
         rest_force.addGlobalParameter("k", _K)
         rest_force.addPerParticleParameter("x0")
         rest_force.addPerParticleParameter("y0")
@@ -338,6 +337,7 @@ def prepare_receptor(
     _metal_set: set[str] = set()
     if retain_metal_ions:
         from autodock.core import _METAL_COFACTORS, _METAL_IONS
+
         _metal_set = _METAL_IONS | _METAL_COFACTORS
 
     n_waters_removed = 0
@@ -372,8 +372,10 @@ def prepare_receptor(
                 filtered.append(line)
         pdb_content = "".join(filtered)
     if n_waters_removed > 0:
-        logger.info(f"Removed {n_waters_removed} water molecules"
-                    + (" (set remove_water=False to retain them)" if remove_water else ""))
+        logger.info(
+            f"Removed {n_waters_removed} water molecules"
+            + (" (set remove_water=False to retain them)" if remove_water else "")
+        )
     if n_metals_retained_step5 > 0:
         logger.info(f"Retained {n_metals_retained_step5} metal/cofactor atoms")
 
@@ -382,6 +384,7 @@ def prepare_receptor(
     _retain_set: set[str] = set()
     if retain_metal_ions:
         from autodock.core import _METAL_COFACTORS, _METAL_IONS
+
         _retain_set = _METAL_IONS | _METAL_COFACTORS
 
     skipped_residues: dict[str, int] = {}
@@ -625,6 +628,7 @@ def prepare_ligand(
     mol = Chem.Mol(mol_h)
     conf = mol_h.GetConformer(best_cid)
     from rdkit import Geometry
+
     new_conf = Chem.Conformer(mol.GetNumAtoms())
     new_conf.SetId(0)
     for i in range(mol.GetNumAtoms()):

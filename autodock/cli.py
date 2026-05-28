@@ -174,7 +174,7 @@ def cmd_dock(args: argparse.Namespace) -> int:
     box_size = tuple(args.box_size) if args.box_size else None
 
     # Resolve receptor PDB for post-processing (getattr for test compat)
-    receptor_pdb = getattr(args, 'receptor_pdb', None)
+    receptor_pdb = getattr(args, "receptor_pdb", None)
     if receptor_pdb is None:
         # Auto-detect PDB from PDBQT path
         pdb_candidates = [
@@ -470,7 +470,7 @@ def cmd_batch_dock(args: argparse.Namespace) -> int:
 
     # Map receptor names to PDB files (getattr for test compat)
     receptor_pdb_map: dict[str, str] = {}
-    receptor_pdb_dir = getattr(args, 'receptor_pdb_dir', None)
+    receptor_pdb_dir = getattr(args, "receptor_pdb_dir", None)
     if receptor_pdb_dir:
         pdb_dir = receptor_pdb_dir
         for rec_name in receptors:
@@ -977,8 +977,9 @@ def build_parser() -> argparse.ArgumentParser:
     p_dock.add_argument("--seed", type=int, default=42)
     p_dock.add_argument("--output-dir", default="./docking_results")
     p_dock.add_argument("--name", help="Compound name")
-    p_dock.add_argument("--receptor-pdb", default=None,
-                        help="Receptor PDB file (for interaction/rendering)")
+    p_dock.add_argument(
+        "--receptor-pdb", default=None, help="Receptor PDB file (for interaction/rendering)"
+    )
     p_dock.set_defaults(func=cmd_dock)
 
     # validate
@@ -1054,8 +1055,11 @@ def build_parser() -> argparse.ArgumentParser:
     p_batch.add_argument("--seed", type=int, default=42)
     p_batch.add_argument("--workers", type=int, default=1, help="Parallel workers (-1 = all cores)")
     p_batch.add_argument("--outdir", default="./batch_docking_results")
-    p_batch.add_argument("--receptor-pdb-dir", default=None,
-                        help="Directory with receptor PDB files (for interaction/rendering)")
+    p_batch.add_argument(
+        "--receptor-pdb-dir",
+        default=None,
+        help="Directory with receptor PDB files (for interaction/rendering)",
+    )
     p_batch.set_defaults(func=cmd_batch_dock)
 
     # ensemble-dock

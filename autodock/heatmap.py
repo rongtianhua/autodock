@@ -30,12 +30,12 @@ def _ggtheme(ax: Any) -> None:
         ax.spines[spine].set_linewidth(0.5)
         ax.spines[spine].set_color("#4d4d4d")
     # Tick style
-    ax.tick_params(axis="both", which="major", labelsize=9, colors="#4d4d4d",
-                   length=3, width=0.5)
+    ax.tick_params(axis="both", which="major", labelsize=9, colors="#4d4d4d", length=3, width=0.5)
     ax.tick_params(axis="both", which="minor", length=2, width=0.3)
     # Grid
-    ax.grid(True, which="major", axis="both", linestyle="--", linewidth=0.3,
-            alpha=0.4, color="#cccccc")
+    ax.grid(
+        True, which="major", axis="both", linestyle="--", linewidth=0.3, alpha=0.4, color="#cccccc"
+    )
     ax.set_axisbelow(True)
 
 
@@ -69,6 +69,7 @@ def plot_energy_heatmap(
     """
     try:
         import matplotlib
+
         matplotlib.use("Agg")
         import matplotlib.pyplot as plt
         from matplotlib.colors import Normalize
@@ -138,14 +139,14 @@ def plot_energy_heatmap(
     fig.patch.set_facecolor("white")
 
     # Heatmap
-    im = ax.imshow(matrix, aspect="auto", cmap=cmap, norm=norm,
-                   interpolation="nearest")
+    im = ax.imshow(matrix, aspect="auto", cmap=cmap, norm=norm, interpolation="nearest")
 
     # Axis labels (ggplot2-style: horizontal x labels if few, rotated if many)
     ax.set_xticks(range(n_lig))
     ax.set_yticks(range(n_rec))
-    ax.set_xticklabels(ligand_names, fontsize=8, rotation=45 if n_lig > 5 else 0,
-                       ha="right", va="top")
+    ax.set_xticklabels(
+        ligand_names, fontsize=8, rotation=45 if n_lig > 5 else 0, ha="right", va="top"
+    )
     ax.set_yticklabels(receptor_names, fontsize=8)
 
     # Affinity-value annotations on each receptor-ligand pair cell
@@ -157,8 +158,16 @@ def plot_energy_heatmap(
                     # Choose text colour for contrast against heatmap colour
                     lightness = abs(val) / abs_max if abs_max > 0 else 0.5
                     text_color = "white" if lightness > 0.6 else "#333333"
-                    ax.text(j, i, annotations[i][j], ha="center", va="center",
-                            fontsize=6, fontweight="bold", color=text_color)
+                    ax.text(
+                        j,
+                        i,
+                        annotations[i][j],
+                        ha="center",
+                        va="center",
+                        fontsize=6,
+                        fontweight="bold",
+                        color=text_color,
+                    )
 
     # Colour bar
     cbar = fig.colorbar(im, ax=ax, shrink=0.7, pad=0.02)
@@ -168,8 +177,7 @@ def plot_energy_heatmap(
     # Axes labels
     ax.set_xlabel("Ligand", fontsize=9, color="#333333")
     ax.set_ylabel("Receptor", fontsize=9, color="#333333")
-    ax.set_title("Binding Energy Heatmap", fontsize=11, color="#222222",
-                 fontweight="bold", pad=12)
+    ax.set_title("Binding Energy Heatmap", fontsize=11, color="#222222", fontweight="bold", pad=12)
 
     # Apply ggplot2 theme
     _ggtheme(ax)
