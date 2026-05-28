@@ -712,6 +712,8 @@ def prepare_ligand(
     ph: float = 7.4,
     ph_range: float | None = 1.5,
     molscrub_states: bool = True,
+    enumerate_stereo: bool = True,
+    max_stereo_isomers: int = 8,
 ) -> str:
     """
     Prepare a ligand for docking (SMILES → PDBQT).
@@ -750,6 +752,13 @@ def prepare_ligand(
         molscrub_states: If True, run molscrub to enumerate tautomers,
             protonation states, and strip counterions before conformer
             generation.  The lowest-energy state × conformer is selected.
+        enumerate_stereo: If True (default), detect unassigned chiral
+            centers in the input SMILES and enumerate all possible
+            stereoisomers.  Each stereoisomer is prepared separately
+            and the lowest MMFF94-energy one is selected.
+        max_stereo_isomers: Maximum stereoisomers to enumerate
+            (default 8).  Prevents combinatorial explosion for highly
+            flexible ligands with many unspecified chiral centers.
 
     Returns:
         Absolute path to the prepared PDBQT file.
@@ -765,63 +774,92 @@ def prepare_ligand(
     if mol_base is None:
         raise PreparationError(f"Could not parse SMILES: {smiles}")
 
+    # ── Stereochemistry enumeration ──────────────────────────────────────────
+    # If the input SMILES has unassigned chiral centers, enumerate all possible
+    # stereoisomers and prepare each one.  Select the lowest MMFF94-energy
+    # isomer across the entire stereo × tautomer × protomer space.
+    stereo_inputs: list[tuple[Any, str]] = [(mol_base, "")]
+    if enumerate_stereo:
+        from rdkit.Chem.EnumerateStereoisomers import (
+            EnumerateStereoisomers,
+            StereoEnumerationOptions,
+        )
+
+        unassigned = Chem.FindMolChiralCenters(mol_base, includeUnassigned=True)
+        n_unassigned = sum(1 for _, label in unassigned if label == "?")
+        if n_unassigned > 0:
+            _opts = StereoEnumerationOptions(
+                onlyUnassigned=True,
+                unique=True,
+                maxIsomers=max_stereo_isomers,
+            )
+            stereo_isomers = list(EnumerateStereoisomers(mol_base, options=_opts))
+            if len(stereo_isomers) > 1:
+                logger.info(
+                    f"Stereo enumeration: {n_unassigned} unassigned chiral center(s)"
+                    f" → {len(stereo_isomers)} stereoisomer(s)"
+                )
+                stereo_inputs = [(iso, f"[stereo {i}] ") for i, iso in enumerate(stereo_isomers)]
     # ── State enumeration (molscrub: salt stripping + tautomers + protonation) ──
     candidate_mols: list[tuple[Any, float, str]] = []  # (rdkit_mol, mmff_energy, label)
 
-    if molscrub_states:
-        try:
-            from molscrub import Scrub
+    for _stereo_mol, _stereo_label in stereo_inputs:
+        if molscrub_states:
+            try:
+                from molscrub import Scrub
 
-            if ph_range is not None:
-                ph_low = max(0.0, ph - ph_range / 2.0)
-                ph_high = ph + ph_range / 2.0
-            else:
-                ph_low = ph
-                ph_high = ph + 0.01  # single-point
+                if ph_range is not None:
+                    ph_low = max(0.0, ph - ph_range / 2.0)
+                    ph_high = ph + ph_range / 2.0
+                else:
+                    ph_low = ph
+                    ph_high = ph + 0.01  # single-point
 
-            scrubber = Scrub(
-                ph_low=ph_low,
-                ph_high=ph_high,
-                skip_acidbase=False,
-                skip_tautomers=False,
-                debug=False,
-            )
-            scrubbed_list = scrubber(input_mol=mol_base)
-            n_states = len(scrubbed_list)
-            logger.info(f"molscrub: {n_states} tautomer/protomer state(s) for {smiles[:50]}...")
-
-            for i, state_mol in enumerate(scrubbed_list):
-                if state_mol is None:
-                    continue
-                state_mol_h = Chem.AddHs(state_mol, addCoords=True)
-                result_tup = _embed_and_select_best_conf(
-                    state_mol_h,
-                    n_conformer_attempts=n_conformer_attempts,
-                    seed=seed + i,
-                    label=f"[state {i}] ",
+                scrubber = Scrub(
+                    ph_low=ph_low,
+                    ph_high=ph_high,
+                    skip_acidbase=False,
+                    skip_tautomers=False,
+                    debug=False,
                 )
-                if result_tup is not None:
-                    state_mol, state_energy = result_tup
-                    candidate_mols.append((state_mol, state_energy, f"state_{i}"))
-        except ImportError:
-            logger.debug("molscrub not installed — skipping state enumeration")
-            molscrub_states = False
-        except Exception as exc:
-            logger.warning(f"molscrub failed ({exc}) — falling back to single-state")
+                scrubbed_list = scrubber(input_mol=_stereo_mol)
 
-    # ── Single-state fallback ─────────────────────────────────────────────
+                for i, state_mol in enumerate(scrubbed_list):
+                    if state_mol is None:
+                        continue
+                    state_mol_h = Chem.AddHs(state_mol, addCoords=True)
+                    result_tup = _embed_and_select_best_conf(
+                        state_mol_h,
+                        n_conformer_attempts=n_conformer_attempts,
+                        seed=seed + i,
+                        label=f"{_stereo_label}[taut {i}] ",
+                    )
+                    if result_tup is not None:
+                        _mol, _eng = result_tup
+                        candidate_mols.append((_mol, _eng, f"{_stereo_label}taut_{i}"))
+            except ImportError:
+                logger.debug("molscrub not installed — skipping state enumeration")
+                molscrub_states = False
+            except Exception as exc:
+                logger.warning(f"molscrub failed ({exc}) — falling back to single-state")
+
+    # ── Single-state fallback (no molscrub, may still have stereoisomers) ──
     if not candidate_mols:
-        mol_h = Chem.AddHs(mol_base, addCoords=True)
-        result_tup = _embed_and_select_best_conf(
-            mol_h,
-            n_conformer_attempts=n_conformer_attempts,
-            seed=seed,
-        )
-        if result_tup is None:
-            logger.warning("RDKit embedding failed — falling back to Open Babel")
-            return _prepare_ligand_with_obabel(smiles, output_pdbqt, name=name)
-        single_mol, single_energy = result_tup
-        candidate_mols = [(single_mol, single_energy, "single")]
+        for _stereo_mol, _stereo_label in stereo_inputs:
+            mol_h = Chem.AddHs(_stereo_mol, addCoords=True)
+            result_tup = _embed_and_select_best_conf(
+                mol_h,
+                n_conformer_attempts=n_conformer_attempts,
+                seed=seed,
+                label=_stereo_label,
+            )
+            if result_tup is not None:
+                _mol, _eng = result_tup
+                candidate_mols.append((_mol, _eng, f"{_stereo_label}single"))
+
+    if not candidate_mols:
+        logger.warning("RDKit embedding failed — falling back to Open Babel")
+        return _prepare_ligand_with_obabel(smiles, output_pdbqt, name=name)
 
     # Compute Gasteiger charges and pick the best across all candidates
     best_mol: Any | None = None
