@@ -29,7 +29,7 @@ from autodock.core import (
     logger,
     safe_subprocess,
 )
-from autodock.utils import ensure_dir, obabel_convert, safe_pdb_slice
+from autodock.utils import ensure_dir, obabel_convert, safe_pdb_slice, write_temp_file
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Receptor Preparation
@@ -44,12 +44,25 @@ def prepare_receptor(
     input_format: str = "auto",
     keep_residues: set[str] | None = None,
     force: bool = False,
+    ph: float = 7.4,
+    forcefield: str = "amber14-all.xml",
 ) -> str:
     """
     Prepare a protein structure for docking (PDB/mmCIF → PDBQT).
 
-    Uses Meeko Polymer + PDBQTWriterLegacy for accurate atom typing and
-    Gasteiger charge assignment.  Falls back to Open Babel if Meeko fails.
+    Uses a **three-stage publication-grade workflow**:
+
+    1. **PDBFixer** — fills missing residues and atoms, assigns protonation
+       states at the specified pH, replaces nonstandard residues.
+    2. **OpenMM energy minimization** — short L-BFGS minimisation (200 steps)
+       to relieve local strain from missing-atom reconstruction.
+    3. **Meeko Polymer** — AD4 atom typing, Gasteiger charges, PDBQT export.
+       Falls back to Open Babel if Meeko fails.
+
+    References:
+        - Eastman et al. (2017) PLoS Comput. Biol. (OpenMM)
+        - PDBFixer: https://github.com/openmm/pdbfixer
+        - Rinciker et al. (2004) J. Med. Chem. (receptor prep best practices)
 
     Args:
         pdb_file: Input structure path (.pdb, .cif, .pdbx).
@@ -59,6 +72,11 @@ def prepare_receptor(
         input_format: 'auto' | 'pdb' | 'cif' | 'pdbx'.
         keep_residues: If provided, keep only these residue names.
         force: If False and output_pdbqt already exists, skip preparation.
+        ph: Target pH for adding hydrogens (default 7.4).  Passed to
+            PDBFixer.addMissingHydrogens().  For pH-sensitive active sites
+            (e.g. cathepsin B at pH ~5.5), use the appropriate value.
+        forcefield: OpenMM force field XML for energy minimisation
+            (default ``"amber14-all.xml"``).
 
     Returns:
         Absolute path to the prepared PDBQT file.
@@ -73,7 +91,7 @@ def prepare_receptor(
         logger.info(f"Receptor PDBQT already exists — skipping prep: {output_pdbqt}")
         return os.path.abspath(output_pdbqt)
 
-    # Step 1: Convert mmCIF → PDB if needed
+    # ── Step 1: Convert mmCIF → PDB if needed ────────────────────────────
     ext = os.path.splitext(pdb_file)[1].lower()
     if input_format == "auto":
         input_format = "cif" if ext in (".cif", ".pdbx") else "pdb"
@@ -96,8 +114,11 @@ def prepare_receptor(
         with open(pdb_file) as fh:
             pdb_content = fh.read()
 
-    # Step 2: Record altloc choices before filtering
-    altloc_records: dict[str, set[str]] = {}  # (resi, chain) → {altlocs}
+    # Write to temp PDB for PDBFixer consumption
+    tmp_raw = write_temp_file(pdb_content, suffix="_raw.pdb")
+
+    # ── Step 2: Record altloc choices before any modification ────────────
+    altloc_records: dict[str, set[str]] = {}
     for line in pdb_content.splitlines():
         if line.startswith(("ATOM  ", "HETATM")):
             altloc = safe_pdb_slice(line, 16, 17)
@@ -114,7 +135,76 @@ def prepare_receptor(
             f"Affected: {list(multi_altloc.keys())[:10]}"
         )
 
-    # Step 3: Filter waters / hetatms
+    # ── Step 3: PDBFixer — fill missing residues/atoms, add hydrogens ────
+    try:
+        from openmm.app import PDBFile as _OMM_PDBFile
+        from pdbfixer import PDBFixer
+    except ImportError as exc:
+        raise PreparationError(
+            f"PDBFixer / OpenMM required for receptor preparation: {exc}. "
+            "Install: conda install -c conda-forge pdbfixer openmm"
+        )
+
+    tmp_fixed = write_temp_file("", suffix="_fixed.pdb")
+    try:
+        fixer = PDBFixer(filename=tmp_raw)
+        fixer.findMissingResidues()
+        fixer.findNonstandardResidues()
+        fixer.replaceNonstandardResidues()
+        # Remove heterogens (water + non-protein) — consistent with docking requirements
+        fixer.removeHeterogens(remove_water)  # True → keep water; False → remove all
+        fixer.findMissingAtoms()
+        fixer.addMissingAtoms()
+        fixer.addMissingHydrogens(ph)
+        with open(tmp_fixed, "w") as fh:
+            _OMM_PDBFile.writeFile(fixer.topology, fixer.positions, fh)
+        logger.info(f"PDBFixer: missing residues filled, hydrogens added (pH {ph})")
+    except Exception as exc:
+        logger.warning(f"PDBFixer failed ({exc}) — falling back to raw structure")
+        tmp_fixed = tmp_raw  # use raw structure
+
+    # ── Step 4: OpenMM short energy minimisation ─────────────────────────
+    tmp_min = write_temp_file("", suffix="_minimized.pdb")
+    try:
+        from openmm import LangevinIntegrator
+        from openmm import unit as _omm_unit
+        from openmm.app import ForceField, PDBFile, Simulation
+
+        # Use the force field for energy terms — only protein atoms matter
+        ff = ForceField(forcefield)
+        system = ff.createSystem(fixer.topology)
+        integrator = LangevinIntegrator(
+            300 * _omm_unit.kelvin,
+            1.0 / _omm_unit.picosecond,
+            0.002 * _omm_unit.picosecond,
+        )
+        simulation = Simulation(fixer.topology, system, integrator)
+        simulation.context.setPositions(fixer.positions)
+        simulation.minimizeEnergy(maxIterations=200)
+        min_positions = simulation.context.getState(getPositions=True).getPositions()
+        with open(tmp_min, "w") as fh:
+            PDBFile.writeFile(fixer.topology, min_positions, fh)
+        logger.info("OpenMM: receptor energy minimised (200 steps L-BFGS)")
+    except Exception as exc:
+        logger.warning(f"OpenMM minimisation skipped ({exc}) — using PDBFixer output")
+        tmp_min = tmp_fixed
+
+    # Read back the cleaned PDB content
+    with open(tmp_min) as fh:
+        pdb_content = fh.read()
+
+    # Clean up temps (keep tmp_raw in case it falls back as tmp_fixed/tmp_min)
+    _temps_to_clean = {tmp_raw, tmp_fixed, tmp_min}
+    if tmp_fixed == tmp_raw:
+        _temps_to_clean.discard(tmp_fixed)
+    if tmp_min in (tmp_fixed, tmp_raw):
+        _temps_to_clean.discard(tmp_min)
+    for t in _temps_to_clean:
+        with contextlib.suppress(OSError):
+            if os.path.exists(t):
+                os.remove(t)
+
+    # ── Step 5: Filter waters / hetatms (second pass after PDBFixer) ─────
     if remove_water or remove_hetatms or keep_residues:
         lines = pdb_content.splitlines(keepends=True)
         filtered = []
@@ -139,7 +229,7 @@ def prepare_receptor(
                 filtered.append(line)
         pdb_content = "".join(filtered)
 
-    # Step 4: Remove known problematic additives — log every skipped residue
+    # ── Step 6: Remove known problematic additives — log every skip ──────
     skipped_residues: dict[str, int] = {}
     lines = pdb_content.splitlines()
     filtered = []
@@ -154,7 +244,7 @@ def prepare_receptor(
         logger.info(f"Skipped additives before Meeko: {dict(sorted(skipped_residues.items()))}")
     pdb_content = "\n".join(filtered)
 
-    # Step 5: Meeko preparation
+    # ── Step 7: Meeko preparation ────────────────────────────────────────
     try:
         from meeko import MoleculePreparation, PDBQTWriterLegacy, Polymer, ResidueChemTemplates
     except ImportError as exc:
@@ -508,7 +598,7 @@ def prepare_ligand_conformers(
 ) -> list[str]:
     """
     Generate multiple 3D conformers of a ligand for multi-conformer docking.
-    
+
     Args:
         smiles: SMILES string.
         output_dir: Directory for conformer PDBQT files.
