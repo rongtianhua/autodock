@@ -167,8 +167,8 @@ def cmd_find_pockets(args: argparse.Namespace) -> int:
 def cmd_dock(args: argparse.Namespace) -> int:
     """Run molecular docking with full post-processing."""
     from autodock.docking import dock_ligand
-    from autodock.preparation import find_top_pockets
     from autodock.pipeline import post_process_docking
+    from autodock.preparation import find_top_pockets
 
     center = tuple(args.center) if args.center else None
     box_size = tuple(args.box_size) if args.box_size else None
@@ -188,7 +188,11 @@ def cmd_dock(args: argparse.Namespace) -> int:
 
     # Auto-detect pocket if center not provided
     if center is None:
-        pocket_input = receptor_pdb if receptor_pdb and Path(receptor_pdb).exists() else str(Path(args.receptor).with_suffix(".pdb"))
+        pocket_input = (
+            receptor_pdb
+            if receptor_pdb and Path(receptor_pdb).exists()
+            else str(Path(args.receptor).with_suffix(".pdb"))
+        )
         if not Path(pocket_input).exists():
             for ext in (".cif", ".pdbx"):
                 candidate = Path(args.receptor).with_suffix(ext)
@@ -313,6 +317,7 @@ def cmd_analyze(args: argparse.Namespace) -> int:
 def cmd_report(args: argparse.Namespace) -> int:
     """Generate PDF/Excel/CSV report from completed docking results."""
     from autodock.pipeline import post_process_docking, read_docking_results
+    from autodock.utils import ensure_dir
 
     results = read_docking_results(args.result_dir)
     if not results:

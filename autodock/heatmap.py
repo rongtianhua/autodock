@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import math
 import os
+from typing import Any
 
 import numpy as np
 
@@ -21,8 +22,6 @@ from autodock.utils import ensure_dir
 
 def _ggtheme(ax: Any) -> None:
     """Apply a clean ggplot2-style theme to a matplotlib Axes."""
-    import matplotlib.pyplot as plt
-
     # Remove top/right spines
     ax.spines["top"].set_visible(False)
     ax.spines["right"].set_visible(False)

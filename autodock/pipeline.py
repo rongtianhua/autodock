@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import json
 import os
-from datetime import datetime
 from typing import Any
 
 from autodock.core import DockingResult, logger
@@ -78,7 +77,8 @@ def post_process_docking(
     }
 
     compound = result.compound_name or "ligand"
-    receptor_name = os.path.splitext(os.path.basename(result.receptor))[0] if result.receptor else "receptor"
+    rec_basename = os.path.basename(result.receptor) if result.receptor else ""
+    receptor_name = os.path.splitext(rec_basename)[0] if rec_basename else "receptor"
 
     # ── 1. Copy structure files ──────────────────────────────────────────────
     if copy_structures:
@@ -95,7 +95,8 @@ def post_process_docking(
             for i, c in enumerate(result.pose_clusters[:5], 1):
                 rep_path = c.get("representative_path")
                 if rep_path and os.path.isfile(rep_path):
-                    _copy_file(rep_path, os.path.join(struct_dir, f"cluster_{i}_representative.pdbqt"))
+                    dst = os.path.join(struct_dir, f"cluster_{i}_representative.pdbqt")
+                    _copy_file(rep_path, dst)
         # Copy ligand if found alongside best_pose directory
         if result.output_dir:
             lig_pdbqt = os.path.join(result.output_dir, "ligand.pdbqt")
@@ -164,7 +165,11 @@ def post_process_docking(
             for scene_name in ("complex", "pocket", "interaction"):
                 png_path = os.path.join(fig_dir, f"3d_{scene_name}.png")
                 pdf_path = os.path.join(fig_dir, f"3d_{scene_name}.pdf")
-                pse_path = os.path.join(fig_dir, f"session_{scene_name}.pse") if scene_name == "interaction" else None
+                pse_path = (
+                    os.path.join(fig_dir, f"session_{scene_name}.pse")
+                    if scene_name == "interaction"
+                    else None
+                )
 
                 kw = {
                     "receptor_pdb": receptor_pdb,

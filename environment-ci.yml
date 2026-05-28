@@ -13,7 +13,6 @@ dependencies:
   # Cheminformatics & docking (required for tests)
   - rdkit>=2023.03
   - vina>=1.2.0
-  - meeko>=0.6.0
   # Utilities
   - pillow>=10.0
   - pyyaml>=6.0
@@ -22,3 +21,6 @@ dependencies:
   - pytest-cov>=4.1
   - ruff>=0.4.0
   - black>=24.0
+  # Pip-only packages (conda versions incompatible with Python 3.12)
+  - pip:
+    - meeko>=0.6.0
