@@ -678,9 +678,11 @@ def _embed_and_select_best_conf(
     if len(cids) == 0:
         return None
 
+    # ── MMFF94 optimisation (primary) ────────────────────────────────────
     mmff_results = AllChem.MMFFOptimizeMoleculeConfs(mol_h, maxIters=500, numThreads=0)
     best_cid: int | None = None
     best_energy = float("inf")
+    ff_used = "MMFF94"
     for i, cid in enumerate(cids):
         status = mmff_results[i][0] if i < len(mmff_results) else -1
         energy = mmff_results[i][1] if i < len(mmff_results) else float("inf")
@@ -688,15 +690,27 @@ def _embed_and_select_best_conf(
             best_cid = cid
             best_energy = float(energy)
 
+    # ── UFF fallback (for exotic elements not handled by MMFF94) ─────────
+    if best_cid is None:
+        logger.debug(f"{label}MMFF94 unsupported — trying UFF fallback")
+        uff_results = AllChem.UFFOptimizeMoleculeConfs(mol_h, maxIters=500, numThreads=0)
+        for i, cid in enumerate(cids):
+            status = uff_results[i][0] if i < len(uff_results) else -1
+            energy = uff_results[i][1] if i < len(uff_results) else float("inf")
+            if status != -1 and energy is not None and energy < best_energy:
+                best_cid = cid
+                best_energy = float(energy)
+        ff_used = "UFF"
+
     if best_cid is None:
         return None
 
     logger.debug(
-        f"{label}Multi-round conformer: {len(cids)} evaluated,"
+        f"{label}Multi-round conformer ({ff_used}): {len(cids)} evaluated,"
         f" lowest energy={best_energy:.2f} kcal/mol"
     )
 
-    # Keep only the best conformer to avoid MMFF invalidation later
+    # Keep only the best conformer to avoid FF property invalidation later
     for c in cids:
         if c != best_cid:
             mol_h.RemoveConformer(c)
@@ -920,6 +934,50 @@ def prepare_ligand(
 
     logger.info(f"Ligand prepared: {output_pdbqt}")
     return os.path.abspath(output_pdbqt)
+
+
+def prepare_ligand_from_file(
+    path: str,
+    output_pdbqt: str,
+    name: str = "LIG",
+) -> str:
+    """
+    Prepare a ligand from a structure file, auto-detecting the format.
+
+    Supports SDF (``.sdf``), MOL (``.mol``), and MOL2 (``.mol2``).
+    Preserves existing 3D coordinates from the file.
+
+    Args:
+        path: Path to structure file.
+        output_pdbqt: Output PDBQT file path.
+        name: Residue name in PDBQT.
+
+    Returns:
+        Absolute path to the prepared PDBQT file.
+    """
+    ext = os.path.splitext(path)[1].lower()
+    if ext in (".mol2",):
+        # MOL2 path — use RDKit MolFromMol2File
+        try:
+            from rdkit import Chem
+        except ImportError as exc:
+            raise PreparationError(f"Required package missing: {exc}")
+
+        mol = Chem.MolFromMol2File(str(path), removeHs=False)
+        if mol is None:
+            raise PreparationError(f"Could not parse MOL2: {path}")
+
+        smiles = Chem.MolToSmiles(mol)
+        return prepare_ligand(
+            smiles,
+            output_pdbqt,
+            name=name,
+            molscrub_states=False,
+            enumerate_stereo=False,
+        )
+
+    # SDF / MOL — use prepare_ligand_from_sdf
+    return prepare_ligand_from_sdf(path, output_pdbqt, name=name)
 
 
 def prepare_ligand_from_sdf(
