@@ -85,7 +85,7 @@ def cmd_fetch(args: argparse.Namespace) -> int:
         path = download_ligand_sdf_from_pdb(fid, str(outdir))
         print(f"✅ Downloaded ligand SDF: {path}")
     elif args.type == "alphafold":
-        path = download_alphafold(fid, str(outdir), format=args.format or "pdb")
+        path = download_alphafold(fid, str(outdir), format=args.format or "cif")
         print(f"✅ Downloaded AlphaFold: {path}")
     elif args.type == "swissmodel":
         path = download_swissmodel(fid, str(outdir))

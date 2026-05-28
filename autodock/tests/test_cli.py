@@ -394,7 +394,7 @@ class TestCmdFetch:
         args = self._fetch_args("alphafold", "P12345")
         rc = cli.cmd_fetch(args)
         assert rc == 0
-        mock_dl.assert_called_once_with("P12345", ".", format="pdb")
+        mock_dl.assert_called_once_with("P12345", ".", format="cif")
 
     @patch("autodock.fetchers.download_swissmodel", return_value="./SM.pdb")
     @patch("autodock.utils.ensure_dir", return_value=".")

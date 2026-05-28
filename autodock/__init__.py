@@ -15,6 +15,7 @@ Quick start:
     result = dock_ligand(receptor, ligand, center, box)
 """
 
+from autodock.alphafold_tools import assess_alphafold_quality, relax_alphafold_structure
 from autodock.analysis import analyze_scoring_bias
 from autodock.config import load_config, write_default_config
 from autodock.core import (
@@ -129,6 +130,8 @@ __all__ = [
     "download_ligand_sdf_from_pdb",
     "StructureCache",
     "analyze_scoring_bias",
+    "assess_alphafold_quality",
+    "relax_alphafold_structure",
     "fetch_protein_structure",
     "find_best_pdb_structure",
     "search_pdb_by_name",
