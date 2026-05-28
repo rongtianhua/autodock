@@ -79,18 +79,20 @@ def _vina_dock_worker(
         energy_range,
         seed,
         flex_receptor_pdbqt,
+        scoring_function,
+        min_rmsd,
     ) = args
 
     try:
         from vina import Vina
 
-        v = Vina(sf_name="vina", seed=_get_vina_seed(seed))
+        v = Vina(sf_name=scoring_function, seed=_get_vina_seed(seed))
         v.set_receptor(receptor_pdbqt)
         if flex_receptor_pdbqt and os.path.isfile(flex_receptor_pdbqt):
             v.set_flex(flex_receptor_pdbqt)
         v.set_ligand_from_file(ligand_pdbqt)
         v.compute_vina_maps(center=list(center), box_size=list(box_size))
-        v.dock(exhaustiveness=exhaustiveness, n_poses=n_poses, min_rmsd=1.0)
+        v.dock(exhaustiveness=exhaustiveness, n_poses=n_poses, min_rmsd=min_rmsd)
 
         energies = v.energies(n_poses=n_poses, energy_range=energy_range)
 
@@ -125,8 +127,10 @@ def _run_vina_dock(
     energy_range: float = VINA_DEFAULT_ENERGY_RANGE,
     seed: int | None = None,
     timeout: int = VINA_DEFAULT_TIMEOUT,
-    auto_exhaustiveness: bool = True,
+    auto_exhaustiveness: bool = False,
     flex_receptor_pdbqt: str | None = None,
+    scoring_function: str = "vina",
+    min_rmsd: float = 1.0,
     _use_subprocess: bool = True,
 ) -> tuple[np.ndarray, list[str]]:
     """
@@ -164,7 +168,7 @@ def _run_vina_dock(
     if not _use_subprocess or in_subprocess:
         from vina import Vina
 
-        v = Vina(sf_name="vina", seed=_get_vina_seed(seed))
+        v = Vina(sf_name=scoring_function, seed=_get_vina_seed(seed))
         v.set_receptor(receptor_pdbqt)
         if flex_receptor_pdbqt and os.path.isfile(flex_receptor_pdbqt):
             v.set_flex(flex_receptor_pdbqt)
@@ -177,7 +181,7 @@ def _run_vina_dock(
 
             def _worker() -> None:
                 try:
-                    v.dock(exhaustiveness=exhaustiveness, n_poses=n_poses, min_rmsd=1.0)
+                    v.dock(exhaustiveness=exhaustiveness, n_poses=n_poses, min_rmsd=min_rmsd)
                     result_state["done"] = True
                 except Exception as exc:
                     result_state["error"] = str(exc)
@@ -195,7 +199,7 @@ def _run_vina_dock(
                 raise DockingCalculationError(f"Docking failed: {result_state['error']}") from None
         else:
             # Already in a subprocess: run directly, timeout handled by parent
-            v.dock(exhaustiveness=exhaustiveness, n_poses=n_poses, min_rmsd=1.0)
+            v.dock(exhaustiveness=exhaustiveness, n_poses=n_poses, min_rmsd=min_rmsd)
 
         energies = v.energies(n_poses=n_poses, energy_range=energy_range)
         with tempfile.NamedTemporaryFile(mode="w", suffix=".pdbqt", delete=False) as tf:
@@ -223,6 +227,8 @@ def _run_vina_dock(
         energy_range,
         seed,
         flex_receptor_pdbqt,
+        scoring_function,
+        min_rmsd,
     )
 
     # Use spawn context to avoid fork-safety issues with Vina C++ extension
@@ -358,7 +364,9 @@ def dock_ligand(
     compound_name: str | None = None,
     receptor_pdb: str | None = None,
     skip_consensus: bool = False,
-    auto_exhaustiveness: bool = True,
+    auto_exhaustiveness: bool = False,
+    min_rmsd: float = 1.0,
+    scoring_function: str = "vina",
 ) -> DockingResult:
     """
     Dock a single ligand into a protein binding site.
@@ -378,6 +386,15 @@ def dock_ligand(
         receptor_pdb: Original receptor PDB (for provenance).
         skip_consensus: If True, skip the extra Vinardo consensus scoring step
             (useful for bulk benchmarks where speed matters).
+        auto_exhaustiveness: If True, reduce exhaustiveness for very large
+            ligands (>35 heavy atoms) to avoid Vina combinatorial explosion.
+            Default False to preserve publication-grade sampling.
+        min_rmsd: Minimum RMSD (Å) between Vina-generated poses.  Vina
+            discards poses within this threshold (default 1.0 Å, typical
+            range 0.5–1.5 Å; see Fischer et al. 2021, J. Chem. Inf. Model.).
+        scoring_function: Vina scoring function name.  Supported: ``"vina"``
+            (default), ``"vinardo"``, ``"ad4"`` (AutoDock4).  Available
+            functions depend on the Vina Python package version.
 
     Returns:
         DockingResult with scores, file paths, and metadata.
@@ -425,6 +442,8 @@ def dock_ligand(
         seed=seed,
         timeout=timeout,
         auto_exhaustiveness=auto_exhaustiveness,
+        scoring_function=scoring_function,
+        min_rmsd=min_rmsd,
     )
 
     if energies.size == 0 or not poses:
@@ -532,6 +551,8 @@ def _dock_conformer_worker(
         seed,
         timeout,
         auto_exhaustiveness,
+        scoring_function,
+        min_rmsd,
     ) = args
     return _dock_conformer_core(
         receptor_pdbqt,
@@ -544,6 +565,8 @@ def _dock_conformer_worker(
         seed,
         timeout,
         auto_exhaustiveness,
+        scoring_function=scoring_function,
+        min_rmsd=min_rmsd,
     )
 
 
@@ -558,6 +581,8 @@ def _dock_conformer_core(
     seed: int | None,
     timeout: int,
     auto_exhaustiveness: bool = True,
+    scoring_function: str = "vina",
+    min_rmsd: float = 1.0,
 ) -> tuple[list[tuple[float, str]], int]:
     """Core docking logic for a single conformer."""
     if not os.path.isfile(conf_path):
@@ -574,6 +599,8 @@ def _dock_conformer_core(
             seed=seed,
             timeout=timeout,
             auto_exhaustiveness=auto_exhaustiveness,
+            scoring_function=scoring_function,
+            min_rmsd=min_rmsd,
         )
         pool = []
         for i, pose in enumerate(poses):
@@ -641,6 +668,8 @@ def dock_ligand_multi_conformer(
             seed,
             timeout,
             auto_exhaustiveness,
+            "vina",   # default scoring_function for conformer docking
+            1.0,       # default min_rmsd for conformer docking
         )
         for conf_path in conformer_pdbqts
     ]
@@ -681,6 +710,8 @@ def dock_ligand_multi_conformer(
                 item[7],
                 item[8],
                 auto_exhaustiveness=item[9] if len(item) > 9 else True,
+                scoring_function=item[10] if len(item) > 10 else "vina",
+                min_rmsd=item[11] if len(item) > 11 else 1.0,
             )
             all_poses_pool.extend(pool)
             n_success += ok

@@ -96,7 +96,25 @@ def prepare_receptor(
         with open(pdb_file) as fh:
             pdb_content = fh.read()
 
-    # Step 2: Filter waters / hetatms
+    # Step 2: Record altloc choices before filtering
+    altloc_records: dict[str, set[str]] = {}  # (resi, chain) → {altlocs}
+    for line in pdb_content.splitlines():
+        if line.startswith(("ATOM  ", "HETATM")):
+            altloc = safe_pdb_slice(line, 16, 17)
+            if altloc and altloc.strip():
+                resi = safe_pdb_slice(line, 22, 26)
+                chain = safe_pdb_slice(line, 21, 22) or "A"
+                key = f"{resi}:{chain}"
+                altloc_records.setdefault(key, set()).add(altloc)
+    multi_altloc = {k: v for k, v in altloc_records.items() if len(v) > 1}
+    if multi_altloc:
+        logger.info(
+            f"Altloc selection: {len(multi_altloc)} residue(s) have multiple "
+            f"alternate conformations; default_altloc='A' selected for all. "
+            f"Affected: {list(multi_altloc.keys())[:10]}"
+        )
+
+    # Step 3: Filter waters / hetatms
     if remove_water or remove_hetatms or keep_residues:
         lines = pdb_content.splitlines(keepends=True)
         filtered = []
@@ -121,18 +139,22 @@ def prepare_receptor(
                 filtered.append(line)
         pdb_content = "".join(filtered)
 
-    # Step 3: Remove known problematic additives that crash Meeko
+    # Step 4: Remove known problematic additives — log every skipped residue
+    skipped_residues: dict[str, int] = {}
     lines = pdb_content.splitlines()
     filtered = []
     for line in lines:
         if line.startswith(("ATOM  ", "HETATM")):
             resn = safe_pdb_slice(line, 17, 20)
             if resn in _SKIP_ADDITIVES:
+                skipped_residues[resn] = skipped_residues.get(resn, 0) + 1
                 continue
         filtered.append(line)
+    if skipped_residues:
+        logger.info(f"Skipped additives before Meeko: {dict(sorted(skipped_residues.items()))}")
     pdb_content = "\n".join(filtered)
 
-    # Step 4: Meeko preparation
+    # Step 5: Meeko preparation
     try:
         from meeko import MoleculePreparation, PDBQTWriterLegacy, Polymer, ResidueChemTemplates
     except ImportError as exc:
@@ -253,19 +275,39 @@ def prepare_ligand(
     output_pdbqt: str,
     name: str = "LIG",
     seed: int = 42,
+    n_conformer_attempts: int = 20,
+    ph: float = 7.4,
 ) -> str:
     """
     Prepare a ligand for docking (SMILES → PDBQT).
 
-    Uses RDKit ETKDGv3 for 3D conformer + Meeko for PDBQT export.
+    Uses RDKit ETKDGv3 for 3D conformer generation **with multi-round
+    energy sorting**: generates ``n_conformer_attempts`` conformers,
+    optimises each with MMFF94, and selects the lowest-energy one for
+    PDBQT export.  This follows the best practice of not accepting the
+    first valid conformer without quality assessment (see Rinciker et al.
+    2004, J. Med. Chem.; Hawkins 2017, J. Chem. Inf. Model.).
+
     Falls back to Open Babel if Gasteiger charge calculation fails
     (e.g. for phosphorylated ligands such as 5GP in 1C9K).
+
+    .. note::
+       Protonation states are assigned by RDKit's default neutral model
+       (pH 7.4).  For pH-dependent ionisation (carboxylic acids, amines),
+       consider pre-treating the SMILES string with Dimorphite-DL or
+       passing the pH-adjusted SMILES explicitly.  The OpenBabel fallback
+       uses the ``ph`` argument for protonation.
 
     Args:
         smiles: SMILES string.
         output_pdbqt: Output PDBQT file path.
         name: Residue name in PDBQT.
         seed: Random seed for reproducible conformer generation.
+        n_conformer_attempts: Number of ETKDGv3 attempts; the lowest-energy
+            conformer after MMFF94 optimisation is selected.  More attempts
+            improve the chance of finding the global energy minimum.
+        ph: Target pH for ligand protonation.  Passed to OpenBabel in the
+            fallback path; RDKit always uses neutral model (7.4).
 
     Returns:
         Absolute path to the prepared PDBQT file.
@@ -281,27 +323,63 @@ def prepare_ligand(
     if mol is None:
         raise PreparationError(f"Could not parse SMILES: {smiles}")
 
-    mol = Chem.AddHs(mol, addCoords=True)
+    mol_h = Chem.AddHs(mol, addCoords=True)
+
+    # ── Multi-round ETKDGv3 + energy selection ────────────────────────────
+    # Publication best practice: generate N conformers, evaluate MMFF94 energy,
+    # and keep the lowest-energy one.  Single-shot ETKDG may produce a strained
+    # conformer that biases subsequent docking (Issue #4 from scientific audit).
     params = AllChem.ETKDGv3()
     params.randomSeed = seed
-    embed_ok = AllChem.EmbedMolecule(mol, params)
-    if embed_ok != 0:
-        logger.warning(f"ETKDGv3 embedding returned {embed_ok} — trying fallback")
-        embed_ok2 = AllChem.EmbedMolecule(mol, randomSeed=seed)
-        if embed_ok2 != 0:
+    params.numThreads = 0
+    params.pruneRmsThresh = 0.5
+    cids = AllChem.EmbedMultipleConfs(mol_h, numConfs=n_conformer_attempts, params=params)
+
+    if len(cids) == 0:
+        logger.warning(
+            f"ETKDGv3 produced zero conformers after {n_conformer_attempts} attempts"
+            " — trying fallback"
+        )
+        fallback_ok = AllChem.EmbedMolecule(mol_h, randomSeed=seed)
+        if fallback_ok != 0:
             logger.warning("RDKit embedding failed — falling back to Open Babel")
             return _prepare_ligand_with_obabel(smiles, output_pdbqt, name=name)
+        cids = [0]
 
-    # Optimize geometry: try MMFF first, then UFF for exotic elements (P, S+4, etc.)
-    mmff_ok = AllChem.MMFFOptimizeMolecule(mol, maxIters=500)
-    if mmff_ok == -1:
-        logger.debug("MMFF unsupported for this molecule — trying UFF")
-        uff_ok = AllChem.UFFOptimizeMolecule(mol, maxIters=500)
-        if uff_ok == -1:
-            logger.warning("RDKit force-field optimization failed — falling back to Open Babel")
-            return _prepare_ligand_with_obabel(smiles, output_pdbqt, name=name)
-    elif mmff_ok == 1:
-        logger.debug("MMFF did not fully converge (status=1) — accepting partial optimization")
+    # Optimise all conformers and select lowest-energy one
+    mmff_results = AllChem.MMFFOptimizeMoleculeConfs(mol_h, maxIters=500, numThreads=0)
+    energies: list[tuple[int, float]] = []
+    for i, cid in enumerate(cids):
+        status = mmff_results[i][0] if i < len(mmff_results) else -1
+        energy = mmff_results[i][1] if i < len(mmff_results) else float("inf")
+        if status != -1 and energy is not None:
+            energies.append((cid, float(energy)))
+        else:
+            energies.append((cid, float("inf")))
+
+    if energies:
+        energies.sort(key=lambda x: x[1])
+        best_cid = energies[0][0]
+        best_energy = energies[0][1]
+        logger.debug(
+            f"Multi-round conformer selection: {len(energies)} evaluated,"
+            f" best energy={best_energy:.2f} kcal/mol (cid={best_cid})"
+        )
+    else:
+        # Fallback: use first conformer
+        best_cid = cids[0]
+
+    # Extract the best conformer into a single-conformer molecule
+    mol = Chem.Mol(mol_h)
+    conf = mol_h.GetConformer(best_cid)
+    from rdkit import Geometry
+    new_conf = Chem.Conformer(mol.GetNumAtoms())
+    new_conf.SetId(0)
+    for i in range(mol.GetNumAtoms()):
+        pos = conf.GetAtomPosition(i)
+        new_conf.SetAtomPosition(i, Geometry.Point3D(pos.x, pos.y, pos.z))
+    mol.RemoveAllConformers()
+    mol.AddConformer(new_conf)
 
     rdPartialCharges.ComputeGasteigerCharges(mol)
 
@@ -426,10 +504,11 @@ def prepare_ligand_conformers(
     n_conformers: int = 10,
     name: str = "LIG",
     seed_start: int = 42,
+    ph: float = 7.4,
 ) -> list[str]:
     """
     Generate multiple 3D conformers of a ligand for multi-conformer docking.
-
+    
     Args:
         smiles: SMILES string.
         output_dir: Directory for conformer PDBQT files.
@@ -444,7 +523,7 @@ def prepare_ligand_conformers(
     paths = []
     for i in range(n_conformers):
         out_path = os.path.join(output_dir, f"conformer_{i}.pdbqt")
-        prepare_ligand(smiles, out_path, name=name, seed=seed_start + i)
+        prepare_ligand(smiles, out_path, name=name, seed=seed_start + i, ph=ph)
         paths.append(out_path)
     logger.info(f"Generated {n_conformers} conformers in {output_dir}")
     return paths

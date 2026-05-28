@@ -94,17 +94,23 @@ class TestPrepareLigand:
     @patch("rdkit.Chem.MolFromSmiles")
     @patch("rdkit.Chem.AddHs")
     @patch("rdkit.Chem.AllChem.ETKDGv3")
-    @patch("rdkit.Chem.AllChem.EmbedMolecule")
-    @patch("rdkit.Chem.AllChem.MMFFOptimizeMolecule")
+    @patch("rdkit.Chem.AllChem.EmbedMultipleConfs")
+    @patch("rdkit.Chem.AllChem.MMFFOptimizeMoleculeConfs")
     @patch("rdkit.Chem.rdPartialCharges.ComputeGasteigerCharges")
     @patch("meeko.MoleculePreparation")
     @patch("meeko.PDBQTWriterLegacy")
+    @patch("rdkit.Chem.Conformer")
+    @patch("rdkit.Chem.Mol")
+    @patch("rdkit.Geometry")
     def test_prepare_ligand_mock(
         self,
+        mock_geo,
+        mock_mol_cls,
+        mock_conformer_cls,
         mock_writer_cls,
         mock_mk_cls,
         mock_charges,
-        mock_mmff,
+        mock_mmff_confs,
         mock_embed,
         mock_etkdg,
         mock_addhs,
@@ -112,10 +118,17 @@ class TestPrepareLigand:
         tmp_path,
     ):
         mock_mol = MagicMock()
+        mock_mol.GetNumAtoms.return_value = 3
         mock_molfrom.return_value = mock_mol
+        mock_mol_copy = MagicMock()
+        mock_mol_copy.GetNumAtoms.return_value = 3
+        mock_mol_cls.return_value = mock_mol_copy
         mock_addhs.return_value = mock_mol
-        mock_embed.return_value = 0
-        mock_mmff.return_value = None
+        mock_embed.return_value = [0]
+        mock_mmff_confs.return_value = [(0, -10.0)]
+        mock_conf = MagicMock()
+        mock_mol.GetConformer.return_value = mock_conf
+        mock_conf.GetAtomPosition.side_effect = lambda i: type('pos', (), {'x': float(i)*1.0, 'y': 0.0, 'z': 0.0})()
 
         mock_mk = MagicMock()
         mock_mk_cls.return_value = mock_mk
