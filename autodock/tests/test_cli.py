@@ -567,8 +567,13 @@ class TestCmdFindPockets:
         rc = cli.cmd_find_pockets(args)
         assert rc == 0
         mock_find.assert_called_once_with(
-            "rec.pdb", ligand_pdb=None, padding=5.0, max_pockets=3,
-            consensus=False, method="auto", known_active_site=None,
+            "rec.pdb",
+            ligand_pdb=None,
+            padding=5.0,
+            max_pockets=3,
+            consensus=False,
+            method="auto",
+            known_active_site=None,
         )
         out = capsys.readouterr().out
         assert "Found 1 pocket(s)" in out

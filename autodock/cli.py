@@ -241,15 +241,15 @@ def cmd_dock(args: argparse.Namespace) -> int:
         receptor_pdb=receptor_pdb,
     )
 
-    print(f"\n{'='*50}")
+    print(f"\n{'=' * 50}")
     print(f"🧬  Docking Complete: {result.compound_name}")
-    print(f"{'='*50}")
+    print(f"{'=' * 50}")
     print(f"  Best affinity:       {result.best_affinity:.3f} kcal/mol")
     if result.consensus_affinity is not None:
         print(f"  Consensus affinity:  {result.consensus_affinity:.3f} kcal/mol")
     print(f"  Best pose:           {result.best_pose_pdbqt}")
     print(f"  Output dir:          {result.output_dir}")
-    print(f"{'='*50}")
+    print(f"{'=' * 50}")
 
     # ── Full post-processing ────────────────────────────────────────────────
     pair_root = os.path.join(args.output_dir, "_full_report")
@@ -293,14 +293,14 @@ def cmd_validate(args: argparse.Namespace) -> int:
     rmsd_str = f"{rmsd:.2f} Å" if rmsd is not None else "N/A"
     success = result["success"]
 
-    print(f"\n{'='*50}")
+    print(f"\n{'=' * 50}")
     print("🔬  Redocking Validation")
-    print(f"{'='*50}")
+    print(f"{'=' * 50}")
     print(f"  RMSD:          {rmsd_str}")
     print(f"  Threshold:     {result['threshold']} Å")
     print(f"  Result:        {'✅ PASS' if success else '❌ FAIL'}")
     print(f"  Best affinity: {result['best_affinity']:.3f} kcal/mol")
-    print(f"{'='*50}")
+    print(f"{'=' * 50}")
     return 0 if success else 1
 
 
@@ -368,7 +368,7 @@ def cmd_report(args: argparse.Namespace) -> int:
 
     # Individual per-result post-processing (PDF + figures)
     for i, result in enumerate(results):
-        pair_root = os.path.join(out_root, f"pair_{i+1:03d}_{result.compound_name}")
+        pair_root = os.path.join(out_root, f"pair_{i + 1:03d}_{result.compound_name}")
         try:
             outputs = post_process_docking(
                 result,
@@ -378,7 +378,7 @@ def cmd_report(args: argparse.Namespace) -> int:
                 do_report=True,
                 copy_structures=False,
             )
-            print(f"  [{i+1}/{len(results)}] {result.compound_name}: {outputs.get('pdf', 'N/A')}")
+            print(f"  [{i + 1}/{len(results)}] {result.compound_name}: {outputs.get('pdf', 'N/A')}")
         except Exception as exc:
             logger.warning(f"Report generation failed for {result.compound_name}: {exc}")
 
@@ -400,19 +400,19 @@ def cmd_posebusters_eval(args: argparse.Namespace) -> int:
         max_targets=args.max_targets,
     )
 
-    print(f"\n{'='*60}")
+    print(f"\n{'=' * 60}")
     print("📊  PoseBusters Evaluation Complete")
-    print(f"{'='*60}")
+    print(f"{'=' * 60}")
     print(f"  Total targets:      {summary['n_total']}")
     print(f"  Successful:         {summary['n_success']}")
-    print(f"  Success rate:       {summary['success_rate']*100:.1f}%")
+    print(f"  Success rate:       {summary['success_rate'] * 100:.1f}%")
     if summary["median_rmsd"] is not None:
         print(f"  Median RMSD:        {summary['median_rmsd']:.2f} Å")
     print(f"  PoseBusters pass:   {summary['posebusters_pass_count']}/{summary['n_success']}")
-    print(f"  PoseBusters rate:   {summary['posebusters_pass_rate']*100:.1f}%")
-    print(f"{'='*60}")
+    print(f"  PoseBusters rate:   {summary['posebusters_pass_rate'] * 100:.1f}%")
+    print(f"{'=' * 60}")
     print(f"  Output directory: {args.outdir}")
-    print(f"{'='*60}")
+    print(f"{'=' * 60}")
     return 0
 
 
@@ -436,12 +436,12 @@ def cmd_benchmark_redock(args: argparse.Namespace) -> int:
         n_workers=args.workers,
     )
 
-    print(f"\n{'='*55}")
+    print(f"\n{'=' * 55}")
     print("📊  Redocking Benchmark Results")
-    print(f"{'='*55}")
+    print(f"{'=' * 55}")
     print(f"  Total targets:     {summary['n_total']}")
     print(f"  Successful:        {summary['n_success']}")
-    print(f"  Success rate:      {summary['success_rate']*100:.1f}%")
+    print(f"  Success rate:      {summary['success_rate'] * 100:.1f}%")
     if summary["median_rmsd"] is not None:
         print(f"  Median RMSD:       {summary['median_rmsd']:.2f} Å")
         print(f"  Mean RMSD:         {summary['mean_rmsd']:.2f} Å ± {summary['rmsd_std']:.2f}")
@@ -450,16 +450,16 @@ def cmd_benchmark_redock(args: argparse.Namespace) -> int:
         if stats["mean_rmsd"]:
             print(
                 f"    {fam:20s}  {stats['n_success']}/{stats['n_total']}"
-                f"  ({stats['success_rate']*100:.1f}%)"
+                f"  ({stats['success_rate'] * 100:.1f}%)"
                 f"  mean={stats['mean_rmsd']:.2f}Å"
             )
         else:
             print(f"    {fam:20s}  {stats['n_success']}/{stats['n_total']}")
-    print(f"{'='*55}")
+    print(f"{'=' * 55}")
     print(f"  JSON: {summary['json_path']}")
     if summary.get("csv_path"):
         print(f"  CSV:  {summary['csv_path']}")
-    print(f"{'='*55}")
+    print(f"{'=' * 55}")
     return 0
 
 
@@ -517,9 +517,9 @@ def cmd_batch_dock(args: argparse.Namespace) -> int:
 
     n_total = sum(len(rl) for rl in results.values())
     n_success = sum(sum(1 for r in rl if r.best_affinity is not None) for rl in results.values())
-    print(f"\n{'='*55}")
+    print(f"\n{'=' * 55}")
     print("🧬  Batch Docking Complete")
-    print(f"{'='*55}")
+    print(f"{'=' * 55}")
     for rec_name, res_list in results.items():
         successes = sum(1 for r in res_list if r.best_affinity is not None)
         print(f"  {rec_name}: {successes}/{len(res_list)} ligands docked successfully")
@@ -527,10 +527,10 @@ def cmd_batch_dock(args: argparse.Namespace) -> int:
             aff = r.best_affinity
             aff_str = f"{aff:.2f} kcal/mol" if aff is not None else "FAILED"
             print(f"    {r.compound_name:20s}  {aff_str}")
-    print(f"{'='*55}")
+    print(f"{'=' * 55}")
     print(f"  Total: {n_success}/{n_total} successful")
     print(f"  Output directory: {args.outdir}")
-    print(f"{'='*55}")
+    print(f"{'=' * 55}")
 
     # ── Post-process each pair ──────────────────────────────────────────────
     print("\n📊  Generating per-pair reports and figures...")
@@ -591,7 +591,7 @@ def cmd_batch_dock(args: argparse.Namespace) -> int:
         except Exception as exc:
             logger.warning(f"Merged CSV failed: {exc}")
 
-    print(f"{'='*55}")
+    print(f"{'=' * 55}")
     return 0
 
 
@@ -630,9 +630,9 @@ def cmd_ensemble_dock(args: argparse.Namespace) -> int:
         compound_name=args.name,
     )
 
-    print(f"\n{'='*60}")
+    print(f"\n{'=' * 60}")
     print(f"🧬  Ensemble Docking Complete: {args.name or args.ligand}")
-    print(f"{'='*60}")
+    print(f"{'=' * 60}")
     print(f"  Repeats:          {summary['n_repeats']} ({summary['n_successful']} successful)")
     print(
         f"  Best affinity:    {summary['ensemble_best_affinity_mean']:.3f}"
@@ -651,9 +651,9 @@ def cmd_ensemble_dock(args: argparse.Namespace) -> int:
     print(f"  Clusters:         {summary['n_clusters']}")
     print(f"  Confidence:       {summary['confidence'].upper()}")
     print(f"  Recommendation:   {summary['recommendation']}")
-    print(f"{'='*60}")
+    print(f"{'=' * 60}")
     print(f"  Output directory: {args.outdir}")
-    print(f"{'='*60}")
+    print(f"{'=' * 60}")
     return 0
 
 
@@ -719,9 +719,9 @@ def cmd_virtual_screen(args: argparse.Namespace) -> int:
         n_workers=args.workers,
     )
 
-    print(f"\n{'='*50}")
+    print(f"\n{'=' * 50}")
     print("🧪  Virtual Screening Results")
-    print(f"{'='*50}")
+    print(f"{'=' * 50}")
     print(f"  Compounds screened: {len(results)}")
     print(f"  CSV report: {csv_path}")
 
@@ -733,7 +733,7 @@ def cmd_virtual_screen(args: argparse.Namespace) -> int:
     print("\n  Top 10 hits:")
     for r in sorted_results[:10]:
         print(f"    {r.compound_name:20s}  {r.best_affinity:8.3f} kcal/mol")
-    print(f"{'='*50}")
+    print(f"{'=' * 50}")
     return 0
 
 
@@ -752,9 +752,9 @@ def cmd_md(args: argparse.Namespace) -> int:
         platform_name=args.platform,
     )
 
-    print(f"\n{'='*50}")
+    print(f"\n{'=' * 50}")
     print("🌊  MD Simulation Results")
-    print(f"{'='*50}")
+    print(f"{'=' * 50}")
     print(f"  Trajectory:     {result.get('trajectory')}")
     print(f"  Final structure: {result.get('final_structure')}")
     if "ligand_rmsd_mean" in result:
@@ -766,7 +766,7 @@ def cmd_md(args: argparse.Namespace) -> int:
         print(f"  Receptor RMSD:  {result['receptor_ca_rmsd_mean']:.2f} Å")
     if "n_hbonds_mean" in result:
         print(f"  Avg H-bonds:    {result['n_hbonds_mean']:.1f}")
-    print(f"{'='*50}")
+    print(f"{'=' * 50}")
     return 0
 
 
@@ -997,16 +997,21 @@ def build_parser() -> argparse.ArgumentParser:
     p_pocket.add_argument("--padding", type=float, default=5.0, help="Box padding (Å)")
     p_pocket.add_argument("--max-pockets", type=int, default=3, help="Maximum pockets to return")
     p_pocket.add_argument(
-        "--method", choices=["auto", "p2rank", "fpocket", "dogsite3"],
+        "--method",
+        choices=["auto", "p2rank", "fpocket", "dogsite3"],
         default="auto",
         help="Detection method: p2rank (ML), fpocket (geometry), dogsite3 (online API)",
     )
     p_pocket.add_argument(
-        "--consensus", action="store_true",
+        "--consensus",
+        action="store_true",
         help="Enable P2Rank+fpocket ensemble consensus (cross-validation)",
     )
     p_pocket.add_argument(
-        "--known-active-site", nargs=3, type=float, metavar=("X", "Y", "Z"),
+        "--known-active-site",
+        nargs=3,
+        type=float,
+        metavar=("X", "Y", "Z"),
         help="Known orthosteric site center for allosteric/orthosteric classification",
     )
     p_pocket.set_defaults(func=cmd_find_pockets)

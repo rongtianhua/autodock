@@ -18,14 +18,9 @@ from autodock.core import (
     _ALLOSTERIC_MIN_DISTANCE,
     _DRUGGABILITY_HIGH,
     _DRUGGABILITY_MEDIUM,
-    _DRUGGABILITY_THRESHOLD,
     _P2RANK_PROB_THRESHOLD,
     _POCKET_CONSENSUS_DISTANCE,
     _POCKET_DEFAULT_BFACTOR,
-    _POCKET_MAX_DIM,
-    _POCKET_MAX_VOLUME,
-    _POCKET_MIN_DEPTH,
-    _POCKET_MIN_DIM,
     _SKIP_ADDITIVES,
     _SKIP_WATER,
     PreparationError,
@@ -1593,9 +1588,7 @@ def _run_p2rank_rescore(prep_pdb: str, out_dir: str) -> dict[int, float] | None:
     return probs
 
 
-def _run_p2rank_predict(
-    prep_pdb: str, out_dir: str
-) -> list[dict[str, Any]] | None:
+def _run_p2rank_predict(prep_pdb: str, out_dir: str) -> list[dict[str, Any]] | None:
     """Run P2Rank in standalone prediction mode (no fpocket dependency).
 
     Returns list of pocket dicts with keys: center, score, radius, residues
@@ -1646,26 +1639,30 @@ def _run_p2rank_predict(
                     float(parts[cy_idx]),
                     float(parts[cz_idx]),
                 )
-                radius = float(parts[rad_idx]) if rad_idx is not None and rad_idx < len(parts) else 10.0
+                radius = (
+                    float(parts[rad_idx]) if rad_idx is not None and rad_idx < len(parts) else 10.0
+                )
                 name = parts[name_idx]
                 pocket_num = 0
                 m = re.search(r"(\d+)", name)
                 if m:
                     pocket_num = int(m.group(1))
-                pockets.append({
-                    "num": pocket_num,
-                    "center": center,
-                    "radius": radius,
-                    "score": prob,
-                    "druggability": None,
-                    "volume": None,
-                    "depth": None,
-                    "openings": None,
-                    "n_apolar": None,
-                    "n_polar": None,
-                    "dims": (radius * 2, radius * 2, radius * 2),
-                    "pocket_source": "p2rank",
-                })
+                pockets.append(
+                    {
+                        "num": pocket_num,
+                        "center": center,
+                        "radius": radius,
+                        "score": prob,
+                        "druggability": None,
+                        "volume": None,
+                        "depth": None,
+                        "openings": None,
+                        "n_apolar": None,
+                        "n_polar": None,
+                        "dims": (radius * 2, radius * 2, radius * 2),
+                        "pocket_source": "p2rank",
+                    }
+                )
             except (ValueError, IndexError):
                 continue
 
@@ -1748,11 +1745,13 @@ def _compute_pocket_shape_descriptors(
         for line in fh:
             if line.startswith(("ATOM", "HETATM")):
                 try:
-                    coords.append([
-                        float(line[30:38]),
-                        float(line[38:46]),
-                        float(line[46:54]),
-                    ])
+                    coords.append(
+                        [
+                            float(line[30:38]),
+                            float(line[38:46]),
+                            float(line[46:54]),
+                        ]
+                    )
                 except (ValueError, IndexError):
                     continue
 
@@ -1778,6 +1777,7 @@ def _compute_pocket_shape_descriptors(
     # Approximate surface area: convex hull area
     try:
         from scipy.spatial import ConvexHull
+
         hull = ConvexHull(ca)
         desc["surface_area"] = round(float(hull.area), 1)
     except ImportError:
@@ -1852,14 +1852,15 @@ def _validate_alphafold_pocket(
                     resi = int(line[22:26].strip())
                 except (ValueError, IndexError):
                     continue
-                dist_sq = (x - cx)**2 + (y - cy)**2 + (z - cz)**2
+                dist_sq = (x - cx) ** 2 + (y - cy) ** 2 + (z - cz) ** 2
                 if dist_sq <= pocket_radius**2:
                     pocket_plddts.append(bfactor)
                     for region in low_regions:
-                        if (region.get("chain") == chain
-                                and region.get("start", 0) <= resi <= region.get("end", 0)):
+                        if region.get("chain") == chain and region.get(
+                            "start", 0
+                        ) <= resi <= region.get("end", 0):
                             overlapping.append(region)
-    except (OSError, IOError):
+    except OSError:
         pass
 
     if pocket_plddts:
@@ -1960,9 +1961,7 @@ def _classify_pocket_type(
             "confidence": "no_reference",
         }
 
-    dist = np.linalg.norm(
-        np.array(pocket_center) - np.array(known_active_site_center)
-    )
+    dist = np.linalg.norm(np.array(pocket_center) - np.array(known_active_site_center))
     dist_rounded = round(float(dist), 1)
 
     if dist <= _ALLOSTERIC_MIN_DISTANCE / 2:
@@ -1976,9 +1975,7 @@ def _classify_pocket_type(
             "type": "allosteric_candidate",
             "distance_to_active": dist_rounded,
             "confidence": (
-                "high"
-                if pocket_volume is not None and 200 <= pocket_volume <= 1500
-                else "medium"
+                "high" if pocket_volume is not None and 200 <= pocket_volume <= 1500 else "medium"
             ),
         }
     else:
@@ -2037,10 +2034,10 @@ def _pocket_bfactor_flexibility(
                     bfactor = float(line[60:66])
                 except (ValueError, IndexError):
                     continue
-                dist_sq = (x - cx)**2 + (y - cy)**2 + (z - cz)**2
+                dist_sq = (x - cx) ** 2 + (y - cy) ** 2 + (z - cz) ** 2
                 if dist_sq <= pocket_radius**2:
                     bfactors.append(bfactor)
-    except (OSError, IOError):
+    except OSError:
         pass
 
     if not bfactors:
@@ -2233,10 +2230,12 @@ def _ensemble_consensus(
             merged.append(fp)
 
     # Sort: consensus first (by P2Rank prob), then non-consensus (by prob)
-    merged.sort(key=lambda p: (
-        not p.get("consensus", False),
-        -(p.get("p2rank_prob") or 0.0),
-    ))
+    merged.sort(
+        key=lambda p: (
+            not p.get("consensus", False),
+            -(p.get("p2rank_prob") or 0.0),
+        )
+    )
 
     return merged
 
@@ -2361,10 +2360,12 @@ def _run_dogsite3_predict(
                             "center": center,
                             "druggability": drugg,
                             "volume": volume,
-                            "surface_area": float(parts[surf_idx]) if surf_idx < len(parts) else None,
+                            "surface_area": float(parts[surf_idx])
+                            if surf_idx < len(parts)
+                            else None,
                             "pocket_source": "dogsite3",
                             "box_size": _compute_box_size(
-                                (volume ** (1/3),) * 3,
+                                (volume ** (1 / 3),) * 3,
                                 padding=5.0,
                             ),
                         }
@@ -2445,48 +2446,53 @@ def find_top_pockets(
     if ligand_pdb and os.path.isfile(ligand_pdb):
         try:
             from rdkit import Chem
+
             mol = Chem.MolFromPDBFile(ligand_pdb)
             if mol is not None:
                 conf = mol.GetConformer()
-                coords = np.array([
-                    [conf.GetAtomPosition(i).x,
-                     conf.GetAtomPosition(i).y,
-                     conf.GetAtomPosition(i).z]
-                    for i in range(mol.GetNumAtoms())
-                ])
+                coords = np.array(
+                    [
+                        [
+                            conf.GetAtomPosition(i).x,
+                            conf.GetAtomPosition(i).y,
+                            conf.GetAtomPosition(i).z,
+                        ]
+                        for i in range(mol.GetNumAtoms())
+                    ]
+                )
                 center = tuple(coords.mean(axis=0).tolist())
                 dims = tuple((coords.max(axis=0) - coords.min(axis=0)).tolist())
                 box_size = _compute_box_size(dims, padding)
-                logger.info(
-                    f"Binding site from ligand: center={center}, box={box_size}"
-                )
-                return [{
-                    "center": center,
-                    "box_size": box_size,
-                    "druggability": None,
-                    "druggability_level": "unknown",
-                    "druggability_description": "Centered on co-crystal ligand",
-                    "p2rank_prob": None,
-                    "pocket_num": None,
-                    "pocket_source": "crystal_ligand",
-                    "consensus": None,
-                    "consensus_distance": None,
-                    "volume": None,
-                    "depth": None,
-                    "openings": None,
-                    "n_apolar": None,
-                    "n_polar": None,
-                    "residue_ids": [],
-                    "shape_circularity": None,
-                    "shape_aspect_ratio": None,
-                    "flexibility": None,
-                    "induced_fit_likely": None,
-                    "af_suitable": None,
-                    "af_mean_plddt": None,
-                    "af_min_plddt": None,
-                    "pocket_type": "orthosteric" if known_active_site else "unclassified",
-                    "distance_to_active": None,
-                }]
+                logger.info(f"Binding site from ligand: center={center}, box={box_size}")
+                return [
+                    {
+                        "center": center,
+                        "box_size": box_size,
+                        "druggability": None,
+                        "druggability_level": "unknown",
+                        "druggability_description": "Centered on co-crystal ligand",
+                        "p2rank_prob": None,
+                        "pocket_num": None,
+                        "pocket_source": "crystal_ligand",
+                        "consensus": None,
+                        "consensus_distance": None,
+                        "volume": None,
+                        "depth": None,
+                        "openings": None,
+                        "n_apolar": None,
+                        "n_polar": None,
+                        "residue_ids": [],
+                        "shape_circularity": None,
+                        "shape_aspect_ratio": None,
+                        "flexibility": None,
+                        "induced_fit_likely": None,
+                        "af_suitable": None,
+                        "af_mean_plddt": None,
+                        "af_min_plddt": None,
+                        "pocket_type": "orthosteric" if known_active_site else "unclassified",
+                        "distance_to_active": None,
+                    }
+                ]
         except Exception as exc:
             logger.warning(
                 f"Ligand-centered pocket detection failed: {exc}. "
@@ -2529,9 +2535,7 @@ def find_top_pockets(
         if effective_method in ("p2rank", "auto") and use_p2rank and p2rank_available:
             p2rank_pockets_raw = _run_p2rank_predict(prep_pdb_abs, prep_dir)
             if p2rank_pockets_raw:
-                logger.info(
-                    f"P2Rank primary: {len(p2rank_pockets_raw)} pocket(s) detected"
-                )
+                logger.info(f"P2Rank primary: {len(p2rank_pockets_raw)} pocket(s) detected")
                 # Locate predictions CSV for residue parsing
                 _base = os.path.splitext(os.path.basename(prep_pdb))[0]
                 _csv_candidate = os.path.join(
@@ -2550,23 +2554,19 @@ def find_top_pockets(
             if fpocket_pockets_raw and use_p2rank and p2rank_available:
                 p2rank_probs_fpocket = _run_p2rank_rescore(prep_pdb_abs, prep_dir)
                 if p2rank_probs_fpocket:
-                    logger.info(
-                        f"P2Rank rescored {len(p2rank_probs_fpocket)} fpocket pockets"
-                    )
+                    logger.info(f"P2Rank rescored {len(p2rank_probs_fpocket)} fpocket pockets")
 
         # ── Ensemble consensus fusion ─────────────────────────────────────
         if consensus and p2rank_pockets_raw and fpocket_pockets_raw:
             logger.info("Computing P2Rank + fpocket ensemble consensus")
-            all_pockets = _ensemble_consensus(
-                p2rank_pockets_raw, fpocket_pockets_raw
-            )
+            all_pockets = _ensemble_consensus(p2rank_pockets_raw, fpocket_pockets_raw)
         else:
             # Standard fusion: P2Rank primary, fpocket fills gaps
             seen_centers_list: list[tuple[float, float, float]] = []
 
             def _is_near_dup(c: tuple[float, float, float]) -> bool:
                 return any(
-                    math.sqrt(sum((a - b) ** 2 for a, b in zip(c, s))) < 5.0
+                    math.sqrt(sum((a - b) ** 2 for a, b in zip(c, s, strict=False))) < 5.0
                     for s in seen_centers_list
                 )
 
@@ -2584,8 +2584,7 @@ def find_top_pockets(
 
         if not all_pockets:
             raise PreparationError(
-                f"No druggable pockets found in {receptor_pdb}. "
-                f"Tried {effective_method}."
+                f"No druggable pockets found in {receptor_pdb}. Tried {effective_method}."
             )
 
         # ── Parse P2Rank residue IDs ──────────────────────────────────────
@@ -2598,19 +2597,19 @@ def find_top_pockets(
         if af_data is None and os.path.exists(receptor_pdb):
             try:
                 from autodock.alphafold_tools import assess_alphafold_quality
+
                 af_data = assess_alphafold_quality(receptor_pdb)
             except Exception:
                 pass
 
         # ── Build enriched result list ───────────────────────────────────
         result: list[dict[str, Any]] = []
-        for p in all_pockets[:max_pockets * 2]:
+        for p in all_pockets[: max_pockets * 2]:
             # Determine best probability score
             prob = (
                 p.get("score")
                 or p.get("p2rank_prob")
-                or (p2rank_probs_fpocket.get(p.get("num", 0))
-                    if p2rank_probs_fpocket else None)
+                or (p2rank_probs_fpocket.get(p.get("num", 0)) if p2rank_probs_fpocket else None)
             )
             # Filter by P2Rank probability threshold
             if prob is not None and prob < _P2RANK_PROB_THRESHOLD:
@@ -2641,7 +2640,7 @@ def find_top_pockets(
             residues = p.get("residue_ids") or pocket_residues.get(pnum, [])
 
             # B-factor flexibility
-            pocket_radius = (p.get("radius") or 10.0)
+            pocket_radius = p.get("radius") or 10.0
             flex_info = _pocket_bfactor_flexibility(center, pocket_radius, receptor_pdb)
 
             # AlphaFold pocket compatibility
@@ -2651,9 +2650,7 @@ def find_top_pockets(
                 "min_plddt_in_pocket": None,
             }
             if af_data and af_data.get("mean_plddt") is not None:
-                af_info = _validate_alphafold_pocket(
-                    center, pocket_radius, receptor_pdb, af_data
-                )
+                af_info = _validate_alphafold_pocket(center, pocket_radius, receptor_pdb, af_data)
 
             # Allosteric / orthosteric classification
             pocket_type_info = _classify_pocket_type(center, known_active_site, volume)
@@ -2695,13 +2692,15 @@ def find_top_pockets(
 
         # Log summary
         for i, pk in enumerate(result[:max_pockets]):
-            prob_str = f"P2Rank={pk['p2rank_prob']:.3f}" if pk['p2rank_prob'] is not None else "P2Rank=N/A"
+            prob_str = (
+                f"P2Rank={pk['p2rank_prob']:.3f}" if pk["p2rank_prob"] is not None else "P2Rank=N/A"
+            )
             cons_str = " [CONSENSUS]" if pk.get("consensus") else ""
             af_str = ""
             if pk.get("af_suitable") is False:
                 af_str = " [LOW pLDDT]"
             logger.info(
-                f"Pocket {i+1} (#{pk['pocket_num']}): {pk['pocket_source']}{cons_str}{af_str}, "
+                f"Pocket {i + 1} (#{pk['pocket_num']}): {pk['pocket_source']}{cons_str}{af_str}, "
                 f"center={pk['center']}, box={pk['box_size']} ({prob_str}, "
                 f"druggability={pk['druggability_level']})"
             )
@@ -2715,7 +2714,6 @@ def find_top_pockets(
         for f in (prep_pdb,):
             if os.path.exists(f):
                 os.unlink(f)
-        for d in (os.path.join(prep_dir, "p2rank_predict"),
-                  os.path.join(prep_dir, "p2rank_out")):
+        for d in (os.path.join(prep_dir, "p2rank_predict"), os.path.join(prep_dir, "p2rank_out")):
             if os.path.exists(d):
                 shutil.rmtree(d, ignore_errors=True)
