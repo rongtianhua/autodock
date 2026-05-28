@@ -194,14 +194,16 @@ def run_redocking_benchmark(
 
     # Best-RMSD from all poses — decouples scoring from sampling
     best_successes = [
-        r for r in raw_results
+        r
+        for r in raw_results
         if r.get("best_rmsd") is not None and r["best_rmsd"] <= REDocking_RMSD_THRESHOLD
     ]
     best_rmsds = [r["best_rmsd"] for r in best_successes]
 
     # Scoring vs sampling bias: targets where Vina found a good pose but ranked it wrong
     scoring_failures = [
-        r for r in raw_results
+        r
+        for r in raw_results
         if not r.get("success")  # top-1 fail
         and r.get("best_rmsd") is not None
         and r["best_rmsd"] <= REDocking_RMSD_THRESHOLD  # but a good pose exists
@@ -294,7 +296,8 @@ def run_redocking_benchmark(
                     "best_rmsd": r.get("best_rmsd"),
                     "best_rmsd_success": (
                         (r.get("best_rmsd") is not None and r["best_rmsd"] <= 2.0)
-                        if "best_rmsd" in r else None
+                        if "best_rmsd" in r
+                        else None
                     ),
                     "best_affinity": r.get("best_affinity"),
                     "error": r.get("error", ""),
@@ -649,8 +652,7 @@ def run_repeat_docking(
 
     os.makedirs(output_dir, exist_ok=True)
     logger.info(
-        f"Repeat docking: {len(targets)} targets × {n_repeats} repeats, "
-        f"seeds={list(seeds)}"
+        f"Repeat docking: {len(targets)} targets × {n_repeats} repeats, " f"seeds={list(seeds)}"
     )
 
     per_target: list[dict[str, Any]] = []
@@ -689,9 +691,7 @@ def run_repeat_docking(
         mean_rmsd = float(np.mean(rmsd_values)) if rmsd_values else None
         sd_rmsd = float(np.std(rmsd_values, ddof=1)) if len(rmsd_values) > 1 else None
         mean_affinity = float(np.mean(affinity_values)) if affinity_values else None
-        sd_affinity = (
-            float(np.std(affinity_values, ddof=1)) if len(affinity_values) > 1 else None
-        )
+        sd_affinity = float(np.std(affinity_values, ddof=1)) if len(affinity_values) > 1 else None
 
         per_target.append(
             {

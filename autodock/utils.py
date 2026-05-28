@@ -88,8 +88,7 @@ def read_cif_atoms(cif_path: str) -> list[dict[str, Any]]:
         import gemmi
     except ImportError as exc:
         raise ImportError(
-            "gemmi required for mmCIF parsing."
-            " Install: conda install -c conda-forge gemmi"
+            "gemmi required for mmCIF parsing." " Install: conda install -c conda-forge gemmi"
         ) from exc
 
     doc = gemmi.cif.read(str(cif_path))
@@ -130,8 +129,7 @@ def cif_to_pdb_string(cif_path: str) -> str:
         import gemmi
     except ImportError as exc:
         raise ImportError(
-            "gemmi required for mmCIF parsing."
-            " Install: conda install -c conda-forge gemmi"
+            "gemmi required for mmCIF parsing." " Install: conda install -c conda-forge gemmi"
         ) from exc
 
     doc = gemmi.cif.read(str(cif_path))

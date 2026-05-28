@@ -86,6 +86,7 @@ class TestRenderScenePymol:
 def _have_rdkit() -> bool:
     try:
         import importlib.util as _iu
+
         return _iu.find_spec("rdkit") is not None
     except Exception:
         return False

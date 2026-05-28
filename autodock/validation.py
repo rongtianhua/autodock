@@ -607,11 +607,7 @@ def run_redocking_validation(
         # Remove target ligand/chain
         if chain_id and atom["chain"] == chain_id:
             continue
-        if (
-            ligand_resname
-            and atom["record"] == "HETATM"
-            and atom["res_name"] == ligand_resname
-        ):
+        if ligand_resname and atom["record"] == "HETATM" and atom["res_name"] == ligand_resname:
             continue
         # Remove all other HETATM (crystallographic additives, alternate ligands,
         # detergents, etc.) to ensure a clean apo receptor.
@@ -682,10 +678,7 @@ def run_redocking_validation(
         center = pockets[0]["center"]
         box_size = pockets[0]["box_size"]
         pocket_source = pockets[0].get("method", "fpocket+p2rank")
-        logger.info(
-            f"Blind pocket: center={center}, box={box_size}, "
-            f"source={pocket_source}"
-        )
+        logger.info(f"Blind pocket: center={center}, box={box_size}, " f"source={pocket_source}")
     else:
         # Self-docking: centre box on crystal ligand (default)
         pockets = find_top_pockets(

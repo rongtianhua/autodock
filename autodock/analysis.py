@@ -5,6 +5,7 @@ Publication-grade analyses that run on top of completed benchmark outputs:
   * Scoring-bias scatter plots (affinity vs RMSD for all poses)
   * Scoring vs sampling decoupling (top-1 vs best-rmsd gap)
 """
+
 from __future__ import annotations
 
 import os
@@ -134,9 +135,7 @@ def analyze_scoring_bias(
         # Compute RMSD for each pose
         pose_data: list[tuple[float, float]] = []  # (affinity, rmsd)
         for i, (affinity, block) in enumerate(pose_entries):
-            tmp = tempfile.NamedTemporaryFile(
-                mode="w", suffix=".pdbqt", delete=False
-            )
+            tmp = tempfile.NamedTemporaryFile(mode="w", suffix=".pdbqt", delete=False)
             tmp.write(f"MODEL {i + 1}\n")
             tmp.write(block + "\n")
             tmp.write("ENDMDL\n")
@@ -227,8 +226,9 @@ def analyze_scoring_bias(
         )
 
         # 2.0 Å threshold
-        ax.axvline(2.0, color="red", linestyle="--", linewidth=1, alpha=0.6,
-                   label="2.0 Å threshold")
+        ax.axvline(
+            2.0, color="red", linestyle="--", linewidth=1, alpha=0.6, label="2.0 Å threshold"
+        )
 
         ax.set_xlabel("RMSD from crystal (Å)")
         ax.set_ylabel("Vina affinity (kcal/mol)")
