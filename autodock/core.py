@@ -707,6 +707,21 @@ _SKIP_ADDITIVES: set[str] = {
     "GLC",
 }
 
+# Physiologically relevant metal ions — must be retained for metal-dependent
+# targets (metalloproteases, zinc fingers, etc.) when remove_hetatms=True
+_METAL_IONS: set[str] = {
+    "NA", "K", "CA", "MG", "ZN", "FE", "MN", "CO", "CU", "NI",
+    "CD", "LI", "SR", "BA", "CS", "RB", "AL", "GA", "IN",
+    "PB", "EU", "GD", "YB", "HO", "ER", "SM", "TB", "DY", "PR", "ND", "CE",
+    "AG", "AU", "PT", "PD", "RH", "RU", "OS", "IR",
+}
+
+# Common physiologically relevant cofactors — should be kept for functional context
+_METAL_COFACTORS: set[str] = {
+    "HEM", "FAD", "NAD", "NAP", "NDP", "FMN", "COA", "ATP", "ADP", "GTP", "GDP",
+    "SAM", "SAH", "PLP", "THF", "MGD",
+}
+
 # Combined skip set for backward compat
 _SKIP_RESIDUES: set[str] = _SKIP_WATER | _SKIP_ADDITIVES
 

@@ -48,6 +48,7 @@ def prepare_receptor(
     forcefield: str = "amber14-all.xml",
     restraint_center: tuple[float, float, float] | None = None,
     restraint_radius: float = 8.0,
+    retain_metal_ions: bool = True,
 ) -> str:
     """
     Prepare a protein structure for docking (PDB/mmCIF → PDBQT).
@@ -89,6 +90,11 @@ def prepare_receptor(
             centroid or fpocket pocket centre for best results.
         restraint_radius: Radius (Å) around ``restraint_center`` defining
             the pocket region for differential restraints (default 8.0).
+        retain_metal_ions: If True (default), keep physiologically relevant
+            metal ions (Zn²⁺, Mg²⁺, Ca²⁺, Fe²⁺, Mn²⁺, etc.) and common
+            cofactors (HEM, FAD, NAD, etc.) even when
+            ``remove_hetatms=True``.  Set to False to strip all HETATM.
+            Required for metalloprotein targets.
 
     Returns:
         Absolute path to the prepared PDBQT file.
@@ -297,6 +303,13 @@ def prepare_receptor(
                     os.remove(_t)
 
     # ── Step 5: Filter waters / hetatms (second pass after PDBFixer) ─────
+    _metal_set: set[str] = set()
+    if retain_metal_ions:
+        from autodock.core import _METAL_COFACTORS, _METAL_IONS
+        _metal_set = _METAL_IONS | _METAL_COFACTORS
+
+    n_waters_removed = 0
+    n_metals_retained_step5 = 0
     if remove_water or remove_hetatms or keep_residues:
         lines = pdb_content.splitlines(keepends=True)
         filtered = []
@@ -309,31 +322,56 @@ def prepare_receptor(
                     continue
                 filtered.append(line)
             elif line.startswith("HETATM"):
+                resn = safe_pdb_slice(line, 17, 20)
+                # Retain metals even when remove_hetatms=True (P0 fix)
+                if resn in _metal_set:
+                    n_metals_retained_step5 += 1
+                    filtered.append(line)
+                    continue
                 if remove_hetatms:
                     continue
-                resn = safe_pdb_slice(line, 17, 20)
                 if keep_residues and resn not in keep_residues:
                     continue
                 if remove_water and resn in _SKIP_WATER:
+                    n_waters_removed += 1
                     continue
                 filtered.append(line)
             else:
                 filtered.append(line)
         pdb_content = "".join(filtered)
+    if n_waters_removed > 0:
+        logger.info(f"Removed {n_waters_removed} water molecules"
+                    + (" (set remove_water=False to retain them)" if remove_water else ""))
+    if n_metals_retained_step5 > 0:
+        logger.info(f"Retained {n_metals_retained_step5} metal/cofactor atoms")
 
     # ── Step 6: Remove known problematic additives — log every skip ──────
+    # Also build the set of residues to retain (metal ions + cofactors)
+    _retain_set: set[str] = set()
+    if retain_metal_ions:
+        from autodock.core import _METAL_COFACTORS, _METAL_IONS
+        _retain_set = _METAL_IONS | _METAL_COFACTORS
+
     skipped_residues: dict[str, int] = {}
+    retained_metals: dict[str, int] = {}
     lines = pdb_content.splitlines()
     filtered = []
     for line in lines:
         if line.startswith(("ATOM  ", "HETATM")):
             resn = safe_pdb_slice(line, 17, 20)
+            # Retain metal ions and cofactors (default on)
+            if resn in _retain_set:
+                retained_metals[resn] = retained_metals.get(resn, 0) + 1
+                filtered.append(line)
+                continue
             if resn in _SKIP_ADDITIVES:
                 skipped_residues[resn] = skipped_residues.get(resn, 0) + 1
                 continue
         filtered.append(line)
     if skipped_residues:
         logger.info(f"Skipped additives before Meeko: {dict(sorted(skipped_residues.items()))}")
+    if retained_metals:
+        logger.info(f"Retained metal ions / cofactors: {dict(sorted(retained_metals.items()))}")
     pdb_content = "\n".join(filtered)
 
     # ── Step 7: Meeko preparation ────────────────────────────────────────
