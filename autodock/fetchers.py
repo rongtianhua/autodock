@@ -871,6 +871,94 @@ def fetch_zinc_smiles(zinc_id: str, timeout: int = 15) -> str | None:
     return None
 
 
+def search_zinc(
+    query: str,
+    max_results: int = 50,
+    timeout: int = 30,
+) -> list[dict[str, Any]]:
+    """
+    Search ZINC20/CartBlanche by compound name or SMILES substructure.
+
+    Uses CartBlanche22's simple-search endpoint.
+    Returns a list of ``{"zinc_id": …, "smiles": …}`` dicts.
+
+    Args:
+        query: Compound name (e.g. ``"aspirin"``) or SMILES substructure.
+        max_results: Maximum number of results to return.
+        timeout: HTTP timeout in seconds.
+
+    Returns:
+        List of ZINC results, each with ``zinc_id`` and ``smiles`` keys.
+        Empty list if search fails or returns no results.
+
+    References:
+        * https://cartblanche22.docking.org/api/docs
+    """
+    import json
+
+    if not query or not query.strip():
+        return []
+
+    encoded = urllib.parse.quote(query.strip())
+    url = f"https://cartblanche22.docking.org/substances.json:q={encoded}&limit={max_results}"
+    try:
+        text = _http_get_text(url, timeout=timeout)
+        data = json.loads(text) if text else {}
+        results = data.get("results", data.get("substances", []))
+        if not isinstance(results, list):
+            return []
+        parsed = []
+        for item in results[:max_results]:
+            if isinstance(item, dict):
+                zid = item.get("zinc_id") or item.get("id") or ""
+                smi = item.get("smiles") or item.get("SMILES") or ""
+                if zid and smi:
+                    parsed.append({"zinc_id": zid, "smiles": smi})
+        logger.info(f"ZINC search: '{query}' → {len(parsed)} results")
+        return parsed
+    except Exception as exc:
+        logger.warning(f"ZINC search failed for '{query}': {exc}")
+        return []
+
+
+def fetch_zinc_sdf(zinc_id: str, output_path: str, timeout: int = 30) -> str | None:
+    """
+    Download an SDF with pre-computed 3D coordinates for a ZINC ID.
+
+    ZINC20/22 stores pre-generated 3D conformers.  This downloads the
+    3D SDF, which can be used directly with ``prepare_ligand()`` or
+    DockingResult visualisation instead of embedding from SMILES.
+
+    Args:
+        zinc_id: ZINC identifier, e.g. ``"ZINC000000000001"``.
+        output_path: Destination file path.
+        timeout: HTTP timeout in seconds.
+
+    Returns:
+        Path to downloaded SDF, or *None* if download fails.
+    """
+    zinc_id = zinc_id.strip().upper()
+    if not zinc_id.startswith("ZINC"):
+        logger.warning(f"Invalid ZINC ID: {zinc_id}")
+        return None
+
+    urls = [
+        f"https://cartblanche22.docking.org/substances/{zinc_id}.sdf",
+        f"https://zinc.docking.org/substances/{zinc_id}.sdf",
+    ]
+    for url in urls:
+        try:
+            _download_url(url, output_path, timeout=timeout)
+            if os.path.isfile(output_path) and os.path.getsize(output_path) > 100:
+                logger.info(f"Downloaded ZINC SDF: {output_path} ({url})")
+                return output_path
+        except Exception:
+            continue
+
+    logger.warning(f"Could not download ZINC SDF for {zinc_id}")
+    return None
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # File-format readers (ligand libraries)
 # ─────────────────────────────────────────────────────────────────────────────
