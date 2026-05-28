@@ -170,6 +170,31 @@ def prepare_receptor(
         )
 
     # ── Step 3: PDBFixer — fill missing residues/atoms, add hydrogens at pH ──
+    # Pre-filter: keep only protein atoms + metal/cofactor HETATMs for PDBFixer.
+    # This avoids PDBFixer removing metal ions (which it treats as heterogens),
+    # while ensuring OpenMM can create a System from the filtered topology.
+    _metal_set_pdbfixer: set[str] = set()
+    if retain_metal_ions:
+        from autodock.core import _METAL_COFACTORS, _METAL_IONS
+        _metal_set_pdbfixer = _METAL_IONS | _METAL_COFACTORS
+
+    _pbfixer_lines: list[str] = []
+    for _line in pdb_content.splitlines(keepends=True):
+        if _line.startswith("ATOM  "):
+            _pbfixer_lines.append(_line)
+        elif _line.startswith("HETATM"):
+            _resn = safe_pdb_slice(_line, 17, 20)
+            # Keep metal ions/cofactors AND water (if user wants to keep it)
+            if _resn in _metal_set_pdbfixer:
+                _pbfixer_lines.append(_line)
+            elif not remove_water and _resn in _SKIP_WATER:
+                _pbfixer_lines.append(_line)  # keep water when requested
+            # else: skip other HETATMs (ligands, buffers, etc.)
+        else:
+            _pbfixer_lines.append(_line)
+    _pbfixer_pdb = "".join(_pbfixer_lines)
+    _tmp_fixer_in = write_temp_file(_pbfixer_pdb, suffix="_pdbfixer_in.pdb")
+
     try:
         from openmm.app import PDBFile as _OMM_PDBFile
         from pdbfixer import PDBFixer
@@ -181,12 +206,11 @@ def prepare_receptor(
 
     tmp_fixed = write_temp_file("", suffix="_fixed.pdb")
     try:
-        fixer = PDBFixer(filename=tmp_raw)
+        fixer = PDBFixer(filename=_tmp_fixer_in)
         fixer.findMissingResidues()
         fixer.findNonstandardResidues()
         fixer.replaceNonstandardResidues()
-        # Remove heterogens (water + non-protein) — consistent with docking requirements
-        fixer.removeHeterogens(remove_water)  # True → keep water; False → remove all
+        # No removeHeterogens needed — we already filtered the input above
         fixer.findMissingAtoms()
         fixer.addMissingAtoms()
         fixer.addMissingHydrogens(ph)
@@ -218,6 +242,11 @@ def prepare_receptor(
     except Exception as exc:
         logger.warning(f"PDBFixer failed ({exc}) — falling back to raw structure")
         tmp_fixed = tmp_raw  # use raw structure
+    finally:
+        # Clean up PDBFixer input temp
+        with contextlib.suppress(OSError):
+            if os.path.exists(_tmp_fixer_in):
+                os.remove(_tmp_fixer_in)
 
     # ── Step 4: Reduce — ASN/GLN flip detection + HIS tautomer assignment ────
     tmp_reduced = write_temp_file("", suffix="_reduced.pdb")
