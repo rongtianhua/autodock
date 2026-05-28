@@ -291,6 +291,55 @@ def find_best_pdb_structure(
     return ranked[0] if ranked else None
 
 
+def _resolve_to_uniprot(query: str) -> str | None:
+    """Resolve a gene symbol or protein name to a UniProt accession ID.
+
+    Uses the UniProt REST API (``/uniprotkb/search``) with gene-exact
+    and protein-name filters.  Returns the first reviewed (Swiss-Prot)
+    accession if found, or an unreviewed (TrEMBL) one as fallback.
+    """
+    import urllib.parse
+
+    # If it already looks like a UniProt ID (e.g. P15056, Q9Y6K9), return directly
+    q = query.strip().upper()
+    if len(q) >= 6 and q[0].isalpha() and q[1:].isdigit():
+        return q
+    if len(q) >= 6 and q[:1].isalpha() and q[1].isdigit() and q[2:].isalpha():
+        return q
+
+    encoded = urllib.parse.quote(query.strip())
+    url = (
+        f"https://rest.uniprot.org/uniprotkb/search?"
+        f"query=({encoded}) AND (reviewed:true)&format=json&size=5"
+    )
+    try:
+        data = _http_get_json(url, timeout=15)
+        results = data.get("results", []) if isinstance(data, dict) else []
+        if results:
+            accession = results[0].get("primaryAccession")
+            if accession:
+                return accession
+    except Exception:
+        pass
+
+    # Fallback: try without reviewed filter
+    url2 = (
+        f"https://rest.uniprot.org/uniprotkb/search?"
+        f"query=({encoded})&format=json&size=5"
+    )
+    try:
+        data2 = _http_get_json(url2, timeout=15)
+        results2 = data2.get("results", []) if isinstance(data2, dict) else []
+        if results2:
+            accession = results2[0].get("primaryAccession")
+            if accession:
+                return accession
+    except Exception:
+        pass
+
+    return None
+
+
 def fetch_protein_structure(
     query: str,
     output_dir: str = ".",
@@ -298,37 +347,98 @@ def fetch_protein_structure(
     max_resolution: float = 3.0,
     require_ligand: bool = True,
     method: str = "X-RAY DIFFRACTION",
+    fallback_alphafold: bool = True,
+    fallback_swissmodel: bool = True,
 ) -> str:
     """
     One-stop function: protein name → search → rank → download.
+
+    **Priority chain**:
+    1. RCSB PDB (crystal/NMR/EM structures) — searched by name/gene symbol,
+       filtered by resolution, method, and ligand presence.
+    2. AlphaFold DB — if PDB search returns no suitable structure, resolves
+       the query to a UniProt ID and downloads the AlphaFold prediction.
+       Quality is assessed via :func:`assess_alphafold_quality` (logged).
+    3. SWISS-MODEL — if AlphaFold quality is low (mean pLDDT < 90 or
+       >20 % low-confidence residues), attempts SWISS-MODEL homology model.
 
     Args:
         query: Protein name, gene symbol, or PDB ID.
         output_dir: Output directory for downloaded structure.
         format: ``"cif"`` (default, mmCIF) or ``"pdb"``.
-        max_resolution: Maximum resolution in Å (default 3.0).
-        require_ligand: Require bound small molecules (default True).
-        method: Experimental method (default ``"X-RAY DIFFRACTION"``).
+        max_resolution: Maximum resolution in Å (default 3.0) for PDB search.
+        require_ligand: Require bound small molecules in PDB search.
+        method: Experimental method for PDB search
+            (default ``"X-RAY DIFFRACTION"``).
+        fallback_alphafold: Try AlphaFold if PDB search fails (default True).
+        fallback_swissmodel: Try SWISS-MODEL if AlphaFold quality is poor
+            (default True).
 
     Returns:
         Path to downloaded structure file.
 
     Raises:
-        StructureFetchError: If no structure can be found or downloaded.
+        StructureFetchError: If no structure can be found from any source.
     """
+    # ── Level 1: RCSB PDB ──────────────────────────────────────────────────
     pdb_id = find_best_pdb_structure(
         query,
         max_resolution=max_resolution,
         require_ligand=require_ligand,
         method=method,
     )
-    if pdb_id is None:
+    if pdb_id:
+        path = download_pdb(pdb_id, output_dir=output_dir, format=format)
+        logger.info(f"Source: RCSB PDB ({pdb_id}) for '{query}'")
+        return path
+
+    if not fallback_alphafold and not fallback_swissmodel:
         raise StructureFetchError(
-            f"Could not find a suitable PDB structure for '{query}'."
+            f"No PDB structure found for '{query}' and fallbacks disabled."
         )
 
-    logger.info(f"Best PDB structure: {pdb_id} (from query '{query}')")
-    return download_pdb(pdb_id, output_dir=output_dir, format=format)
+    # ── Level 2: AlphaFold ─────────────────────────────────────────────────
+    uniprot_id = _resolve_to_uniprot(query)
+    af_path: str | None = None
+    if uniprot_id and fallback_alphafold:
+        try:
+            af_path = download_alphafold(uniprot_id, output_dir=output_dir, format=format)
+            logger.info(f"Source: AlphaFold DB (UniProt {uniprot_id}) for '{query}'")
+            # Assess quality
+            try:
+                from autodock.alphafold_tools import assess_alphafold_quality
+
+                quality = assess_alphafold_quality(af_path)
+                if quality.get("suitable_for_docking"):
+                    return af_path
+                if not fallback_swissmodel:
+                    logger.warning(
+                        f"AlphaFold quality low (mean pLDDT={quality.get('mean_plddt', 'N/A'):.1f})"
+                        f" — returning anyway (fallback_swissmodel=False)"
+                    )
+                    return af_path
+            except Exception:
+                # Quality assessment failed — return AF structure anyway
+                return af_path
+        except StructureFetchError:
+            logger.info(f"AlphaFold has no entry for UniProt {uniprot_id}")
+
+    # ── Level 3: SWISS-MODEL ──────────────────────────────────────────────
+    if uniprot_id and fallback_swissmodel:
+        try:
+            sm_path = download_swissmodel(uniprot_id, output_dir=output_dir)
+            logger.info(f"Source: SWISS-MODEL (UniProt {uniprot_id}) for '{query}'")
+            return sm_path
+        except StructureFetchError:
+            logger.info(f"SWISS-MODEL has no entry for UniProt {uniprot_id}")
+
+    # ── All sources exhausted ──────────────────────────────────────────────
+    raise StructureFetchError(
+        f"Could not obtain a structure for '{query}' from any source. "
+        + (f"Resolved to UniProt {uniprot_id}." if uniprot_id else "Could not resolve to UniProt ID.")
+        + " Tried: RCSB PDB" + (" → AlphaFold DB" if fallback_alphafold else "")
+        + (" → SWISS-MODEL" if fallback_swissmodel else "")
+    )
 
 
 # ─────────────────────────────────────────────────────────────────────────────
