@@ -15,6 +15,7 @@ Quick start:
     result = dock_ligand(receptor, ligand, center, box)
 """
 
+from autodock.analysis import analyze_scoring_bias
 from autodock.config import load_config, write_default_config
 from autodock.core import (
     ConfigurationError,
@@ -32,11 +33,14 @@ from autodock.core import (
     set_log_level,
 )
 from autodock.docking import batch_dock, dock_ligand, dock_ligand_multi_conformer, virtual_screen
+from autodock.fetchers import fetch_protein_structure, find_best_pdb_structure, search_pdb_by_name
+from autodock.heatmap import plot_energy_heatmap
 from autodock.interactions import (
     detect_interactions,
     detect_interactions_plip,
     detect_interactions_prolif,
 )
+from autodock.pipeline import build_pair_dir, post_process_docking, read_docking_results
 from autodock.preparation import (
     find_top_pockets,
     prepare_ligand,
@@ -47,9 +51,6 @@ from autodock.preparation import (
 )
 from autodock.rendering import composite_summary, render_interactions_2d, render_scene_pymol
 from autodock.reporting import generate_csv_report, generate_excel_report, generate_pdf_report
-from autodock.analysis import analyze_scoring_bias
-from autodock.pipeline import build_pair_dir, post_process_docking, read_docking_results
-from autodock.heatmap import plot_energy_heatmap
 from autodock.utils import (
     StructureCache,
     compute_bounding_box,
@@ -128,6 +129,9 @@ __all__ = [
     "download_ligand_sdf_from_pdb",
     "StructureCache",
     "analyze_scoring_bias",
+    "fetch_protein_structure",
+    "find_best_pdb_structure",
+    "search_pdb_by_name",
     "build_pair_dir",
     "post_process_docking",
     "read_docking_results",

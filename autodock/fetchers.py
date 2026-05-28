@@ -60,6 +60,278 @@ def _download_url(url: str, out_path: str, timeout: int = 60) -> None:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# RCSB PDB search by protein name / gene symbol
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+def search_pdb_by_name(
+    query: str,
+    max_resolution: float = 3.0,
+    require_ligand: bool = True,
+    method: str = "X-RAY DIFFRACTION",
+    max_results: int = 50,
+) -> list[str]:
+    """
+    Search RCSB PDB by protein name or gene symbol, returning ranked PDB IDs.
+
+    Uses the RCSB Search API v2 (REST) directly via HTTP POST.  Results are
+    filtered by experimental method, resolution, and optionally the presence
+    of bound non-polymer ligands.
+
+    Args:
+        query: Protein name (e.g. ``"SARS-CoV-2 main protease"``) or gene
+            symbol (e.g. ``"BRAF"``, ``"EGFR"``).
+        max_resolution: Maximum X-ray resolution in Å (default 3.0).
+        require_ligand: If True, only return structures that contain at
+            least one bound non-polymer ligand (default True).
+        method: Experimental method filter.  Use ``"X-RAY DIFFRACTION"``
+            (default), ``"ELECTRON MICROSCOPY"``, ``"SOLUTION NMR"``, or
+            ``None`` for any method.
+        max_results: Maximum number of PDB IDs to return for ranking.
+
+    Returns:
+        List of PDB IDs ranked by quality (resolution → R-free → date).
+
+    Raises:
+        StructureFetchError: If search fails or returns no results.
+    """
+    import json
+
+    # Build the RCSB Search API v2 query payload
+    nodes: list[dict] = [
+        {"type": "terminal", "service": "full_text",
+         "parameters": {"value": query}},
+    ]
+
+    if max_resolution < 99:
+        nodes.append({
+            "type": "terminal", "service": "text",
+            "parameters": {
+                "attribute": "rcsb_entry_info.resolution_combined",
+                "operator": "less_or_equal",
+                "value": max_resolution,
+            },
+        })
+
+    if method:
+        nodes.append({
+            "type": "terminal", "service": "text",
+            "parameters": {
+                "attribute": "exptl.method",
+                "operator": "exact_match",
+                "value": method,
+            },
+        })
+
+    if require_ligand:
+        nodes.append({
+            "type": "terminal", "service": "text",
+            "parameters": {
+                "attribute": "rcsb_entry_info.deposited_nonpolymer_entity_instance_count",
+                "operator": "greater_or_equal",
+                "value": 1,
+            },
+        })
+
+    payload = {
+        "query": {
+            "type": "group",
+            "logical_operator": "and",
+            "nodes": nodes,
+        },
+        "return_type": "entry",
+        "request_options": {
+            "paginate": {"start": 0, "rows": max_results},
+        },
+    }
+
+    url = "https://search.rcsb.org/rcsbsearch/v2/query"
+    data = json.dumps(payload).encode("utf-8")
+    try:
+        req = urllib.request.Request(
+            url, data=data,
+            headers={"Content-Type": "application/json"},
+        )
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            result = json.loads(resp.read().decode("utf-8"))
+    except Exception as exc:
+        raise StructureFetchError(f"RCSB search query failed: {exc}")
+
+    raw_ids = [
+        e["identifier"] for e in result.get("result_set", [])
+        if "identifier" in e
+    ]
+    if not raw_ids:
+        raise StructureFetchError(
+            f"No PDB structures found for '{query}' with the given filters."
+        )
+
+    pdb_ids = [pid.upper() for pid in raw_ids]
+    logger.info(
+        f"RCSB search: '{query}' → {len(pdb_ids)} candidates"
+        f" (resolution ≤ {max_resolution} Å, method={method})"
+    )
+
+    # Rank by quality using metadata from the Data API
+    ranked = _rank_pdb_entries(pdb_ids)
+    return ranked
+
+
+def _rank_pdb_entries(pdb_ids: list[str]) -> list[str]:
+    """Rank PDB entries by resolution (asc), R-free (asc), deposit date (desc).
+
+    Uses a batched approach: fetches metadata for the first N candidates
+    (the search engine already returns approximate quality ordering), then
+    fine-ranks them.
+    """
+    scored: list[tuple[float, int, str, float, str]] = []
+
+    # Only rank the first 20 candidates to avoid excessive API calls
+    for pid in pdb_ids[:20]:
+        try:
+            info = _fetch_entry_metadata(pid)
+            if info is None:
+                continue
+            resolution = info.get("resolution", 99.0)
+            r_free = info.get("r_free", 99.0)
+            year = info.get("deposit_year", 1900)
+            scored.append((resolution, -year, pid, r_free, str(year)))
+        except Exception:
+            continue
+
+    if not scored:
+        return pdb_ids
+
+    scored.sort(key=lambda x: (x[0], x[3], x[1]))
+    ranked = [s[2] for s in scored]
+    logger.info(
+        f"RCSB ranking: top entry {ranked[0]}"
+        f" (resolution={scored[0][0]:.1f} Å, year={scored[0][4]})"
+    )
+    return ranked
+
+
+def _fetch_entry_metadata(pdb_id: str) -> dict | None:
+    """Fetch entry metadata from RCSB Data API (REST v1)."""
+    import json
+    import urllib.request
+
+    url = f"https://data.rcsb.org/rest/v1/core/entry/{pdb_id.lower()}"
+    req = urllib.request.Request(url, headers={"Accept": "application/json"})
+    try:
+        with urllib.request.urlopen(req, timeout=8) as resp:
+            data = json.loads(resp.read().decode())
+    except Exception:
+        return None
+
+    # Parse resolution
+    resolution = 99.0
+    if "rcsb_entry_info" in data:
+        resolution = (
+            data["rcsb_entry_info"].get("resolution_combined", [99.0]) or [99.0]
+        )
+        if isinstance(resolution, list):
+            resolution = resolution[0]
+
+    # Parse R-free
+    r_free = 99.0
+    refine = data.get("refine", [])
+    if refine:
+        r_free = refine[0].get("ls_R_factor_R_free", 99.0) or 99.0
+
+    # Parse deposit date
+    deposit_year = 1900
+    accession = data.get("rcsb_accession_info", {})
+    deposit_date = accession.get("deposit_date", "")
+    if deposit_date:
+        deposit_year = int(deposit_date[:4])
+
+    return {
+        "resolution": float(resolution),
+        "r_free": float(r_free),
+        "deposit_year": deposit_year,
+        "pdb_id": pdb_id.upper(),
+    }
+
+
+def find_best_pdb_structure(
+    query: str,
+    max_resolution: float = 3.0,
+    require_ligand: bool = True,
+    method: str = "X-RAY DIFFRACTION",
+) -> str | None:
+    """
+    Search RCSB PDB by protein name / gene symbol and return the best
+    matching PDB ID, ranked by resolution → R-free → deposition date.
+
+    This is the recommended entry point for "protein name → PDB structure"
+    automation.  It handles both direct PDB IDs and free-text queries.
+
+    Args:
+        query: Protein name, gene symbol, or PDB ID (4-character code).
+        max_resolution: Maximum resolution in Å (default 3.0).
+        require_ligand: Only return structures with bound small molecules.
+        method: Experimental method (default ``"X-RAY DIFFRACTION"``).
+
+    Returns:
+        Best-matching PDB ID string, or ``None`` if no match found.
+    """
+    # If query looks like a PDB ID (4 alphanum chars, at least one digit)
+    q = query.strip().upper()
+    if len(q) == 4 and q.isalnum() and any(c.isdigit() for c in q):
+        logger.info(f"Query '{query}' detected as PDB ID — returning directly")
+        return q
+
+    ranked = search_pdb_by_name(
+        query,
+        max_resolution=max_resolution,
+        require_ligand=require_ligand,
+        method=method,
+    )
+    return ranked[0] if ranked else None
+
+
+def fetch_protein_structure(
+    query: str,
+    output_dir: str = ".",
+    format: str = "pdb",
+    max_resolution: float = 3.0,
+    require_ligand: bool = True,
+    method: str = "X-RAY DIFFRACTION",
+) -> str:
+    """
+    One-stop function: protein name → search → rank → download.
+
+    Args:
+        query: Protein name, gene symbol, or PDB ID.
+        output_dir: Output directory for downloaded structure.
+        format: ``"pdb"`` or ``"cif"``.
+        max_resolution: Maximum resolution in Å (default 3.0).
+        require_ligand: Require bound small molecules (default True).
+        method: Experimental method (default ``"X-RAY DIFFRACTION"``).
+
+    Returns:
+        Path to downloaded structure file.
+
+    Raises:
+        StructureFetchError: If no structure can be found or downloaded.
+    """
+    pdb_id = find_best_pdb_structure(
+        query,
+        max_resolution=max_resolution,
+        require_ligand=require_ligand,
+        method=method,
+    )
+    if pdb_id is None:
+        raise StructureFetchError(
+            f"Could not find a suitable PDB structure for '{query}'."
+        )
+
+    logger.info(f"Best PDB structure: {pdb_id} (from query '{query}')")
+    return download_pdb(pdb_id, output_dir=output_dir, format=format)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Receptor structure fetchers
 # ─────────────────────────────────────────────────────────────────────────────
 
