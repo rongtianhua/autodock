@@ -67,6 +67,13 @@ def prepare_receptor(
         - PDBFixer: https://github.com/openmm/pdbfixer
         - Rinciker et al. (2004) J. Med. Chem. (receptor prep best practices)
 
+    .. note::
+       Missing loop regions: PDBFixer fills missing residues with approximate
+       coordinates.  If a missing loop (>5 residues) participates in the
+       binding pocket, consider MODELLER-based homology loop reconstruction
+       for publication-grade results.  Large gaps (>30 total residues) are
+       flagged with a warning during preparation.
+
     Args:
         pdb_file: Input structure path (.pdb, .cif, .pdbx).
         output_pdbqt: Output PDBQT file path.
@@ -75,9 +82,12 @@ def prepare_receptor(
         input_format: 'auto' | 'pdb' | 'cif' | 'pdbx'.
         keep_residues: If provided, keep only these residue names.
         force: If False and output_pdbqt already exists, skip preparation.
-        ph: Target pH for adding hydrogens (default 7.4).  Passed to
-            PDBFixer.addMissingHydrogens().  For pH-sensitive active sites
-            (e.g. cathepsin B at pH ~5.5), use the appropriate value.
+        ph: Target pH for adding hydrogens (default 7.4, physiological).
+            Passed to PDBFixer.addMissingHydrogens().  For pH-sensitive
+            active sites (e.g. cathepsin B in lysosome at pH ~5.5, or
+            pepsin in stomach at pH ~2.0), override with the relevant
+            organellar pH.  His protonation state is the main residue
+            affected in the 5.5-7.4 range.
         forcefield: OpenMM force field XML for energy minimisation
             (default ``"amber14-all.xml"``).
         restraint_center: Optional (x, y, z) pocket centre in Å for
@@ -153,7 +163,7 @@ def prepare_receptor(
             f"Affected: {list(multi_altloc.keys())[:10]}"
         )
 
-    # ── Step 3: PDBFixer — fill missing residues/atoms, add hydrogens ────
+    # ── Step 3: PDBFixer — fill missing residues/atoms, add hydrogens at pH ──
     try:
         from openmm.app import PDBFile as _OMM_PDBFile
         from pdbfixer import PDBFixer
@@ -174,6 +184,28 @@ def prepare_receptor(
         fixer.findMissingAtoms()
         fixer.addMissingAtoms()
         fixer.addMissingHydrogens(ph)
+
+        # Log missing residues for reviewer transparency
+        missing_res = fixer.missingResidues if hasattr(fixer, "missingResidues") else {}
+        if missing_res:
+            total_filled = sum(len(res_list) for res_list in missing_res.values())
+            gaps_detail = []
+            for chain_idx, res_list in missing_res.items():
+                for _, res_seq, res_name in res_list:
+                    gaps_detail.append(f"chain{chain_idx}:{res_seq}({res_name})")
+            logger.info(
+                f"PDBFixer filled {total_filled} missing residue(s): "
+                f"{', '.join(gaps_detail[:20])}"
+                + (f" ... and {total_filled - 20} more" if total_filled > 20 else "")
+            )
+            if total_filled > 30:
+                logger.warning(
+                    f"Large number of missing residues ({total_filled}). "
+                    "If these include binding-pocket loops, consider MODELLER "
+                    "for proper loop reconstruction (PDBFixer uses approximate "
+                    "coordinates for missing regions)."
+                )
+
         with open(tmp_fixed, "w") as fh:
             _OMM_PDBFile.writeFile(fixer.topology, fixer.positions, fh)
         logger.info(f"PDBFixer: missing residues filled, hydrogens added (pH {ph})")
