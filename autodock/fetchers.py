@@ -736,6 +736,48 @@ def fetch_pubchem_sdf(cid: str | int, output_path: str) -> str:
     return output_path
 
 
+def fetch_compound_sdf_by_name(name: str, output_path: str) -> str:
+    """
+    One-stop: compound name → PubChem CID → download SDF.
+
+    Args:
+        name: Compound name (e.g. ``"aspirin"``, ``"ibuprofen"``).
+        output_path: Destination SDF path.
+
+    Returns:
+        Path to downloaded SDF.
+
+    Raises:
+        DataSourceError: If PubChem has no record for the name.
+    """
+    try:
+        import pubchempy as pcp
+
+        compounds = pcp.get_compounds(name, "name")
+        if compounds:
+            cid = compounds[0].cid
+            return fetch_pubchem_sdf(cid, output_path)
+    except Exception:
+        pass
+
+    # Fallback: SMILES → 3D via gen3d (no SDF from PubChem name)
+    smiles = fetch_pubchem_smiles(name)
+    from rdkit import Chem
+    from rdkit.Chem import AllChem
+
+    mol = Chem.MolFromSmiles(smiles)
+    if mol is None:
+        raise DataSourceError(f"Could not generate 3D for '{name}' from SMILES")
+    mol = Chem.AddHs(mol)
+    AllChem.EmbedMolecule(mol, AllChem.ETKDGv3())
+    AllChem.MMFFOptimizeMolecule(mol)
+    writer = Chem.SDWriter(str(output_path))
+    writer.write(mol)
+    writer.close()
+    logger.info(f"Generated 3D SDF for '{name}' from PubChem SMILES: {output_path}")
+    return output_path
+
+
 def fetch_chembl_smiles(chembl_id: str) -> str:
     """
     Lookup canonical SMILES for a ChEMBL compound ID.

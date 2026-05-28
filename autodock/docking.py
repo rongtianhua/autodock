@@ -367,6 +367,8 @@ def dock_ligand(
     auto_exhaustiveness: bool = False,
     min_rmsd: float = 1.0,
     scoring_function: str = "vina",
+    ligand_smiles: str | None = None,
+    multi_conformer: bool = False,
 ) -> DockingResult:
     """
     Dock a single ligand into a protein binding site.
@@ -395,6 +397,14 @@ def dock_ligand(
         scoring_function: Vina scoring function name.  Supported: ``"vina"``
             (default), ``"vinardo"``, ``"ad4"`` (AutoDock4).  Available
             functions depend on the Vina Python package version.
+        ligand_smiles: SMILES of the ligand.  Required when
+            ``multi_conformer=True``.
+        multi_conformer: If True, pre-generate multiple 3D conformers
+            from ``ligand_smiles`` and dock each one independently.
+            The globally best pose across all conformers is returned.
+            This combines the pre-generation and flexible-sampling
+            strategies recommended by top-tier journals.  Requires
+            ``ligand_smiles``.  (default False)
 
     Returns:
         DockingResult with scores, file paths, and metadata.
@@ -430,6 +440,51 @@ def dock_ligand(
         f"Docking {name}: center={center}, box={box_size}, "
         f"exhaustiveness={exhaustiveness}, n_poses={n_poses}, seed={seed}"
     )
+
+    # ── Multi-conformer docking ───────────────────────────────────────────
+    # Pre-generate diverse 3D conformers from SMILES, dock each independently.
+    # Combines pre-generation + Vina flexible sampling (top-journal practice).
+    if multi_conformer:
+        if not ligand_smiles:
+            raise ValueError("multi_conformer=True requires ligand_smiles to be provided")
+        from autodock.preparation import prepare_ligand_conformers
+
+        tmp_dir = tempfile.mkdtemp(prefix="autodock_multi_")
+        try:
+            conf_pdbqts = prepare_ligand_conformers(
+                ligand_smiles,
+                tmp_dir,
+                n_conformers=10,
+                name=name[:3] if name else "LIG",
+                molscrub_states=True,
+                enumerate_stereo=True,
+            )
+            logger.info(
+                f"Multi-conformer: {len(conf_pdbqts)} conformers generated," f" docking each one..."
+            )
+            from autodock.docking import dock_ligand_multi_conformer
+
+            result = dock_ligand_multi_conformer(
+                receptor_pdbqt,
+                conf_pdbqts,
+                center,
+                box_size,
+                exhaustiveness=max(exhaustiveness, 8),
+                n_poses=max(n_poses, 5),
+                energy_range=energy_range,
+                seed=seed,
+                timeout=timeout * 2,
+                output_dir=output_dir,
+                compound_name=name,
+                scoring_function=scoring_function,
+                min_rmsd=min_rmsd,
+            )
+            return result
+        finally:
+            with contextlib.suppress(Exception):
+                import shutil
+
+                shutil.rmtree(tmp_dir, ignore_errors=True)
 
     energies, poses = _run_vina_dock(
         receptor_pdbqt,
