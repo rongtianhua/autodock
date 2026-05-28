@@ -1,4 +1,5 @@
 """Tests for autodock.analysis — scoring bias diagnostics."""
+
 import os
 import tempfile
 import textwrap
@@ -10,7 +11,9 @@ from autodock.analysis import _extract_affinity, _parse_all_poses, analyze_scori
 
 class TestParseAllPoses:
     def test_extract_affinity_valid(self):
-        assert _extract_affinity("REMARK VINA RESULT:    -8.236      0.000      0.000") == pytest.approx(-8.236)
+        assert _extract_affinity(
+            "REMARK VINA RESULT:    -8.236      0.000      0.000"
+        ) == pytest.approx(-8.236)
         assert _extract_affinity("REMARK VINA RESULT: -5.94 0 0") == pytest.approx(-5.94)
 
     def test_extract_affinity_no_match(self):
@@ -148,13 +151,32 @@ class TestBenchmarkScoringDecoupling:
 
         # Simulate raw results
         raw = [
-            {"pdb_id": "GOOD", "success": True, "rmsd": 0.5, "best_rmsd": 0.4, "best_rmsd_success": True},
-            {"pdb_id": "FAIL1", "success": False, "rmsd": 3.0, "best_rmsd": 0.9, "best_rmsd_success": True},
-            {"pdb_id": "FAIL2", "success": False, "rmsd": 3.0, "best_rmsd": 3.0, "best_rmsd_success": False},
+            {
+                "pdb_id": "GOOD",
+                "success": True,
+                "rmsd": 0.5,
+                "best_rmsd": 0.4,
+                "best_rmsd_success": True,
+            },
+            {
+                "pdb_id": "FAIL1",
+                "success": False,
+                "rmsd": 3.0,
+                "best_rmsd": 0.9,
+                "best_rmsd_success": True,
+            },
+            {
+                "pdb_id": "FAIL2",
+                "success": False,
+                "rmsd": 3.0,
+                "best_rmsd": 3.0,
+                "best_rmsd_success": False,
+            },
         ]
 
         scoring_failures = [
-            r for r in raw
+            r
+            for r in raw
             if not r.get("success")
             and r.get("best_rmsd") is not None
             and r["best_rmsd"] <= REDocking_RMSD_THRESHOLD
@@ -171,7 +193,8 @@ class TestBenchmarkScoringDecoupling:
             {"pdb_id": "T2", "success": True, "rmsd": 1.0, "best_rmsd": 0.8},
         ]
         scoring_failures = [
-            r for r in raw
+            r
+            for r in raw
             if not r.get("success")
             and r.get("best_rmsd") is not None
             and r["best_rmsd"] <= REDocking_RMSD_THRESHOLD

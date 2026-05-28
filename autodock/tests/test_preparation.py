@@ -128,7 +128,9 @@ class TestPrepareLigand:
         mock_mmff_confs.return_value = [(0, -10.0)]
         mock_conf = MagicMock()
         mock_mol.GetConformer.return_value = mock_conf
-        mock_conf.GetAtomPosition.side_effect = lambda i: type('pos', (), {'x': float(i)*1.0, 'y': 0.0, 'z': 0.0})()
+        mock_conf.GetAtomPosition.side_effect = lambda i: type(
+            "pos", (), {"x": float(i) * 1.0, "y": 0.0, "z": 0.0}
+        )()
 
         mock_mk = MagicMock()
         mock_mk_cls.return_value = mock_mk
