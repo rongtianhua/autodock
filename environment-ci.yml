@@ -32,3 +32,4 @@ dependencies:
   - pip:
     - meeko>=0.6.0
     - posebusters>=0.2.0
+    - propka>=3.4.0

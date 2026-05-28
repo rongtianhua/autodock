@@ -49,6 +49,7 @@ def prepare_receptor(
     restraint_center: tuple[float, float, float] | None = None,
     restraint_radius: float = 8.0,
     retain_metal_ions: bool = True,
+    predict_pka: bool = True,
 ) -> str:
     """
     Prepare a protein structure for docking (PDB/mmCIF → PDBQT).
@@ -105,6 +106,11 @@ def prepare_receptor(
             cofactors (HEM, FAD, NAD, etc.) even when
             ``remove_hetatms=True``.  Set to False to strip all HETATM.
             Required for metalloprotein targets.
+        predict_pka: If True (default), run PROPKA to detect anomalous pKa
+            values in titratable residues (Asp, Glu, His, Lys, Cys, Tyr).
+            Residues with pKa within ±1 of the target pH are flagged as
+            having potentially wrong protonation states.  Pure reporting;
+            does not modify the structure.  Set False to skip.
 
     Returns:
         Absolute path to the prepared PDBQT file.
@@ -236,6 +242,61 @@ def prepare_receptor(
     except Exception as exc:
         logger.warning(f"Reduce step skipped ({exc}) — using PDBFixer output")
         tmp_reduced = tmp_fixed
+
+    # ── Step 4b: PROPKA — pKa prediction for active-site residues ────────
+    _anomalous_pka: list[dict] = []
+    if predict_pka:
+        try:
+            from propka import run as _propka_run
+
+            _pk_mol = _propka_run.single(tmp_reduced, write_pka=False)
+            if hasattr(_pk_mol, "calculate_pka"):
+                _pk_mol.calculate_pka()
+            for _conf in _pk_mol.conformations.values():
+                for _g in _conf.groups:
+                    _pka = getattr(_g, "pka_value", None)
+                    if _pka is None:
+                        continue
+                    # Standard reference pKa ranges
+                    _type = getattr(_g, "type", "")
+                    _label = getattr(_g, "label", "")
+                    if _type == "ASP" and (_pka < 2.0 or _pka > 6.0):
+                        _anomalous_pka.append({"residue": _label, "type": _type, "pKa": round(_pka, 1), "expected_range": "2.0-6.0"})
+                    elif _type == "GLU" and (_pka < 2.0 or _pka > 7.0):
+                        _anomalous_pka.append({"residue": _label, "type": _type, "pKa": round(_pka, 1), "expected_range": "2.0-7.0"})
+                    elif _type == "HIS" and (_pka < 4.0 or _pka > 8.0):
+                        _anomalous_pka.append({"residue": _label, "type": _type, "pKa": round(_pka, 1), "expected_range": "4.0-8.0"})
+                    elif _type == "LYS" and (_pka < 8.0 or _pka > 12.0):
+                        _anomalous_pka.append({"residue": _label, "type": _type, "pKa": round(_pka, 1), "expected_range": "8.0-12.0"})
+                    elif _type == "CYS" and _pka > 11.0:
+                        _anomalous_pka.append({"residue": _label, "type": _type, "pKa": round(_pka, 1), "expected_range": "<11.0"})
+                    elif _type == "TYR" and _pka > 13.0:
+                        _anomalous_pka.append({"residue": _label, "type": _type, "pKa": round(_pka, 1), "expected_range": "<13.0"})
+
+            if _anomalous_pka:
+                logger.info(
+                    f"PROPKA: {len(_anomalous_pka)} anomalous pKa residue(s) at pH {ph}:"
+                )
+                for _a in _anomalous_pka[:15]:
+                    logger.info(
+                        f"  {_a['residue']:12s} ({_a['type']}): "
+                        f"pKa={_a['pKa']:.1f} (expected {_a['expected_range']})"
+                    )
+                if len(_anomalous_pka) > 15:
+                    logger.info(f"  ... and {len(_anomalous_pka) - 15} more")
+                # Flag residues with pKa near target → protonation state uncertain
+                _flagged = [a for a in _anomalous_pka if abs(a['pKa'] - ph) < 1.0]
+                if _flagged:
+                    logger.warning(
+                        f"PROPKA: {len(_flagged)} residue(s) with pKa within ±1 of pH {ph} "
+                        f"— protonation state may be wrong. Consider manual inspection."
+                    )
+            else:
+                logger.info("PROPKA: all titratable residues within normal pKa ranges")
+        except ImportError:
+            logger.debug("propka not installed — skipping pKa prediction")
+        except Exception as exc:
+            logger.warning(f"PROPKA pKa prediction failed ({exc}) — skipping")
 
     # ── Step 5: OpenMM pocket-restrained energy minimisation ─────────────
     tmp_min = write_temp_file("", suffix="_minimized.pdb")
