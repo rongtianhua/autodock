@@ -527,14 +527,14 @@ class TestCmdFindPockets:
         mock_find.return_value = [
             {
                 "pocket_num": 1,
-                "pocket_source": "p2rank",
+                "pocket_source": "p2rank+fpocket",
                 "center": (1.0, 2.0, 3.0),
                 "box_size": (20.0, 20.0, 20.0),
                 "druggability": 0.85,
                 "druggability_level": "high",
                 "p2rank_prob": 0.92,
-                "consensus": True,
-                "consensus_distance": 2.5,
+                "fpocket_verified": True,
+                "fpocket_match_distance": 2.5,
                 "volume": 500.0,
                 "depth": 12.0,
                 "openings": 2,
@@ -557,8 +557,6 @@ class TestCmdFindPockets:
             ligand=None,
             padding=5.0,
             max_pockets=3,
-            consensus=False,
-            method="auto",
             known_active_site=None,
             quiet=False,
             verbose=False,
@@ -571,32 +569,31 @@ class TestCmdFindPockets:
             ligand_pdb=None,
             padding=5.0,
             max_pockets=3,
-            consensus=False,
-            method="auto",
             known_active_site=None,
         )
         out = capsys.readouterr().out
         assert "Found 1 pocket(s)" in out
         assert "P2Rank prob:  0.920" in out
+        assert "fpocket-verified" in out
 
     @patch("autodock.preparation.find_top_pockets")
     def test_find_pockets_no_p2rank_prob(self, mock_find, capsys):
         mock_find.return_value = [
             {
                 "pocket_num": 1,
-                "pocket_source": "fpocket",
+                "pocket_source": "p2rank_only",
                 "center": (0.0, 0.0, 0.0),
                 "box_size": (20.0, 20.0, 20.0),
                 "druggability": 0.5,
                 "druggability_level": "medium",
                 "p2rank_prob": None,
-                "consensus": None,
-                "consensus_distance": None,
+                "fpocket_verified": False,
+                "fpocket_match_distance": None,
                 "volume": 300.0,
                 "depth": 8.0,
-                "openings": 1,
-                "n_apolar": 20,
-                "n_polar": 5,
+                "openings": None,
+                "n_apolar": None,
+                "n_polar": None,
                 "residue_ids": [],
                 "shape_circularity": None,
                 "shape_aspect_ratio": None,
@@ -614,8 +611,6 @@ class TestCmdFindPockets:
             ligand="lig.pdb",
             padding=4.0,
             max_pockets=1,
-            consensus=False,
-            method="auto",
             known_active_site=None,
             quiet=False,
             verbose=False,
@@ -626,6 +621,7 @@ class TestCmdFindPockets:
         out = capsys.readouterr().out
         assert "Found 1 pocket(s)" in out
         assert "Druggability: 0.500 [medium]" in out
+        assert "fpocket-unverified" in out
 
 
 # ────────────────────────────────

@@ -144,7 +144,11 @@ def cmd_prepare_ligand(args: argparse.Namespace) -> int:
 
 
 def cmd_find_pockets(args: argparse.Namespace) -> int:
-    """Find binding pockets with publication-grade analysis."""
+    """Find binding pockets with publication-grade analysis.
+
+    Pipeline: P2Rank ML primary screen → fpocket geometric cross-validation
+    → druggability re-ranking → enhanced analysis.
+    """
     from autodock.preparation import find_top_pockets
 
     known_active = tuple(args.known_active_site) if args.known_active_site else None
@@ -154,29 +158,23 @@ def cmd_find_pockets(args: argparse.Namespace) -> int:
         ligand_pdb=args.ligand,
         padding=args.padding,
         max_pockets=args.max_pockets,
-        consensus=args.consensus,
-        method=args.method,
         known_active_site=known_active,
     )
     print(f"\nFound {len(pockets)} pocket(s):\n")
     for i, p in enumerate(pockets, 1):
-        print(f"  Pocket {i} (#{p['pocket_num']}):")
-        print(f"    Source:   {p['pocket_source']}")
-        print(f"    Center:   {p['center']}")
-        print(f"    Box:      {p['box_size']}")
+        verified = " ✓ fpocket-verified" if p.get("fpocket_verified") else " fpocket-unverified"
+        print(f"  Pocket {i} (#{p['pocket_num']}):{verified}")
         drugg = p.get("druggability")
         if drugg is not None:
             print(f"    Druggability: {drugg:.3f} [{p.get('druggability_level', 'unknown')}]")
         prob = p.get("p2rank_prob")
         if prob is not None:
             print(f"    P2Rank prob:  {prob:.3f}")
-        if p.get("consensus") is not None:
-            print(f"    Consensus:    {'YES' if p['consensus'] else 'no'}")
         flex = p.get("flexibility")
         if flex:
             print(f"    Flexibility:  {flex}")
         ptype = p.get("pocket_type", "unclassified")
-        if ptype != "unclassified":
+        if ptype and ptype != "unclassified":
             print(f"    Type:         {ptype}")
         residues = p.get("residue_ids", [])
         if residues:
@@ -987,26 +985,14 @@ def build_parser() -> argparse.ArgumentParser:
         "find-pockets",
         help="Detect binding pockets",
         description=(
-            "Detect binding pockets with publication-grade analysis. "
-            "Default: P2Rank ML-first, fpocket geometric backup. "
-            "Use --consensus for ensemble P2Rank+fpocket cross-validation."
+            "Pipeline: P2Rank ML primary screen → fpocket geometric cross-validation "
+            "→ druggability re-ranking → enhanced analysis."
         ),
     )
     p_pocket.add_argument("receptor", help="Receptor PDB file")
     p_pocket.add_argument("--ligand", help="Optional co-crystal ligand PDB for centering")
     p_pocket.add_argument("--padding", type=float, default=5.0, help="Box padding (Å)")
     p_pocket.add_argument("--max-pockets", type=int, default=3, help="Maximum pockets to return")
-    p_pocket.add_argument(
-        "--method",
-        choices=["auto", "p2rank", "fpocket", "dogsite3"],
-        default="auto",
-        help="Detection method: p2rank (ML), fpocket (geometry), dogsite3 (online API)",
-    )
-    p_pocket.add_argument(
-        "--consensus",
-        action="store_true",
-        help="Enable P2Rank+fpocket ensemble consensus (cross-validation)",
-    )
     p_pocket.add_argument(
         "--known-active-site",
         nargs=3,
