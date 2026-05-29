@@ -527,7 +527,7 @@ class TestCmdFindPockets:
         mock_find.return_value = [
             {
                 "pocket_num": 1,
-                "pocket_source": "p2rank+fpocket",
+                "pocket_source": "fpocket",
                 "center": (1.0, 2.0, 3.0),
                 "box_size": (20.0, 20.0, 20.0),
                 "druggability": 0.85,
@@ -581,7 +581,7 @@ class TestCmdFindPockets:
         mock_find.return_value = [
             {
                 "pocket_num": 1,
-                "pocket_source": "p2rank_only",
+                "pocket_source": "p2rank",
                 "center": (0.0, 0.0, 0.0),
                 "box_size": (20.0, 20.0, 20.0),
                 "druggability": 0.5,

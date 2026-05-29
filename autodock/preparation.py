@@ -2611,29 +2611,37 @@ def find_top_pockets(
             pass
 
     # Step 5: Build enriched result list ─────────────────────────────────────
+    # Output priority:
+    #   verified (P2Rank+fpocket match) → use fpocket pocket (α-sphere centroid,
+    #     druggability_score computed on own definition, semantically consistent)
+    #   unverified → use P2Rank pocket (fallback, only data available)
     result: list[dict[str, Any]] = []
     for c in candidates[:max_pockets]:
-        p2p = c["p2rank_pocket"]
-        fp = c["fpocket_pocket"]
-        center = p2p["center"]
-        box_size = _compute_box_size(p2p.get("dims", (20, 20, 20)), padding)
-        volume = fp.get("volume") if fp else p2p.get("volume")
-        depth_val = fp.get("depth") if fp else p2p.get("depth")
-        pnum = p2p.get("num", 0)
+        verified = c["verified"]
+        # Data source: fpocket for verified, P2Rank for unverified
+        src = c["fpocket_pocket"] if verified else c["p2rank_pocket"]
+
+        center = src["center"]
+        box_size = _compute_box_size(src.get("dims", (20, 20, 20)), padding)
+        volume = src.get("volume")
+        depth_val = src.get("depth")
+        pnum = src.get("num", 0)
 
         drugg_class = _druggability_classification(c["druggability"], volume, depth_val)
 
-        # Shape descriptors from fpocket vertex PQR (if available)
+        # Shape descriptors
         shape_desc: dict[str, float | None] = {
-            "circularity": fp.get("circularity") if fp else p2p.get("circularity"),
-            "aspect_ratio": fp.get("aspect_ratio") if fp else p2p.get("aspect_ratio"),
+            "circularity": src.get("circularity"),
+            "aspect_ratio": src.get("aspect_ratio"),
         }
 
-        # Pocket residues
-        residues = p2p.get("residue_ids") or pocket_residues.get(pnum, [])
+        # Pocket residues (P2Rank has richer residue data via CSV parsing)
+        residues = c["p2rank_pocket"].get("residue_ids") or pocket_residues.get(
+            c["p2rank_pocket"].get("num", 0), []
+        )
 
         # B-factor flexibility
-        pocket_radius = p2p.get("radius") or 10.0
+        pocket_radius = src.get("radius") or 10.0
         flex_info = _pocket_bfactor_flexibility(center, pocket_radius, receptor_pdb)
 
         # AlphaFold compatibility
@@ -2648,10 +2656,6 @@ def find_top_pockets(
         # Allosteric / orthosteric
         pocket_type_info = _classify_pocket_type(center, known_active_site, volume)
 
-        openings = fp.get("openings") if fp else None
-        n_apolar = fp.get("n_apolar") if fp else None
-        n_polar = fp.get("n_polar") if fp else None
-
         entry = {
             "center": center,
             "box_size": box_size,
@@ -2660,14 +2664,14 @@ def find_top_pockets(
             "druggability_description": drugg_class["description"],
             "p2rank_prob": c["prob"],
             "pocket_num": pnum,
-            "pocket_source": "p2rank+fpocket" if c["verified"] else "p2rank_only",
-            "fpocket_verified": c["verified"],
+            "pocket_source": "fpocket" if verified else "p2rank",
+            "fpocket_verified": verified,
             "fpocket_match_distance": c["match_distance"],
             "volume": volume,
             "depth": depth_val,
-            "openings": openings,
-            "n_apolar": n_apolar,
-            "n_polar": n_polar,
+            "openings": src.get("openings"),
+            "n_apolar": src.get("n_apolar"),
+            "n_polar": src.get("n_polar"),
             "residue_ids": residues,
             "shape_circularity": shape_desc.get("circularity"),
             "shape_aspect_ratio": shape_desc.get("aspect_ratio"),
@@ -2684,9 +2688,10 @@ def find_top_pockets(
     # Log summary
     for i, pk in enumerate(result):
         v_str = " ✓fpocket" if pk["fpocket_verified"] else " fpocket-unverified"
+        src_label = pk["pocket_source"]
         p_str = f"P2Rank={pk['p2rank_prob']:.3f}" if pk["p2rank_prob"] is not None else "P2Rank=N/A"
         logger.info(
-            f"Pocket {i + 1} (#{pk['pocket_num']}):{v_str}, "
+            f"Pocket {i + 1} (#{pk['pocket_num']}): [{src_label}]{v_str}, "
             f"center={pk['center']}, box={pk['box_size']} ({p_str}, "
             f"druggability={pk['druggability_level']})"
         )
