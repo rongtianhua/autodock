@@ -366,7 +366,7 @@ class TestExtractChainFromPdb:
 
     def test_returns_string_when_no_output(self, tmp_path):
         pdb = tmp_path / "test.pdb"
-        pdb.write_text("ATOM      1  N   SER A   1      0.000   0.000   0.000\n" "END\n")
+        pdb.write_text("ATOM      1  N   SER A   1      0.000   0.000   0.000\nEND\n")
         result = utils.extract_chain_from_pdb(str(pdb), "A")
         assert isinstance(result, str)
         assert "ATOM" in result
@@ -424,7 +424,7 @@ class TestExtractChainFromPdb:
 
     def test_empty_result(self, tmp_path):
         pdb = tmp_path / "test.pdb"
-        pdb.write_text("ATOM      1  N   SER A   1      0.000   0.000   0.000\n" "END\n")
+        pdb.write_text("ATOM      1  N   SER A   1      0.000   0.000   0.000\nEND\n")
         out = tmp_path / "chain_z.pdb"
         utils.extract_chain_from_pdb(str(pdb), "Z", str(out))
         text = out.read_text()

@@ -68,12 +68,10 @@ def test_merge_receptor_ligand_pdb_success(tmp_path):
     output_pdb = tmp_path / "complex.pdb"
 
     receptor_pdb.write_text(
-        "ATOM    1  N   ALA A   1      11.104   6.134  -6.504  1.00  0.00           N  \n"
-        "TER\n"
-        "END\n"
+        "ATOM    1  N   ALA A   1      11.104   6.134  -6.504  1.00  0.00           N  \nTER\nEND\n"
     )
     ligand_pdb.write_text(
-        "HETATM  1  C   LIG A   2      12.000   7.000  -7.000  1.00  0.00           C  \n" "TER\n"
+        "HETATM  1  C   LIG A   2      12.000   7.000  -7.000  1.00  0.00           C  \nTER\n"
     )
 
     result = _merge_receptor_ligand_pdb(str(receptor_pdb), str(ligand_pdb), str(output_pdb))
@@ -97,7 +95,7 @@ def test_merge_receptor_ligand_pdb_success(tmp_path):
 
 def _make_receptor_pdb(path: Path) -> None:
     path.write_text(
-        "ATOM    1  N   ALA A   1      11.104   6.134  -6.504  1.00  0.00           N  \n" "END\n"
+        "ATOM    1  N   ALA A   1      11.104   6.134  -6.504  1.00  0.00           N  \nEND\n"
     )
 
 

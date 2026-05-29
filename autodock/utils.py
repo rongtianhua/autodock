@@ -88,7 +88,7 @@ def read_cif_atoms(cif_path: str) -> list[dict[str, Any]]:
         import gemmi
     except ImportError as exc:
         raise ImportError(
-            "gemmi required for mmCIF parsing." " Install: conda install -c conda-forge gemmi"
+            "gemmi required for mmCIF parsing. Install: conda install -c conda-forge gemmi"
         ) from exc
 
     doc = gemmi.cif.read(str(cif_path))
@@ -129,7 +129,7 @@ def cif_to_pdb_string(cif_path: str) -> str:
         import gemmi
     except ImportError as exc:
         raise ImportError(
-            "gemmi required for mmCIF parsing." " Install: conda install -c conda-forge gemmi"
+            "gemmi required for mmCIF parsing. Install: conda install -c conda-forge gemmi"
         ) from exc
 
     doc = gemmi.cif.read(str(cif_path))
@@ -533,7 +533,7 @@ def extract_ligand_from_pdb(
     frags = Chem.GetMolFrags(mol, asMols=True, sanitizeFrags=True)
     if len(frags) > 1:
         logger.warning(
-            f"Ligand '{ligand_resname}' has {len(frags)} fragments; " f"keeping the largest one."
+            f"Ligand '{ligand_resname}' has {len(frags)} fragments; keeping the largest one."
         )
         mol = max(frags, key=lambda m: m.GetNumAtoms())
         # Re-add Hs because GetMolFrags may strip them

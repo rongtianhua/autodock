@@ -985,14 +985,14 @@ def build_parser() -> argparse.ArgumentParser:
         "find-pockets",
         help="Detect binding pockets",
         description=(
-            "Pipeline: P2Rank ML primary screen → fpocket geometric cross-validation "
-            "→ druggability re-ranking → enhanced analysis."
+            "Pipeline: P2Rank ML primary (top-10) → fpocket geometric cross-validation "
+            "→ fpocket druggability re-ranking → output top-5 pockets."
         ),
     )
     p_pocket.add_argument("receptor", help="Receptor PDB file")
     p_pocket.add_argument("--ligand", help="Optional co-crystal ligand PDB for centering")
     p_pocket.add_argument("--padding", type=float, default=5.0, help="Box padding (Å)")
-    p_pocket.add_argument("--max-pockets", type=int, default=3, help="Maximum pockets to return")
+    p_pocket.add_argument("--max-pockets", type=int, default=5, help="Maximum pockets to return")
     p_pocket.add_argument(
         "--known-active-site",
         nargs=3,

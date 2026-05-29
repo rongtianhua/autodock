@@ -320,8 +320,7 @@ def _minimize_complex(
         app.PDBFile.writeFile(ligand_topology, ligand_positions_out, fh)
 
     logger.info(
-        f"Complex minimisation: E_initial={initial_energy:.1f} → "
-        f"E_final={final_energy:.1f} kJ/mol"
+        f"Complex minimisation: E_initial={initial_energy:.1f} → E_final={final_energy:.1f} kJ/mol"
     )
 
     return {

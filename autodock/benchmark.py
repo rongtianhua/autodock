@@ -314,14 +314,14 @@ def run_redocking_benchmark(
     summary["json_path"] = json_path
     msg = (
         f"Benchmark complete: {summary['n_success']}/{summary['n_total']} top-1 succeeded "
-        f"({summary['success_rate']*100:.1f}%). "
+        f"({summary['success_rate'] * 100:.1f}%). "
         f"Best-RMSD: {summary['n_success_best']}/{summary['n_total']} "
-        f"({summary['success_rate_best']*100:.1f}%). "
+        f"({summary['success_rate_best'] * 100:.1f}%). "
     )
     if minimize:
         msg += (
             f"Raw: {summary['n_success_raw']}/{summary['n_total']} "
-            f"({summary['success_rate_raw']*100:.1f}%). "
+            f"({summary['success_rate_raw'] * 100:.1f}%). "
         )
     if summary["n_scoring_failures"] > 0:
         msg += (
@@ -652,7 +652,7 @@ def run_repeat_docking(
 
     os.makedirs(output_dir, exist_ok=True)
     logger.info(
-        f"Repeat docking: {len(targets)} targets × {n_repeats} repeats, " f"seeds={list(seeds)}"
+        f"Repeat docking: {len(targets)} targets × {n_repeats} repeats, seeds={list(seeds)}"
     )
 
     per_target: list[dict[str, Any]] = []

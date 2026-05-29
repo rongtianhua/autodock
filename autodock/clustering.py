@@ -217,6 +217,6 @@ def cluster_poses(
     # Sort clusters by representative energy (best first)
     clusters.sort(key=lambda c: c["representative_energy"])
     logger.info(
-        f"Pose clustering: {n} poses → {len(clusters)} clusters " f"(threshold={rmsd_threshold} Å)"
+        f"Pose clustering: {n} poses → {len(clusters)} clusters (threshold={rmsd_threshold} Å)"
     )
     return clusters

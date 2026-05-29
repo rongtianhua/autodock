@@ -325,7 +325,7 @@ def _resolve_to_uniprot(query: str) -> str | None:
         pass
 
     # Fallback: try without reviewed filter
-    url2 = f"https://rest.uniprot.org/uniprotkb/search?" f"query=({encoded})&format=json&size=5"
+    url2 = f"https://rest.uniprot.org/uniprotkb/search?query=({encoded})&format=json&size=5"
     try:
         data2 = _http_get_json(url2, timeout=15)
         results2 = data2.get("results", []) if isinstance(data2, dict) else []

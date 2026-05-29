@@ -146,14 +146,13 @@ def _validate(cfg: dict[str, Any]) -> None:
         )
     if exhaust < 32:
         logger.info(
-            f"Config: exhaustiveness={exhaust}. " f"Consider >=32 for publication-grade docking."
+            f"Config: exhaustiveness={exhaust}. Consider >=32 for publication-grade docking."
         )
 
     num_modes = dock.get("num_modes", VINA_DEFAULT_N_POSES)
     if num_modes < 9:
         logger.warning(
-            f"Config: num_modes={num_modes} is low. "
-            f"Recommend >=9-20 for clustering and validation."
+            f"Config: num_modes={num_modes} is low. Recommend >=9-20 for clustering and validation."
         )
 
     val = cfg.get("validation", {})
@@ -165,7 +164,7 @@ def _validate(cfg: dict[str, Any]) -> None:
 
     pocket = cfg.get("pocket", {})
     if pocket.get("method") == "fpocket" and pocket.get("use_p2rank", True) is False:
-        logger.info("Config: P2Rank rescoring disabled. " "Pocket ranking may be less reliable.")
+        logger.info("Config: P2Rank rescoring disabled. Pocket ranking may be less reliable.")
 
     out_dir = cfg.get("project", {}).get("output_dir", "./docking_results")
     os.makedirs(out_dir, exist_ok=True)

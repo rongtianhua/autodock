@@ -460,7 +460,7 @@ def dock_ligand(
                 enumerate_stereo=True,
             )
             logger.info(
-                f"Multi-conformer: {len(conf_pdbqts)} conformers generated," f" docking each one..."
+                f"Multi-conformer: {len(conf_pdbqts)} conformers generated, docking each one..."
             )
             from autodock.docking import dock_ligand_multi_conformer
 

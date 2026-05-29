@@ -2384,7 +2384,7 @@ def find_top_pockets(
     receptor_pdb: str,
     ligand_pdb: str | None = None,
     padding: float = 5.0,
-    max_pockets: int = 3,
+    max_pockets: int = 5,
     known_active_site: tuple[float, float, float] | None = None,
     plddt_data: dict[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
@@ -2411,7 +2411,7 @@ def find_top_pockets(
         ligand_pdb: Optional co-crystallized ligand PDB for centering.
             When provided, skips computational detection (gold standard).
         padding: Box padding around pocket dimensions (Å, default 5.0).
-        max_pockets: Maximum pockets to return (default 3).
+        max_pockets: Maximum pockets to return (default 5).
         known_active_site: (x, y, z) of known orthosteric site for
             allosteric/orthosteric classification.
         plddt_data: Pre-computed AlphaFold quality assessment
@@ -2530,10 +2530,12 @@ def find_top_pockets(
         for fp in fpocket_pockets:
             fpocket_centers.append((np.array(fp["center"]), fp))
 
-    # Limit P2Rank candidates to top 5 for cross-validation.
-    # P2Rank paper (Krivák & Hoksza 2018): top-5 covers ~88% of true
-    # binding sites (DCC=4Å). Beyond top-5, incremental gain is <4%.
-    _P2RANK_CROSSVAL_TOPK = 5
+    # Limit P2Rank candidates to top 10 for cross-validation.
+    # P2Rank paper (Krivák & Hoksza 2018): top-5 ~88%, top-10 ~92%.
+    # With 5Å tight threshold, casting a wider net (top-10) ensures
+    # true pockets are not prematurely discarded before fpocket
+    # cross-validation. Final output is capped at max_pockets (5).
+    _P2RANK_CROSSVAL_TOPK = 10
     p2rank_shortlist = p2rank_pockets[:_P2RANK_CROSSVAL_TOPK]
     logger.info(
         f"Cross-validating top {len(p2rank_shortlist)} P2Rank pocket(s) "

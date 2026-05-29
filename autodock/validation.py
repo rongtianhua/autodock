@@ -678,7 +678,7 @@ def run_redocking_validation(
         center = pockets[0]["center"]
         box_size = pockets[0]["box_size"]
         pocket_source = pockets[0].get("method", "fpocket+p2rank")
-        logger.info(f"Blind pocket: center={center}, box={box_size}, " f"source={pocket_source}")
+        logger.info(f"Blind pocket: center={center}, box={box_size}, source={pocket_source}")
     else:
         # Self-docking: centre box on crystal ligand (default)
         pockets = find_top_pockets(
@@ -788,8 +788,7 @@ def run_redocking_validation(
         )
         if best_rmsd is not None:
             logger.info(
-                f"Redocking best-achievable RMSD: {best_rmsd:.2f} Å "
-                f"(pose #{best_rmsd_pose_idx})"
+                f"Redocking best-achievable RMSD: {best_rmsd:.2f} Å (pose #{best_rmsd_pose_idx})"
             )
 
     rmsd_str = f"{rmsd:.2f} Å" if rmsd is not None else "N/A"

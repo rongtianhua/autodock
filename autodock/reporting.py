@@ -284,8 +284,7 @@ def generate_pdf_report(
         story.append(Spacer(1, 0.5 * cm))
         story.append(
             Paragraph(
-                f"<i>Runtime: {result.runtime_seconds:.1f} s | "
-                f"Timestamp: {result.timestamp}</i>",
+                f"<i>Runtime: {result.runtime_seconds:.1f} s | Timestamp: {result.timestamp}</i>",
                 styles["Normal"],
             )
         )
