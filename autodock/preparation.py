@@ -2530,8 +2530,18 @@ def find_top_pockets(
         for fp in fpocket_pockets:
             fpocket_centers.append((np.array(fp["center"]), fp))
 
+    # Limit P2Rank candidates to top 5 for cross-validation.
+    # P2Rank paper (Krivák & Hoksza 2018): top-5 covers ~88% of true
+    # binding sites (DCC=4Å). Beyond top-5, incremental gain is <4%.
+    _P2RANK_CROSSVAL_TOPK = 5
+    p2rank_shortlist = p2rank_pockets[:_P2RANK_CROSSVAL_TOPK]
+    logger.info(
+        f"Cross-validating top {len(p2rank_shortlist)} P2Rank pocket(s) "
+        f"(from {len(p2rank_pockets)} total, prob ≥ {_P2RANK_PROB_THRESHOLD})"
+    )
+
     candidates: list[dict[str, Any]] = []
-    for p2p in p2rank_pockets:
+    for p2p in p2rank_shortlist:
         p2_center = np.array(p2p["center"])
         prob = p2p.get("score")
         if prob is not None and prob < _P2RANK_PROB_THRESHOLD:

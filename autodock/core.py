@@ -785,7 +785,13 @@ _P2RANK_PROB_THRESHOLD = 0.5
 _DRUGGABILITY_THRESHOLD = 0.3
 
 # Ensemble consensus distance threshold (Å)
-_POCKET_CONSENSUS_DISTANCE = 8.0
+# P2Rank eval uses 4Å DCC (center-to-ligand, Krivák & Hoksza 2018).
+# For center-to-center matching between two independent methods,
+# 6Å accounts for ~2-3Å prediction error per method with margin.
+# The 2024 comparative evaluation (J. Cheminf.) finds 4Å DCC too
+# conservative and recommends 10-12Å DCC; center-to-center at 6Å
+# is equivalent in stringency.
+_POCKET_CONSENSUS_DISTANCE = 6.0
 # Druggability classification thresholds (adapted from Schmidtke & Barril 2010)
 _DRUGGABILITY_HIGH = 0.7
 _DRUGGABILITY_MEDIUM = 0.3
