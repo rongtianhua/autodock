@@ -2360,9 +2360,9 @@ def _run_dogsite3_predict(
                             "center": center,
                             "druggability": drugg,
                             "volume": volume,
-                            "surface_area": float(parts[surf_idx])
-                            if surf_idx < len(parts)
-                            else None,
+                            "surface_area": (
+                                float(parts[surf_idx]) if surf_idx < len(parts) else None
+                            ),
                             "pocket_source": "dogsite3",
                             "box_size": _compute_box_size(
                                 (volume ** (1 / 3),) * 3,
