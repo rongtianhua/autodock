@@ -1501,6 +1501,9 @@ def _parse_fpocket_info(info_path: str) -> list[dict[str, Any]]:
                 dims = tuple((ca.max(axis=0) - ca.min(axis=0)).tolist())
 
         if center:
+            # Compute shape descriptors from vertex PQR (available now,
+            # before the temp directory is cleaned up)
+            shape = _compute_pocket_shape_descriptors(pqr_path)
             pockets.append(
                 {
                     "num": pocket_num,
@@ -1512,6 +1515,8 @@ def _parse_fpocket_info(info_path: str) -> list[dict[str, Any]]:
                     "n_polar": n_polar,
                     "center": center,
                     "dims": dims if dims else (20.0, 20.0, 20.0),
+                    "circularity": shape.get("circularity"),
+                    "aspect_ratio": shape.get("aspect_ratio"),
                 }
             )
     return pockets
@@ -2395,7 +2400,7 @@ def find_top_pockets(
       1. **P2Rank** — ML-based random forest classifier as primary screen
       2. **fpocket** — geometric cavity detection (α-sphere) for cross-validation
       3. **Cross-validation** — spatial overlap check: each P2Rank candidate
-         is verified against fpocket pockets (threshold: 8 Å center distance)
+         is verified against fpocket pockets (threshold: 5 Å center distance)
       4. **Druggability re-rank** — fpocket Drug Score re-orders verified pockets
       5. **Enhanced analysis** — per-pocket: residue IDs, druggability class,
          AlphaFold pLDDT compatibility, B-factor flexibility, pocket type
@@ -2488,8 +2493,8 @@ def find_top_pockets(
     _prepare_pdb_for_fpocket(receptor_pdb, prep_pdb)
     prep_pdb_abs = os.path.abspath(prep_pdb)
     prep_dir = os.path.dirname(prep_pdb_abs) or "."
-    base = os.path.splitext(os.path.basename(prep_pdb))[0]
-    fpocket_out_dir = os.path.join(prep_dir, f"{base}_out")
+    # fpocket is now delegated to _run_fpocket_detect() which handles
+    # its own temp files. The prep_pdb here is used only by P2Rank.
 
     p2rank_available = find_p2rank() is not None
     fpocket_available = find_conda_tool("fpocket") is not None
@@ -2697,9 +2702,7 @@ def find_top_pockets(
         )
 
     # Cleanup temp files
-    for d in (fpocket_out_dir,):
-        if os.path.exists(d):
-            shutil.rmtree(d, ignore_errors=True)
+    # _run_fpocket_detect() handles its own cleanup internally.
     for f in (prep_pdb,):
         if os.path.exists(f):
             os.unlink(f)
