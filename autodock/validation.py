@@ -669,7 +669,7 @@ def run_redocking_validation(
     if pocket_method == "blind":
         # Cross-docking: blind pocket detection on apo receptor (no crystal hint)
         logger.info("Cross-docking mode: blind pocket detection (fpocket + P2Rank)")
-        pockets = find_top_pockets(apo_pdb, max_pockets=3, use_p2rank=True)
+        pockets = find_top_pockets(apo_pdb, max_pockets=3)
         if not pockets:
             raise ValidationError(
                 "Blind pocket detection failed — no pockets found on apo receptor"
@@ -681,9 +681,8 @@ def run_redocking_validation(
         logger.info(f"Blind pocket: center={center}, box={box_size}, source={pocket_source}")
     else:
         # Self-docking: centre box on crystal ligand (default)
-        pockets = find_top_pockets(
-            apo_pdb, ligand_pdb=crystal_ligand_pdb, max_pockets=1, use_p2rank=False
-        )
+        # find_top_pockets auto-detects ligand_pdb → gold standard path
+        pockets = find_top_pockets(apo_pdb, ligand_pdb=crystal_ligand_pdb, max_pockets=1)
 
         # Fallback: compute bounding box directly from crystal ligand PDB
         if not pockets:

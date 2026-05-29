@@ -679,8 +679,8 @@ def cmd_virtual_screen(args: argparse.Namespace) -> int:
     receptor_pdbqt = os.path.join(outdir, f"{receptor_name}.pdbqt")
     prepare_receptor(receptor_pdb, receptor_pdbqt)
 
-    # Detect pocket
-    pockets = find_top_pockets(receptor_pdb, max_pockets=3, use_p2rank=False)
+    # Detect pocket (P2Rank primary, fpocket validation)
+    pockets = find_top_pockets(receptor_pdb, max_pockets=3)
     center = pockets[0]["center"]
     box_size = pockets[0]["box_size"]
 
