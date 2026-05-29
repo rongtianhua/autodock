@@ -26,4 +26,4 @@ Single-context layout — one `CONTEXT.md` + `docs/adr/` at repo root. See `docs
 - `.gitignore` at root excludes `local_knowledge/` entirely
 - **Do NOT** `git add -f local_knowledge/` or push it to GitHub
 - Content stays local: session notes, gotchas, agent guidance
-- The nested `.git` was removed during 2026-05-29 session; `.gitignore` exclusion is now the sole protection mechanism
+- Nested `.git` was accidentally deleted during 2026-05-29; re-initialized same day. Both `.gitignore` + nested `.git` now protect it.
