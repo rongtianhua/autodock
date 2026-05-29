@@ -2514,7 +2514,7 @@ def find_top_pockets(
         # ── Resolve detection method ──────────────────────────────────────
         effective_method = method
         if effective_method == "auto":
-            # P2Rank ML-first, fpocket as backup
+            # P2Rank ML-first, fpocket as geometric cross-validation
             effective_method = "p2rank" if p2rank_available else "fpocket"
 
         if effective_method == "dogsite3":
@@ -2526,17 +2526,29 @@ def find_top_pockets(
                 logger.warning("DoGSite3 failed — falling back to P2Rank/fpocket")
                 effective_method = "p2rank" if p2rank_available else "fpocket"
 
-        # ── P2Rank standalone (primary ML method) ─────────────────────────
+        # ── Determine whether to run each tool ────────────────────────────
+        # `effective_method` controls the PRIMARY detection source.
+        # fpocket always runs as geometric cross-validation when
+        # (a) use_fpocket=True, and (b) we're not in dogsite3-only mode.
+        run_p2rank = effective_method in ("p2rank",) and use_p2rank and p2rank_available
+        run_fpocket = (
+            use_fpocket
+            and find_conda_tool("fpocket") is not None
+            # fpocket always runs in auto mode (cross-validation).
+            # Explicit --method fpocket also triggers it.
+            and effective_method in ("fpocket", "auto")
+        )
+
         p2rank_pockets_raw: list[dict[str, Any]] | None = None
         fpocket_pockets_raw: list[dict[str, Any]] | None = None
         p2rank_probs_fpocket: dict[int, float] | None = None
         p2rank_csv_path: str | None = None
 
-        if effective_method in ("p2rank", "auto") and use_p2rank and p2rank_available:
+        # ── P2Rank standalone (primary ML method) ─────────────────────────
+        if run_p2rank:
             p2rank_pockets_raw = _run_p2rank_predict(prep_pdb_abs, prep_dir)
             if p2rank_pockets_raw:
                 logger.info(f"P2Rank primary: {len(p2rank_pockets_raw)} pocket(s) detected")
-                # Locate predictions CSV for residue parsing
                 _base = os.path.splitext(os.path.basename(prep_pdb))[0]
                 _csv_candidate = os.path.join(
                     prep_dir, "p2rank_predict", f"{_base}.pdb_predictions.csv"
@@ -2545,7 +2557,7 @@ def find_top_pockets(
                     p2rank_csv_path = _csv_candidate
 
         # ── fpocket (geometric detection + P2Rank rescore) ────────────────
-        if effective_method in ("fpocket", "auto") and use_fpocket:
+        if run_fpocket:
             fpocket_pockets_raw = _run_fpocket_detect(
                 receptor_pdb,
                 min_alpha=fpocket_min_alpha,
