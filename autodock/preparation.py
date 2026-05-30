@@ -1490,9 +1490,12 @@ def prepare_ligand_from_file(
             # Fallback: try Open Babel MOL2 → PDBQT directly
             logger.warning(f"RDKit could not parse MOL2: {path} — trying Open Babel")
             success = obabel_convert(
-                str(path), str(output_pdbqt),
-                in_format="mol2", out_format="pdbqt",
-                options=["-p", "7.4"], timeout=120,
+                str(path),
+                str(output_pdbqt),
+                in_format="mol2",
+                out_format="pdbqt",
+                options=["-p", "7.4"],
+                timeout=120,
             )
             if success:
                 return str(output_pdbqt)
@@ -2205,7 +2208,7 @@ def _run_p2rank_predict(prep_pdb: str, out_dir: str) -> list[dict[str, Any]] | N
                         "center": center,
                         "radius": radius,
                         "score": prob,
-                        "druggability": None,
+                        "druggability": prob,
                         "volume": None,
                         "depth": None,
                         "openings": None,
@@ -2420,7 +2423,15 @@ def _validate_alphafold_pocket(
         result["min_plddt_in_pocket"] = round(float(np.min(pocket_plddts)), 1)
     if overlapping:
         result["af_suitable"] = False
-        result["overlapping_low_conf_regions"] = overlapping
+        # Deduplicate overlapping regions (same region may be hit by multiple Cα atoms)
+        unique_overlapping = []
+        seen = set()
+        for region in overlapping:
+            key = (region.get("chain"), region.get("start"), region.get("end"))
+            if key not in seen:
+                seen.add(key)
+                unique_overlapping.append(region)
+        result["overlapping_low_conf_regions"] = unique_overlapping
     else:
         result["overlapping_low_conf_regions"] = []
 
@@ -2613,51 +2624,6 @@ def _pocket_bfactor_flexibility(
     return result
 
 
-def _compute_p2rank_druggability(
-    predictors_csv: str,
-) -> dict[int, float | None]:
-    """Parse P2Rank druggability scores from residue-level CSV (*_residues.csv).
-
-    P2Rank's residue-level output includes a ``druggability_score`` column.
-    Returns {pocket_num: druggability_score} or empty dict if unavailable.
-
-    Reference:
-        Krivák & Hoksza (2018) JCIM — P2Rank druggability scoring.
-    """
-    result: dict[int, float | None] = {}
-    if not os.path.exists(predictors_csv):
-        return result
-
-    # Try residues CSV first
-    residues_csv = predictors_csv.replace("_predictions.csv", "_residues.csv")
-    if not os.path.exists(residues_csv):
-        return result
-
-    with open(residues_csv) as fh:
-        header = [h.strip() for h in fh.readline().strip().split(",")]
-        try:
-            pocket_idx = header.index("pocket")
-            drugg_idx = header.index("druggability_score")
-        except ValueError:
-            return result
-
-        pocket_scores: dict[int, list[float]] = {}
-        for line in fh:
-            parts = [p.strip() for p in line.strip().split(",")]
-            if len(parts) <= max(pocket_idx, drugg_idx):
-                continue
-            try:
-                pnum = int(parts[pocket_idx])
-                score = float(parts[drugg_idx])
-            except (ValueError, IndexError):
-                continue
-            pocket_scores.setdefault(pnum, []).append(score)
-
-    for pnum, scores in pocket_scores.items():
-        result[pnum] = round(float(np.mean(scores)), 4)
-    return result
-
-
 def _run_fpocket_detect(
     receptor_pdb: str,
     min_alpha: float = 3.0,
@@ -2711,85 +2677,6 @@ def _run_fpocket_detect(
         with contextlib.suppress(OSError):
             if os.path.exists(prep_pdb):
                 os.remove(prep_pdb)
-
-
-def _ensemble_consensus(
-    p2rank_pockets: list[dict[str, Any]] | None,
-    fpocket_pockets: list[dict[str, Any]] | None,
-    distance_threshold: float = _POCKET_CONSENSUS_DISTANCE,
-) -> list[dict[str, Any]]:
-    """Merge P2Rank (ML) and fpocket (geometric) pocket sets into consensus.
-
-    For each P2Rank pocket, find the nearest fpocket pocket within
-    ``distance_threshold`` Å.  Pockets with a match are marked as
-    ``consensus=True``; unmatched P2Rank pockets retain their ML ranking;
-    unmatched fpocket pockets are appended with lower priority.
-
-    Reference:
-        Ensemble docking best practice — Houston & Walkinshaw (2013)
-        J. Chem. Inf. Model. 53:384-390.
-
-    Returns:
-        List of merged pocket dicts, sorted by consensus confidence then
-        P2Rank probability.
-    """
-    if not p2rank_pockets and not fpocket_pockets:
-        return []
-    if not p2rank_pockets:
-        for p in fpocket_pockets:
-            p["consensus"] = False
-            p["p2rank_prob"] = None
-        return fpocket_pockets
-    if not fpocket_pockets:
-        for p in p2rank_pockets:
-            p["consensus"] = False
-        return p2rank_pockets
-
-    merged = []
-    used_fpocket_indices: set[int] = set()
-
-    for p2p in p2rank_pockets:
-        p2_center = np.array(p2p["center"])
-        best_dist = float("inf")
-        best_fp_idx = None
-
-        for fi, fp in enumerate(fpocket_pockets):
-            if fi in used_fpocket_indices:
-                continue
-            fp_center = np.array(fp["center"])
-            dist = float(np.linalg.norm(p2_center - fp_center))
-            if dist < best_dist:
-                best_dist = dist
-                best_fp_idx = fi
-
-        is_consensus = best_fp_idx is not None and best_dist <= distance_threshold
-        if is_consensus:
-            used_fpocket_indices.add(best_fp_idx)
-
-        p2p["consensus"] = is_consensus
-        p2p["consensus_distance"] = round(best_dist, 2) if best_fp_idx is not None else None
-        p2p["fpocket_match"] = best_fp_idx
-        merged.append(p2p)
-
-    # Append unmatched fpocket pockets
-    for fi, fp in enumerate(fpocket_pockets):
-        if fi not in used_fpocket_indices:
-            fp["consensus"] = False
-            fp["consensus_distance"] = None
-            fp["p2rank_prob"] = None
-            fp["fpocket_match"] = None
-            fp["pocket_source"] = "fpocket_only"
-            merged.append(fp)
-
-    # Sort: consensus first (by P2Rank prob), then non-consensus (by prob)
-    merged.sort(
-        key=lambda p: (
-            not p.get("consensus", False),
-            -(p.get("p2rank_prob") or 0.0),
-        )
-    )
-
-    return merged
 
 
 def _run_dogsite3_predict(
@@ -3043,218 +2930,223 @@ def find_top_pockets(
     # fpocket is now delegated to _run_fpocket_detect() which handles
     # its own temp files. The prep_pdb here is used only by P2Rank.
 
-    p2rank_available = find_p2rank() is not None
-    fpocket_available = find_conda_tool("fpocket") is not None
+    try:
+        p2rank_available = find_p2rank() is not None
+        fpocket_available = find_conda_tool("fpocket") is not None
 
-    # Step 1: P2Rank primary screen ─────────────────────────────────────────
-    p2rank_pockets: list[dict[str, Any]] | None = None
-    p2rank_csv_path: str | None = None
+        # Step 1: P2Rank primary screen ─────────────────────────────────────────
+        p2rank_pockets: list[dict[str, Any]] | None = None
+        p2rank_csv_path: str | None = None
 
-    if p2rank_available:
-        p2rank_pockets = _run_p2rank_predict(prep_pdb_abs, prep_dir)
-        if p2rank_pockets:
-            logger.info(f"P2Rank primary screen: {len(p2rank_pockets)} pocket(s) detected")
-            _base = os.path.splitext(os.path.basename(prep_pdb))[0]
-            _csv = os.path.join(prep_dir, "p2rank_predict", f"{_base}.pdb_predictions.csv")
-            if os.path.exists(_csv):
-                p2rank_csv_path = _csv
+        if p2rank_available:
+            p2rank_pockets = _run_p2rank_predict(prep_pdb_abs, prep_dir)
+            if p2rank_pockets:
+                logger.info(f"P2Rank primary screen: {len(p2rank_pockets)} pocket(s) detected")
+                _base = os.path.splitext(os.path.basename(prep_pdb))[0]
+                _csv = os.path.join(prep_dir, "p2rank_predict", f"{_base}.pdb_predictions.csv")
+                if os.path.exists(_csv):
+                    p2rank_csv_path = _csv
 
-    if not p2rank_pockets:
-        raise PreparationError(
-            f"P2Rank found no pockets in {receptor_pdb}. "
-            "Cannot proceed — P2Rank is the primary detection method."
-        )
-
-    # Step 2: fpocket geometric cross-validation ────────────────────────────
-    fpocket_pockets: list[dict[str, Any]] | None = None
-    if fpocket_available:
-        fpocket_pockets = _run_fpocket_detect(receptor_pdb)
-        if fpocket_pockets:
-            logger.info(f"fpocket cross-validation: {len(fpocket_pockets)} pocket(s) detected")
-        else:
-            logger.warning("fpocket found no pockets — proceeding with P2Rank only")
-
-    # Step 3: Cross-validation — spatial overlap check ──────────────────────
-    # For each P2Rank candidate, find the nearest fpocket pocket within 8 Å.
-    # Mark fpocket_verified=True/False and carry over the fpocket druggability.
-    fpocket_centers: list[tuple[np.ndarray, dict]] = []
-    if fpocket_pockets:
-        for fp in fpocket_pockets:
-            fpocket_centers.append((np.array(fp["center"]), fp))
-
-    # Limit P2Rank candidates to top 10 for cross-validation.
-    # P2Rank paper (Krivák & Hoksza 2018): top-5 ~88%, top-10 ~92%.
-    # With 5Å tight threshold, casting a wider net (top-10) ensures
-    # true pockets are not prematurely discarded before fpocket
-    # cross-validation. Final output is capped at max_pockets (5).
-    _P2RANK_CROSSVAL_TOPK = 10
-    p2rank_shortlist = p2rank_pockets[:_P2RANK_CROSSVAL_TOPK]
-    logger.info(
-        f"Cross-validating top {len(p2rank_shortlist)} P2Rank pocket(s) "
-        f"(from {len(p2rank_pockets)} total, prob ≥ {_P2RANK_PROB_THRESHOLD})"
-    )
-
-    candidates: list[dict[str, Any]] = []
-    for p2p in p2rank_shortlist:
-        p2_center = np.array(p2p["center"])
-        prob = p2p.get("score")
-        if prob is not None and prob < _P2RANK_PROB_THRESHOLD:
-            logger.info(
-                f"Skipping pocket #{p2p.get('num', 0)}: "
-                f"P2Rank prob={prob:.3f} < {_P2RANK_PROB_THRESHOLD}"
+        if not p2rank_pockets:
+            raise PreparationError(
+                f"P2Rank found no pockets in {receptor_pdb}. "
+                "Cannot proceed — P2Rank is the primary detection method."
             )
-            continue
 
-        # Find nearest fpocket pocket
-        best_dist = float("inf")
-        best_fp: dict | None = None
-        for fp_c, fp_dict in fpocket_centers:
-            d = float(np.linalg.norm(p2_center - fp_c))
-            if d < best_dist:
-                best_dist = d
-                best_fp = fp_dict
+        # Step 2: fpocket geometric cross-validation ────────────────────────────
+        fpocket_pockets: list[dict[str, Any]] | None = None
+        if fpocket_available:
+            fpocket_pockets = _run_fpocket_detect(receptor_pdb)
+            if fpocket_pockets:
+                logger.info(f"fpocket cross-validation: {len(fpocket_pockets)} pocket(s) detected")
+            else:
+                logger.warning("fpocket found no pockets — proceeding with P2Rank only")
 
-        verified = best_fp is not None and best_dist <= _POCKET_CONSENSUS_DISTANCE
+        # Step 3: Cross-validation — spatial overlap check ──────────────────────
+        # For each P2Rank candidate, find the nearest fpocket pocket within 8 Å.
+        # Mark fpocket_verified=True/False and carry over the fpocket druggability.
+        fpocket_centers: list[tuple[np.ndarray, dict]] = []
+        if fpocket_pockets:
+            for fp in fpocket_pockets:
+                fpocket_centers.append((np.array(fp["center"]), fp))
 
-        # Re-rank metric: fpocket druggability if verified, else P2Rank prob
-        druggability = best_fp.get("druggability") if best_fp else p2p.get("druggability")
-        # Use the fpocket druggability for verified pockets
-        rank_score = druggability if (druggability is not None and verified) else prob
-
-        candidates.append(
-            {
-                "p2rank_pocket": p2p,
-                "fpocket_pocket": best_fp,
-                "verified": verified,
-                "match_distance": round(best_dist, 2) if best_fp else None,
-                "druggability": druggability,
-                "rank_score": rank_score if rank_score is not None else 0.0,
-                "prob": prob,
-            }
-        )
-
-    if not candidates:
-        raise PreparationError(
-            f"All P2Rank pockets filtered out (prob < {_P2RANK_PROB_THRESHOLD})."
-        )
-
-    # Step 4: Re-rank by fpocket druggability (verified pockets → higher rank) ──
-    candidates.sort(
-        key=lambda c: (
-            not c["verified"],  # verified first
-            -(c["druggability"] or 0.0),  # then by druggability desc
-            -(c["prob"] or 0.0),  # then by P2Rank prob desc
-        ),
-    )
-
-    # ── Parse P2Rank residue IDs ───────────────────────────────────────────
-    pocket_residues: dict[int, list[dict[str, Any]]] = {}
-    if p2rank_csv_path:
-        pocket_residues = _parse_p2rank_residues(p2rank_csv_path)
-
-    # ── AlphaFold quality assessment ────────────────────────────────────────
-    af_data = plddt_data
-    if af_data is None and os.path.exists(receptor_pdb):
-        try:
-            from autodock.alphafold_tools import assess_alphafold_quality
-
-            af_data = assess_alphafold_quality(receptor_pdb)
-        except Exception:
-            pass
-
-    # Step 5: Build enriched result list ─────────────────────────────────────
-    # Output priority:
-    #   verified (P2Rank+fpocket match) → use fpocket pocket (α-sphere centroid,
-    #     druggability_score computed on own definition, semantically consistent)
-    #   unverified → use P2Rank pocket (fallback, only data available)
-    result: list[dict[str, Any]] = []
-    for c in candidates[:max_pockets]:
-        verified = c["verified"]
-        # Data source: fpocket for verified, P2Rank for unverified
-        src = c["fpocket_pocket"] if verified else c["p2rank_pocket"]
-
-        center = src["center"]
-        box_size = _compute_box_size(src.get("dims", (20, 20, 20)), padding)
-        volume = src.get("volume")
-        depth_val = src.get("depth")
-        pnum = src.get("num", 0)
-
-        drugg_class = _druggability_classification(c["druggability"], volume, depth_val)
-
-        # Shape descriptors
-        shape_desc: dict[str, float | None] = {
-            "circularity": src.get("circularity"),
-            "aspect_ratio": src.get("aspect_ratio"),
-        }
-
-        # Pocket residues (P2Rank has richer residue data via CSV parsing)
-        residues = c["p2rank_pocket"].get("residue_ids") or pocket_residues.get(
-            c["p2rank_pocket"].get("num", 0), []
-        )
-
-        # B-factor flexibility
-        pocket_radius = src.get("radius") or 10.0
-        flex_info = _pocket_bfactor_flexibility(center, pocket_radius, receptor_pdb)
-
-        # AlphaFold compatibility
-        af_info: dict[str, Any] = {
-            "af_suitable": None,
-            "mean_plddt_in_pocket": None,
-            "min_plddt_in_pocket": None,
-        }
-        if af_data and af_data.get("mean_plddt") is not None:
-            af_info = _validate_alphafold_pocket(center, pocket_radius, receptor_pdb, af_data)
-
-        # Allosteric / orthosteric
-        pocket_type_info = _classify_pocket_type(center, known_active_site, volume)
-
-        entry = {
-            "center": center,
-            "box_size": box_size,
-            "druggability": c["druggability"],
-            "druggability_level": drugg_class["level"],
-            "druggability_description": drugg_class["description"],
-            "p2rank_prob": c["prob"],
-            "pocket_num": pnum,
-            "pocket_source": "fpocket" if verified else "p2rank",
-            "fpocket_verified": verified,
-            "fpocket_match_distance": c["match_distance"],
-            "volume": volume,
-            "depth": depth_val,
-            "openings": src.get("openings"),
-            "n_apolar": src.get("n_apolar"),
-            "n_polar": src.get("n_polar"),
-            "residue_ids": residues,
-            "shape_circularity": shape_desc.get("circularity"),
-            "shape_aspect_ratio": shape_desc.get("aspect_ratio"),
-            "flexibility": flex_info["flexibility"],
-            "induced_fit_likely": flex_info["induced_fit_likely"],
-            "af_suitable": af_info.get("af_suitable"),
-            "af_mean_plddt": af_info.get("mean_plddt_in_pocket"),
-            "af_min_plddt": af_info.get("min_plddt_in_pocket"),
-            "pocket_type": pocket_type_info["type"],
-            "distance_to_active": pocket_type_info["distance_to_active"],
-        }
-        result.append(entry)
-
-    # Log summary
-    for i, pk in enumerate(result):
-        v_str = " ✓fpocket" if pk["fpocket_verified"] else " fpocket-unverified"
-        src_label = pk["pocket_source"]
-        p_str = f"P2Rank={pk['p2rank_prob']:.3f}" if pk["p2rank_prob"] is not None else "P2Rank=N/A"
+        # Limit P2Rank candidates to top 10 for cross-validation.
+        # P2Rank paper (Krivák & Hoksza 2018): top-5 ~88%, top-10 ~92%.
+        # With 5Å tight threshold, casting a wider net (top-10) ensures
+        # true pockets are not prematurely discarded before fpocket
+        # cross-validation. Final output is capped at max_pockets (5).
+        _P2RANK_CROSSVAL_TOPK = 10
+        p2rank_shortlist = p2rank_pockets[:_P2RANK_CROSSVAL_TOPK]
         logger.info(
-            f"Pocket {i + 1} (#{pk['pocket_num']}): [{src_label}]{v_str}, "
-            f"center={pk['center']}, box={pk['box_size']} ({p_str}, "
-            f"druggability={pk['druggability_level']})"
+            f"Cross-validating top {len(p2rank_shortlist)} P2Rank pocket(s) "
+            f"(from {len(p2rank_pockets)} total, prob ≥ {_P2RANK_PROB_THRESHOLD})"
         )
 
-    # Cleanup temp files
-    # _run_fpocket_detect() handles its own cleanup internally.
-    for f in (prep_pdb,):
-        if os.path.exists(f):
-            os.unlink(f)
-    for d in (os.path.join(prep_dir, "p2rank_predict"), os.path.join(prep_dir, "p2rank_out")):
-        if os.path.exists(d):
-            shutil.rmtree(d, ignore_errors=True)
+        candidates: list[dict[str, Any]] = []
+        for p2p in p2rank_shortlist:
+            p2_center = np.array(p2p["center"])
+            prob = p2p.get("score")
+            if prob is not None and prob < _P2RANK_PROB_THRESHOLD:
+                logger.info(
+                    f"Skipping pocket #{p2p.get('num', 0)}: "
+                    f"P2Rank prob={prob:.3f} < {_P2RANK_PROB_THRESHOLD}"
+                )
+                continue
 
-    return result
+            # Find nearest fpocket pocket
+            best_dist = float("inf")
+            best_fp: dict | None = None
+            for fp_c, fp_dict in fpocket_centers:
+                d = float(np.linalg.norm(p2_center - fp_c))
+                if d < best_dist:
+                    best_dist = d
+                    best_fp = fp_dict
+
+            verified = best_fp is not None and best_dist <= _POCKET_CONSENSUS_DISTANCE
+
+            # Re-rank metric: fpocket druggability if verified, else P2Rank prob
+            druggability = best_fp.get("druggability") if best_fp else p2p.get("druggability")
+            # Use the fpocket druggability for verified pockets
+            rank_score = druggability if (druggability is not None and verified) else prob
+
+            candidates.append(
+                {
+                    "p2rank_pocket": p2p,
+                    "fpocket_pocket": best_fp,
+                    "verified": verified,
+                    "match_distance": round(best_dist, 2) if best_fp else None,
+                    "druggability": druggability,
+                    "rank_score": rank_score if rank_score is not None else 0.0,
+                    "prob": prob,
+                }
+            )
+
+        if not candidates:
+            raise PreparationError(
+                f"All P2Rank pockets filtered out (prob < {_P2RANK_PROB_THRESHOLD})."
+            )
+
+        # Step 4: Re-rank by fpocket druggability (verified pockets → higher rank) ──
+        candidates.sort(
+            key=lambda c: (
+                not c["verified"],  # verified first
+                -(c["druggability"] or 0.0),  # then by druggability desc
+                -(c["prob"] or 0.0),  # then by P2Rank prob desc
+            ),
+        )
+
+        # ── Parse P2Rank residue IDs ───────────────────────────────────────────
+        pocket_residues: dict[int, list[dict[str, Any]]] = {}
+        if p2rank_csv_path:
+            pocket_residues = _parse_p2rank_residues(p2rank_csv_path)
+
+        # ── AlphaFold quality assessment ────────────────────────────────────────
+        af_data = plddt_data
+        if af_data is None and os.path.exists(receptor_pdb):
+            try:
+                from autodock.alphafold_tools import assess_alphafold_quality
+
+                af_data = assess_alphafold_quality(receptor_pdb)
+            except Exception:
+                pass
+
+        # Step 5: Build enriched result list ─────────────────────────────────────
+        # Output priority:
+        #   verified (P2Rank+fpocket match) → use fpocket pocket (α-sphere centroid,
+        #     druggability_score computed on own definition, semantically consistent)
+        #   unverified → use P2Rank pocket (fallback, only data available)
+        result: list[dict[str, Any]] = []
+        for c in candidates[:max_pockets]:
+            verified = c["verified"]
+            # Data source: fpocket for verified, P2Rank for unverified
+            src = c["fpocket_pocket"] if verified else c["p2rank_pocket"]
+
+            center = src["center"]
+            box_size = _compute_box_size(src.get("dims", (20, 20, 20)), padding)
+            volume = src.get("volume")
+            depth_val = src.get("depth")
+            pnum = src.get("num", 0)
+
+            drugg_class = _druggability_classification(c["druggability"], volume, depth_val)
+
+            # Shape descriptors
+            shape_desc: dict[str, float | None] = {
+                "circularity": src.get("circularity"),
+                "aspect_ratio": src.get("aspect_ratio"),
+            }
+
+            # Pocket residues (P2Rank has richer residue data via CSV parsing)
+            residues = c["p2rank_pocket"].get("residue_ids") or pocket_residues.get(
+                c["p2rank_pocket"].get("num", 0), []
+            )
+
+            # B-factor flexibility
+            pocket_radius = src.get("radius") or 10.0
+            flex_info = _pocket_bfactor_flexibility(center, pocket_radius, receptor_pdb)
+
+            # AlphaFold compatibility
+            af_info: dict[str, Any] = {
+                "af_suitable": None,
+                "mean_plddt_in_pocket": None,
+                "min_plddt_in_pocket": None,
+            }
+            if af_data and af_data.get("mean_plddt") is not None:
+                af_info = _validate_alphafold_pocket(center, pocket_radius, receptor_pdb, af_data)
+
+            # Allosteric / orthosteric
+            pocket_type_info = _classify_pocket_type(center, known_active_site, volume)
+
+            entry = {
+                "center": center,
+                "box_size": box_size,
+                "druggability": c["druggability"],
+                "druggability_level": drugg_class["level"],
+                "druggability_description": drugg_class["description"],
+                "p2rank_prob": c["prob"],
+                "pocket_num": pnum,
+                "pocket_source": "fpocket" if verified else "p2rank",
+                "fpocket_verified": verified,
+                "fpocket_match_distance": c["match_distance"],
+                "volume": volume,
+                "depth": depth_val,
+                "openings": src.get("openings"),
+                "n_apolar": src.get("n_apolar"),
+                "n_polar": src.get("n_polar"),
+                "residue_ids": residues,
+                "shape_circularity": shape_desc.get("circularity"),
+                "shape_aspect_ratio": shape_desc.get("aspect_ratio"),
+                "flexibility": flex_info["flexibility"],
+                "induced_fit_likely": flex_info["induced_fit_likely"],
+                "af_suitable": af_info.get("af_suitable"),
+                "af_mean_plddt": af_info.get("mean_plddt_in_pocket"),
+                "af_min_plddt": af_info.get("min_plddt_in_pocket"),
+                "pocket_type": pocket_type_info["type"],
+                "distance_to_active": pocket_type_info["distance_to_active"],
+            }
+            result.append(entry)
+
+        # Log summary
+        for i, pk in enumerate(result):
+            v_str = " ✓fpocket" if pk["fpocket_verified"] else " fpocket-unverified"
+            src_label = pk["pocket_source"]
+            p_str = (
+                f"P2Rank={pk['p2rank_prob']:.3f}" if pk["p2rank_prob"] is not None else "P2Rank=N/A"
+            )
+            logger.info(
+                f"Pocket {i + 1} (#{pk['pocket_num']}): [{src_label}]{v_str}, "
+                f"center={pk['center']}, box={pk['box_size']} ({p_str}, "
+                f"druggability={pk['druggability_level']})"
+            )
+
+        return result
+    finally:
+        # Cleanup temp files regardless of success or failure.
+        # _run_fpocket_detect() handles its own cleanup internally.
+        for f in (prep_pdb,):
+            with contextlib.suppress(OSError):
+                if os.path.exists(f):
+                    os.unlink(f)
+        for d in (os.path.join(prep_dir, "p2rank_predict"), os.path.join(prep_dir, "p2rank_out")):
+            with contextlib.suppress(OSError):
+                if os.path.exists(d):
+                    shutil.rmtree(d, ignore_errors=True)
