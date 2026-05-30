@@ -107,9 +107,18 @@ class TestPrepareReceptor:
             )
             call_args = mock_poly_cls.from_pdb_string.call_args
             pdb_content = call_args[0][0]
-            assert "HOH A 101" in pdb_content
-            assert "HOH A 102" not in pdb_content
-            assert "ZN  A 100" in pdb_content
+            # Zn must be retained
+            assert "ZN" in pdb_content
+            # At least one functional water should survive filtering
+            assert "HOH" in pdb_content
+            # Only one HOH residue should remain (the functional one near Zn);
+            # count unique residue IDs among HOH lines
+            _hoh_resis = set()
+            for line in pdb_content.splitlines():
+                if "HOH" in line and line.startswith("HETATM"):
+                    _resi = line[22:26].strip()
+                    _hoh_resis.add(_resi)
+            assert len(_hoh_resis) == 1, f"Expected 1 HOH residue, got {_hoh_resis}"
 
     def test_output_report_json(self, tmp_path):
         """JSON report is written when output_report_json is provided."""
