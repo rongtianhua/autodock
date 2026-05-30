@@ -112,9 +112,14 @@ def _vina_dock_worker(
             if part.strip():
                 poses.append(f"MODEL {i}\n{part}")
 
-        result_queue.put(("ok", energies, poses))
+        try:
+            result_queue.put(("ok", energies, poses))
+        except Exception as exc:
+            # Queue put can fail if payloads are not serialisable (spawn context)
+            result_queue.put(("error", f"result_queue put failed: {exc}", []))
     except Exception as exc:
-        result_queue.put(("error", str(exc), []))
+        with contextlib.suppress(Exception):
+            result_queue.put(("error", str(exc), []))
 
 
 def _run_vina_dock(

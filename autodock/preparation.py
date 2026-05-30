@@ -2924,13 +2924,15 @@ def find_top_pockets(
 
     # ── Preparation ─────────────────────────────────────────────────────────
     prep_pdb = tempfile.mktemp(suffix="_prep.pdb")
-    _prepare_pdb_for_fpocket(receptor_pdb, prep_pdb)
-    prep_pdb_abs = os.path.abspath(prep_pdb)
-    prep_dir = os.path.dirname(prep_pdb_abs) or "."
-    # fpocket is now delegated to _run_fpocket_detect() which handles
-    # its own temp files. The prep_pdb here is used only by P2Rank.
-
+    prep_pdb_abs: str | None = None
+    prep_dir: str | None = None
     try:
+        _prepare_pdb_for_fpocket(receptor_pdb, prep_pdb)
+        prep_pdb_abs = os.path.abspath(prep_pdb)
+        prep_dir = os.path.dirname(prep_pdb_abs) or "."
+        # fpocket is now delegated to _run_fpocket_detect() which handles
+        # its own temp files. The prep_pdb here is used only by P2Rank.
+
         p2rank_available = find_p2rank() is not None
         fpocket_available = find_conda_tool("fpocket") is not None
 
@@ -3146,7 +3148,11 @@ def find_top_pockets(
             with contextlib.suppress(OSError):
                 if os.path.exists(f):
                     os.unlink(f)
-        for d in (os.path.join(prep_dir, "p2rank_predict"), os.path.join(prep_dir, "p2rank_out")):
-            with contextlib.suppress(OSError):
-                if os.path.exists(d):
-                    shutil.rmtree(d, ignore_errors=True)
+        if prep_dir:
+            for d in (
+                os.path.join(prep_dir, "p2rank_predict"),
+                os.path.join(prep_dir, "p2rank_out"),
+            ):
+                with contextlib.suppress(OSError):
+                    if os.path.exists(d):
+                        shutil.rmtree(d, ignore_errors=True)

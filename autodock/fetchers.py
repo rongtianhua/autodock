@@ -50,13 +50,19 @@ def _http_get_text(url: str, timeout: int = 30) -> str:
 
 
 def _download_url(url: str, out_path: str, timeout: int = 60) -> None:
-    """Download a URL to disk, raising on small/empty files."""
+    """Download a URL to disk, raising on small/empty or HTML files."""
     try:
         urllib.request.urlretrieve(url, out_path)
     except Exception as exc:
         raise StructureFetchError(f"Download failed: {url} -> {exc}")
     if os.path.getsize(out_path) < 50:
         raise StructureFetchError(f"Downloaded file too small (< 50 B): {out_path}")
+    # Some servers (e.g. SWISS-MODEL) return HTML error pages with HTTP 200.
+    with open(out_path, "rb") as fh:
+        header = fh.read(200)
+    if b"<!DOCTYPE" in header or b"<html" in header:
+        os.remove(out_path)
+        raise StructureFetchError(f"Download returned HTML instead of structure data: {url}")
 
 
 # ─────────────────────────────────────────────────────────────────────────────

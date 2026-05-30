@@ -219,6 +219,7 @@ class TestPrepareLigand:
         with pytest.raises(PreparationError, match="parse SMILES"):
             prep.prepare_ligand("NOT_A_SMILES!!!", str(out))
 
+    @patch("autodock.preparation._has_nan_charges")
     @patch("rdkit.Chem.MolFromSmiles")
     @patch("rdkit.Chem.AddHs")
     @patch("rdkit.Chem.AllChem.ETKDGv3")
@@ -243,8 +244,10 @@ class TestPrepareLigand:
         mock_etkdg,
         mock_addhs,
         mock_molfrom,
+        mock_has_nan,
         tmp_path,
     ):
+        mock_has_nan.return_value = False
         mock_mol = MagicMock()
         mock_mol.GetNumAtoms.return_value = 3
         mock_molfrom.return_value = mock_mol

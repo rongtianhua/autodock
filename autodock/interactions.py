@@ -6,7 +6,9 @@ PLIP (primary) and ProLIF (secondary) for comprehensive interaction profiling.
 
 from __future__ import annotations
 
+import contextlib
 import os
+import shutil
 import tempfile
 from typing import Any
 
@@ -145,70 +147,78 @@ def detect_interactions_plip(
 
     from plip.structure.preparation import PDBComplex
 
+    _own_tmp = output_dir is None
     tmp_dir = output_dir or tempfile.mkdtemp(prefix="plip_")
     os.makedirs(tmp_dir, exist_ok=True)
 
-    complex_pdb = os.path.join(tmp_dir, "complex.pdb")
-    _build_complex_pdb(receptor_pdb, ligand_pdbqt, complex_pdb)
-
     try:
-        my_mol = PDBComplex()
-        my_mol.load_pdb(complex_pdb)
-        my_mol.analyze()
-    except Exception as exc:
-        raise VisualizationError(f"PLIP analysis failed: {exc}")
+        complex_pdb = os.path.join(tmp_dir, "complex.pdb")
+        _build_complex_pdb(receptor_pdb, ligand_pdbqt, complex_pdb)
 
-    interactions: list[dict[str, Any]] = []
+        try:
+            my_mol = PDBComplex()
+            my_mol.load_pdb(complex_pdb)
+            my_mol.analyze()
+        except Exception as exc:
+            raise VisualizationError(f"PLIP analysis failed: {exc}")
 
-    for ligand in my_mol.ligands:
-        if ligand.hetid != "LIG":
-            continue
-        key = f"{ligand.hetid}:{ligand.chain}:{ligand.position}"
-        if key not in my_mol.interaction_sets:
-            continue
+        interactions: list[dict[str, Any]] = []
 
-        interaction_set = my_mol.interaction_sets[key]
+        for ligand in my_mol.ligands:
+            if ligand.hetid != "LIG":
+                continue
+            key = f"{ligand.hetid}:{ligand.chain}:{ligand.position}"
+            if key not in my_mol.interaction_sets:
+                continue
 
-        for plip_attr, sub_attr, display_type, color in INTERACTION_CATEGORIES:
-            records = getattr(interaction_set, plip_attr, [])
-            if sub_attr:
-                records = getattr(records, sub_attr, [])
-            for rec in records:
-                try:
-                    resn = getattr(rec, "restype", "UNK")
-                    resi = getattr(rec, "resnr", 0)
-                    chain = getattr(rec, "reschain", "A")
-                    atom = getattr(rec, "atype", "")
-                    distance = getattr(rec, "distance", None)
-                    if distance is None:
-                        distance = getattr(rec, "dist", None)
+            interaction_set = my_mol.interaction_sets[key]
 
-                    desc = f"{display_type}: {resn}{resi}.{chain}"
-                    if atom:
-                        desc += f" ({atom})"
-                    if distance is not None:
-                        desc += f" — {distance:.2f} Å"
+            for plip_attr, sub_attr, display_type, color in INTERACTION_CATEGORIES:
+                records = getattr(interaction_set, plip_attr, [])
+                if sub_attr:
+                    records = getattr(records, sub_attr, [])
+                for rec in records:
+                    try:
+                        resn = getattr(rec, "restype", "UNK")
+                        resi = getattr(rec, "resnr", 0)
+                        chain = getattr(rec, "reschain", "A")
+                        atom = getattr(rec, "atype", "")
+                        distance = getattr(rec, "distance", None)
+                        if distance is None:
+                            distance = getattr(rec, "dist", None)
 
-                    ligand_atoms = _extract_ligand_atoms_plip(rec, plip_attr)
-                    interactions.append(
-                        {
-                            "type": display_type,
-                            "color": color,
-                            "resn": resn,
-                            "resi": int(resi),
-                            "chain": chain,
-                            "atom": atom,
-                            "distance": round(float(distance), 2) if distance is not None else None,
-                            "description": desc,
-                            "ligand_atoms": ligand_atoms,
-                        }
-                    )
-                except Exception as exc:
-                    logger.debug(f"Skipping malformed PLIP record: {exc}")
-                    continue
+                        desc = f"{display_type}: {resn}{resi}.{chain}"
+                        if atom:
+                            desc += f" ({atom})"
+                        if distance is not None:
+                            desc += f" — {distance:.2f} Å"
 
-    logger.info(f"PLIP detected {len(interactions)} interactions")
-    return interactions
+                        ligand_atoms = _extract_ligand_atoms_plip(rec, plip_attr)
+                        interactions.append(
+                            {
+                                "type": display_type,
+                                "color": color,
+                                "resn": resn,
+                                "resi": int(resi),
+                                "chain": chain,
+                                "atom": atom,
+                                "distance": (
+                                    round(float(distance), 2) if distance is not None else None
+                                ),
+                                "description": desc,
+                                "ligand_atoms": ligand_atoms,
+                            }
+                        )
+                    except Exception as exc:
+                        logger.debug(f"Skipping malformed PLIP record: {exc}")
+                        continue
+
+        logger.info(f"PLIP detected {len(interactions)} interactions")
+        return interactions
+    finally:
+        if _own_tmp:
+            with contextlib.suppress(OSError):
+                shutil.rmtree(tmp_dir, ignore_errors=True)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
