@@ -128,6 +128,9 @@ def cmd_prepare_receptor(args: argparse.Namespace) -> int:
         output,
         remove_water=not args.keep_waters,
         remove_hetatms=args.remove_hetatms,
+        keep_waters_near_metal=args.keep_waters_near_metal,
+        detect_af_structure=args.detect_af_structure,
+        output_report_json=args.report_json,
     )
     print(f"✅ Receptor prepared: {output}")
     return 0
@@ -970,6 +973,23 @@ def build_parser() -> argparse.ArgumentParser:
     p_prep_rec.add_argument("-o", "--output", help="Output PDBQT file")
     p_prep_rec.add_argument("--keep-waters", action="store_true")
     p_prep_rec.add_argument("--remove-hetatms", action="store_true", default=True)
+    p_prep_rec.add_argument(
+        "--keep-waters-near-metal",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Retain waters coordinating metal ions (default: on)",
+    )
+    p_prep_rec.add_argument(
+        "--detect-af-structure",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Auto-detect AlphaFold structures and assess pLDDT (default: on)",
+    )
+    p_prep_rec.add_argument(
+        "--report-json",
+        metavar="PATH",
+        help="Write preparation report JSON to PATH",
+    )
     p_prep_rec.set_defaults(func=cmd_prepare_receptor)
 
     # prepare-ligand

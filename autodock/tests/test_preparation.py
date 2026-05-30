@@ -79,6 +79,62 @@ class TestPrepareReceptor:
             # Should not raise; Polymer called with filtered content
             assert mock_poly_cls.from_pdb_string.called
 
+    def test_keep_waters_near_metal(self, tmp_path):
+        """Functional waters coordinating metal ions are retained."""
+        pdb = tmp_path / "rec.pdb"
+        # Zn at origin; water1 at 2.0 Å (should retain); water2 at 5.0 Å (should remove)
+        pdb.write_text(
+            "ATOM      1  N   SER A   1      0.000   0.000   0.000\n"
+            "HETATM    2 ZN   ZN  A 100      0.000   0.000   0.000\n"
+            "HETATM    3  O   HOH A 101      2.000   0.000   0.000\n"
+            "HETATM    4  O   HOH A 102      5.000   0.000   0.000\n"
+        )
+        out = tmp_path / "rec.pdbqt"
+        with (
+            patch("meeko.ResidueChemTemplates"),
+            patch("meeko.MoleculePreparation"),
+            patch("meeko.Polymer") as mock_poly_cls,
+            patch("meeko.PDBQTWriterLegacy") as mock_writer,
+        ):
+            mock_poly_cls.from_pdb_string.return_value = MagicMock()
+            mock_writer.write_from_polymer.return_value = ("REMARK\n", None)
+            prep.prepare_receptor(
+                str(pdb), str(out),
+                remove_water=True,
+                remove_hetatms=False,
+                keep_waters_near_metal=True,
+            )
+            call_args = mock_poly_cls.from_pdb_string.call_args
+            pdb_content = call_args[0][0]
+            assert "HOH A 101" in pdb_content
+            assert "HOH A 102" not in pdb_content
+            assert "ZN  A 100" in pdb_content
+
+    def test_output_report_json(self, tmp_path):
+        """JSON report is written when output_report_json is provided."""
+        pdb = tmp_path / "rec.pdb"
+        pdb.write_text("ATOM      1  N   SER A   1      0.000   0.000   0.000\n")
+        out = tmp_path / "rec.pdbqt"
+        report = tmp_path / "report.json"
+        with (
+            patch("meeko.ResidueChemTemplates"),
+            patch("meeko.MoleculePreparation"),
+            patch("meeko.Polymer") as mock_poly_cls,
+            patch("meeko.PDBQTWriterLegacy") as mock_writer,
+        ):
+            mock_poly_cls.from_pdb_string.return_value = MagicMock()
+            mock_writer.write_from_polymer.return_value = ("REMARK\n", None)
+            prep.prepare_receptor(
+                str(pdb), str(out), output_report_json=str(report)
+            )
+            assert report.exists()
+            import json
+            data = json.loads(report.read_text())
+            assert data["input_file"] == str(pdb)
+            assert data["output_pdbqt"] == str(out)
+            assert "parameters" in data
+            assert data["parameters"]["ph"] == 7.4
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Ligand Preparation

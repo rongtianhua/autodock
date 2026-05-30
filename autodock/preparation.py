@@ -32,6 +32,199 @@ from autodock.core import (
 from autodock.utils import ensure_dir, obabel_convert, safe_pdb_slice, write_temp_file
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Receptor Preparation — helper functions
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+def _parse_pdb_header(pdb_path: str) -> dict[str, Any]:
+    """Parse crystallographic quality metrics from PDB header records.
+
+    Extracts:
+      - resolution (Å) from REMARK 2
+      - R-free / R-work from REMARK 3
+      - experimental method from REMARK 200 or EXPDTA
+      - deposition date
+      - B-factor statistics (mean / max of Wilson B)
+
+    Returns:
+        Dict with keys: resolution, r_free, r_work, method, date,
+        wilson_b, quality_flag.
+    """
+    result: dict[str, Any] = {
+        "resolution": None,
+        "r_free": None,
+        "r_work": None,
+        "method": None,
+        "date": None,
+        "wilson_b": None,
+        "quality_flag": "unknown",
+    }
+    if not os.path.isfile(pdb_path):
+        return result
+
+    try:
+        with open(pdb_path) as fh:
+            header = fh.read(10000)
+    except Exception:
+        return result
+
+    lines = header.splitlines()
+
+    for line in lines:
+        upper = line.upper()
+        # Resolution: REMARK   2 RESOLUTION.  1.90 ANGSTROMS.
+        if upper.startswith("REMARK   2 RESOLUTION."):
+            m = re.search(r"([\d.]+)\s*ANGSTROM", upper)
+            if m:
+                result["resolution"] = float(m.group(1))
+        # R-free / R-work: REMARK   3   R FREE            : 0.210
+        if upper.startswith("REMARK   3"):
+            rf = re.search(r"R\s*FREE\s*[:=]\s*([\d.]+)", line, re.I)
+            if rf:
+                result["r_free"] = float(rf.group(1))
+            rw = re.search(r"R\s*WORK\s*[:=]\s*([\d.]+)", line, re.I)
+            if rw:
+                result["r_work"] = float(rw.group(1))
+            # Wilson B
+            wb = re.search(r"WILSON\s*B\s*[:=]\s*([\d.]+)", line, re.I)
+            if wb:
+                result["wilson_b"] = float(wb.group(1))
+        # Deposition date
+        if upper.startswith("REVDAT   1"):
+            parts = line.split()
+            if len(parts) >= 3:
+                result["date"] = parts[2]
+        # Experimental method
+        if upper.startswith("EXPDTA"):
+            result["method"] = line[6:].strip()
+        # NMR / EM models count
+        if upper.startswith("REMARK 200  EXPERIMENT TYPE"):
+            result["method"] = line.split(":")[-1].strip() if ":" in line else line.strip()
+
+    # Quality flag
+    res = result["resolution"]
+    rf = result["r_free"]
+    if res is not None and rf is not None:
+        if res <= 2.0 and rf <= 0.25:
+            result["quality_flag"] = "high"
+        elif res <= 2.5 and rf <= 0.30:
+            result["quality_flag"] = "good"
+        elif res <= 3.0:
+            result["quality_flag"] = "acceptable"
+        else:
+            result["quality_flag"] = "low"
+    elif res is not None:
+        if res <= 2.0:
+            result["quality_flag"] = "good"
+        elif res <= 3.0:
+            result["quality_flag"] = "acceptable"
+        else:
+            result["quality_flag"] = "low"
+
+    return result
+
+
+def _find_disulfide_bonds(pdb_path: str) -> list[dict[str, Any]]:
+    """Parse SSBOND records from a PDB file.
+
+    Returns:
+        List of dicts with keys: chain1, res1, chain2, res2, sym1, sym2.
+    """
+    bonds: list[dict[str, Any]] = []
+    if not os.path.isfile(pdb_path):
+        return bonds
+
+    try:
+        with open(pdb_path) as fh:
+            for line in fh:
+                if not line.startswith("SSBOND"):
+                    continue
+                if len(line) < 32:
+                    continue
+                try:
+                    bonds.append(
+                        {
+                            "chain1": safe_pdb_slice(line, 15, 16) or "A",
+                            "res1": int(safe_pdb_slice(line, 17, 21)),
+                            "chain2": safe_pdb_slice(line, 29, 30) or "A",
+                            "res2": int(safe_pdb_slice(line, 31, 35)),
+                            "sym1": safe_pdb_slice(line, 59, 65),
+                            "sym2": safe_pdb_slice(line, 72, 78),
+                        }
+                    )
+                except (ValueError, IndexError):
+                    continue
+    except Exception:
+        pass
+    return bonds
+
+
+def _find_functional_waters(
+    pdb_content: str,
+    metal_resnames: set[str],
+    distance_threshold: float = 2.5,
+) -> set[str]:
+    """Identify water molecules that coordinate metal ions.
+
+    A functional water is defined as a water oxygen atom within
+    ``distance_threshold`` Å of any metal ion.
+
+    Returns:
+        Set of residue identifiers ``chain:resseq`` (e.g. {"A:301", "B:402"})
+        that should be retained.
+    """
+    # Parse metal coordinates
+    metals: list[tuple[str, int, float, float, float]] = []
+    waters: list[tuple[str, int, float, float, float]] = []
+
+    for line in pdb_content.splitlines():
+        if not line.startswith("HETATM"):
+            continue
+        resn = safe_pdb_slice(line, 17, 20)
+        chain = safe_pdb_slice(line, 21, 22) or "A"
+        try:
+            resi = int(safe_pdb_slice(line, 22, 26))
+            x = float(safe_pdb_slice(line, 30, 38))
+            y = float(safe_pdb_slice(line, 38, 46))
+            z = float(safe_pdb_slice(line, 46, 54))
+        except (ValueError, IndexError):
+            continue
+        if resn in metal_resnames:
+            metals.append((chain, resi, x, y, z))
+        elif resn in _SKIP_WATER:
+            # Only track oxygen atoms of water
+            atom_name = safe_pdb_slice(line, 12, 16)
+            if atom_name and atom_name.startswith("O"):
+                waters.append((chain, resi, x, y, z))
+
+    functional: set[str] = set()
+    if not metals or not waters:
+        return functional
+
+    for w_chain, w_resi, wx, wy, wz in waters:
+        for _m_chain, _m_resi, mx, my, mz in metals:
+            d_sq = (wx - mx) ** 2 + (wy - my) ** 2 + (wz - mz) ** 2
+            if d_sq <= distance_threshold ** 2:
+                functional.add(f"{w_chain}:{w_resi}")
+                break  # one metal match is enough
+
+    return functional
+
+
+def _write_prep_report(
+    output_path: str,
+    report: dict[str, Any],
+) -> str:
+    """Write a JSON preparation report for Methods-section reproducibility."""
+    import json
+
+    ensure_dir(os.path.dirname(output_path) or ".")
+    with open(output_path, "w") as fh:
+        json.dump(report, fh, indent=2, default=str)
+    return output_path
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Receptor Preparation
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -50,6 +243,9 @@ def prepare_receptor(
     restraint_radius: float = 8.0,
     retain_metal_ions: bool = True,
     predict_pka: bool = True,
+    keep_waters_near_metal: bool = True,
+    output_report_json: str | None = None,
+    detect_af_structure: bool = True,
 ) -> str:
     """
     Prepare a protein structure for docking (PDB/mmCIF → PDBQT).
@@ -111,6 +307,18 @@ def prepare_receptor(
             Residues with pKa within ±1 of the target pH are flagged as
             having potentially wrong protonation states.  Pure reporting;
             does not modify the structure.  Set False to skip.
+        keep_waters_near_metal: If True (default), retain crystallographic
+            waters that coordinate metal ions (distance < 2.5 Å).
+            Functional waters are often critical for metalloprotein
+            ligand binding.  Set False to strip all waters regardless.
+        output_report_json: If provided, write a JSON preparation report to
+            this path documenting every preparation step, parameters, and
+            quality checks for Methods-section reproducibility.
+            If None (default), no report is written.
+        detect_af_structure: If True (default), auto-detect AlphaFold-
+            predicted structures and run pLDDT quality assessment.
+            Warns if mean pLDDT < 70 (unsuitable for docking) or
+            suggests MD relaxation if pLDDT 70-90.
 
     Returns:
         Absolute path to the prepared PDBQT file.
@@ -150,6 +358,71 @@ def prepare_receptor(
 
     # Write to temp PDB for PDBFixer consumption
     tmp_raw = write_temp_file(pdb_content, suffix="_raw.pdb")
+
+    # ── Structure quality & AlphaFold assessment (before modification) ─────
+    _quality_header = _parse_pdb_header(tmp_raw)
+    _ssbonds = _find_disulfide_bonds(tmp_raw)
+    _af_assessment: dict[str, Any] | None = None
+
+    if detect_af_structure:
+        # Heuristic: check for AlphaFold header signatures or B-factor range
+        _is_af = False
+        _af_header_markers = ["ALPHAFOLD", "DEEPMIND", "AF-"]
+        for _line in pdb_content.splitlines()[:50]:
+            if any(m in _line.upper() for m in _af_header_markers):
+                _is_af = True
+                break
+        if not _is_af:
+            # B-factor heuristic: AlphaFold writes pLDDT (0-100) in B-factor
+            # column; experimental structures typically have B < 200.
+            _bfactors: list[float] = []
+            for _line in pdb_content.splitlines():
+                if _line.startswith(("ATOM  ", "HETATM")):
+                    try:
+                        _bf = float(_line[60:66].strip())
+                        _bfactors.append(_bf)
+                    except ValueError:
+                        continue
+            if _bfactors and all(0 <= b <= 100 for b in _bfactors[:50]):
+                # If first 50 B-factors are all in 0-100 range, likely AF
+                _is_af = True
+        if _is_af:
+            try:
+                from autodock.alphafold_tools import assess_alphafold_quality
+                _af_assessment = assess_alphafold_quality(tmp_raw)
+                _mean_plddt = _af_assessment.get("mean_plddt", 0.0)
+                if _mean_plddt < 70.0:
+                    logger.warning(
+                        f"AlphaFold structure detected — mean pLDDT={_mean_plddt:.1f} "
+                        f"(< 70). UNSUITABLE for docking. Run MD relaxation first."
+                    )
+                elif _mean_plddt < 90.0:
+                    logger.warning(
+                        f"AlphaFold structure detected — mean pLDDT={_mean_plddt:.1f}. "
+                        f"Recommend MD relaxation (relax_alphafold_structure) before docking."
+                    )
+                else:
+                    logger.info(
+                        f"AlphaFold structure detected — mean pLDDT={_mean_plddt:.1f} "
+                        f"(high confidence, suitable for docking)."
+                    )
+            except Exception as exc:
+                logger.debug(f"AlphaFold assessment failed: {exc}")
+
+    # Resolution / R-free warnings for experimental structures
+    _res = _quality_header.get("resolution")
+    _rf = _quality_header.get("r_free")
+    if _res is not None and _res > 3.0:
+        logger.warning(
+            f"Low resolution structure ({_res:.1f} Å > 3.0 Å). "
+            f"Binding-pocket sidechain conformations may be unreliable."
+        )
+    if _rf is not None and _rf > 0.30:
+        logger.warning(
+            f"High R-free ({_rf:.2f} > 0.30). Structure quality may be poor."
+        )
+    if _ssbonds:
+        logger.info(f"Disulfide bonds detected: {len(_ssbonds)}")
 
     # ── Step 2: Record altloc choices before any modification ────────────
     altloc_records: dict[str, set[str]] = {}
@@ -471,7 +744,19 @@ def prepare_receptor(
 
         _metal_set = _METAL_IONS | _METAL_COFACTORS
 
+    # Identify functional waters near metals before filtering
+    _functional_waters: set[str] = set()
+    if keep_waters_near_metal and remove_water:
+        _functional_waters = _find_functional_waters(
+            pdb_content, _metal_set, distance_threshold=2.5
+        )
+        if _functional_waters:
+            logger.info(
+                f"Functional waters near metal ions retained: {len(_functional_waters)}"
+            )
+
     n_waters_removed = 0
+    n_waters_retained_functional = 0
     n_metals_retained_step5 = 0
     if remove_water or remove_hetatms or keep_residues:
         lines = pdb_content.splitlines(keepends=True)
@@ -482,6 +767,16 @@ def prepare_receptor(
                 if keep_residues and resn not in keep_residues:
                     continue
                 if remove_water and resn in _SKIP_WATER:
+                    # Check if this is a functional water near metal
+                    _chain = safe_pdb_slice(line, 21, 22) or "A"
+                    try:
+                        _resi = int(safe_pdb_slice(line, 22, 26))
+                    except ValueError:
+                        _resi = None
+                    if _resi is not None and f"{_chain}:{_resi}" in _functional_waters:
+                        n_waters_retained_functional += 1
+                        filtered.append(line)
+                        continue
                     continue
                 filtered.append(line)
             elif line.startswith("HETATM"):
@@ -496,6 +791,16 @@ def prepare_receptor(
                 if keep_residues and resn not in keep_residues:
                     continue
                 if remove_water and resn in _SKIP_WATER:
+                    # Check if this is a functional water near metal
+                    _chain = safe_pdb_slice(line, 21, 22) or "A"
+                    try:
+                        _resi = int(safe_pdb_slice(line, 22, 26))
+                    except ValueError:
+                        _resi = None
+                    if _resi is not None and f"{_chain}:{_resi}" in _functional_waters:
+                        n_waters_retained_functional += 1
+                        filtered.append(line)
+                        continue
                     n_waters_removed += 1
                     continue
                 filtered.append(line)
@@ -506,6 +811,10 @@ def prepare_receptor(
         logger.info(
             f"Removed {n_waters_removed} water molecules"
             + (" (set remove_water=False to retain them)" if remove_water else "")
+        )
+    if n_waters_retained_functional > 0:
+        logger.info(
+            f"Retained {n_waters_retained_functional} functional water(s) near metal ions"
         )
     if n_metals_retained_step5 > 0:
         logger.info(f"Retained {n_metals_retained_step5} metal/cofactor atoms")
@@ -574,6 +883,39 @@ def prepare_receptor(
     ensure_dir(os.path.dirname(output_pdbqt) or ".")
     with open(output_pdbqt, "w") as fh:
         fh.write(rigid_pdbqt)
+
+    # ── Report generation ────────────────────────────────────────────────
+    if output_report_json is not None:
+        _report: dict[str, Any] = {
+            "input_file": os.path.abspath(pdb_file),
+            "output_pdbqt": os.path.abspath(output_pdbqt),
+            "parameters": {
+                "remove_water": remove_water,
+                "remove_hetatms": remove_hetatms,
+                "ph": ph,
+                "forcefield": forcefield,
+                "restraint_center": restraint_center,
+                "restraint_radius": restraint_radius,
+                "retain_metal_ions": retain_metal_ions,
+                "predict_pka": predict_pka,
+                "keep_waters_near_metal": keep_waters_near_metal,
+                "detect_af_structure": detect_af_structure,
+            },
+            "structure_quality": _quality_header,
+            "alphafold_assessment": _af_assessment,
+            "disulfide_bonds": len(_ssbonds),
+            "alternate_conformations": len(multi_altloc),
+            "missing_residues_filled": locals().get("total_filled", 0),
+            "reduce_flips": locals().get("n_flips", 0),
+            "anomalous_pka_residues": len(_anomalous_pka) if "_anomalous_pka" in locals() else 0,
+            "openmm_restrained_atoms": locals().get("n_restrained", 0),
+            "waters_removed": locals().get("n_waters_removed", 0),
+            "waters_retained_functional": locals().get("n_waters_retained_functional", 0),
+            "metals_retained": locals().get("n_metals_retained_step5", 0),
+            "additives_skipped": dict(locals().get("skipped_residues", {})),
+        }
+        _write_prep_report(output_report_json, _report)
+        logger.info(f"Preparation report written: {output_report_json}")
 
     logger.info(f"Receptor prepared: {output_pdbqt}")
     return os.path.abspath(output_pdbqt)

@@ -469,6 +469,9 @@ class TestCmdPrepareReceptor:
             output="rec.pdbqt",
             keep_waters=False,
             remove_hetatms=True,
+            keep_waters_near_metal=True,
+            detect_af_structure=True,
+            report_json=None,
             quiet=False,
             verbose=False,
             log_file=None,
@@ -476,7 +479,11 @@ class TestCmdPrepareReceptor:
         rc = cli.cmd_prepare_receptor(args)
         assert rc == 0
         mock_prep.assert_called_once_with(
-            "rec.pdb", "rec.pdbqt", remove_water=True, remove_hetatms=True
+            "rec.pdb", "rec.pdbqt",
+            remove_water=True, remove_hetatms=True,
+            keep_waters_near_metal=True,
+            detect_af_structure=True,
+            output_report_json=None,
         )
         assert "Receptor prepared" in capsys.readouterr().out
 
@@ -487,6 +494,9 @@ class TestCmdPrepareReceptor:
             output=None,
             keep_waters=True,
             remove_hetatms=False,
+            keep_waters_near_metal=True,
+            detect_af_structure=True,
+            report_json=None,
             quiet=False,
             verbose=False,
             log_file=None,
@@ -494,7 +504,11 @@ class TestCmdPrepareReceptor:
         rc = cli.cmd_prepare_receptor(args)
         assert rc == 0
         mock_prep.assert_called_once_with(
-            "rec.pdb", "rec.pdbqt", remove_water=False, remove_hetatms=False
+            "rec.pdb", "rec.pdbqt",
+            remove_water=False, remove_hetatms=False,
+            keep_waters_near_metal=True,
+            detect_af_structure=True,
+            output_report_json=None,
         )
 
 
