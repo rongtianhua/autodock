@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -143,6 +144,68 @@ class TestPrepareReceptor:
             assert data["output_pdbqt"] == str(out)
             assert "parameters" in data
             assert data["parameters"]["ph"] == 7.4
+            # Detail fields introduced in Phase 1b
+            assert "missing_residues_detail" in data
+            assert "reduce_flips_detail" in data
+            assert "anomalous_pka_detail" in data
+            assert isinstance(data["missing_residues_detail"], list)
+
+    def test_detect_af_false_positive(self, tmp_path):
+        """Low-B-factor experimental structures must NOT be flagged as AF."""
+        pdb = tmp_path / "rec.pdb"
+        # B-factors in 0-45 range (mean ~20) — should NOT trigger AF heuristic
+        lines = [
+            f"ATOM    {i:4d}  CA  ALA A   {i:3d}"
+            f"      0.000   0.000   0.000  1.00 {10 + i % 30:5.2f}"
+            for i in range(1, 51)
+        ]
+        pdb.write_text("\n".join(lines) + "\n")
+        out = tmp_path / "rec.pdbqt"
+        report = tmp_path / "report.json"
+
+        with (
+            patch("meeko.ResidueChemTemplates"),
+            patch("meeko.MoleculePreparation"),
+            patch("meeko.Polymer") as mock_poly_cls,
+            patch("meeko.PDBQTWriterLegacy") as mock_writer,
+            patch("autodock.alphafold_tools.assess_alphafold_quality") as mock_assess,
+            patch("autodock.alphafold_tools.relax_alphafold_structure") as mock_relax,
+        ):
+            mock_poly_cls.from_pdb_string.return_value = MagicMock()
+            mock_writer.write_from_polymer.return_value = ("REMARK\n", None)
+            prep.prepare_receptor(str(pdb), str(out), output_report_json=str(report))
+            # AF assessment should never have been triggered
+            mock_assess.assert_not_called()
+            mock_relax.assert_not_called()
+            data = json.loads(report.read_text())
+            assert data.get("alphafold_assessment") is None
+
+    def test_ssbond_cys_deprotonation(self):
+        """HG atoms on CYS residues in disulfide bonds are stripped."""
+        pdb = (
+            "ATOM      1  N   CYS A   1      0.000   0.000   0.000  1.00 20.00\n"
+            "ATOM      2  CA  CYS A   1      0.000   0.000   0.000  1.00 20.00\n"
+            "ATOM      3  C   CYS A   1      0.000   0.000   0.000  1.00 20.00\n"
+            "ATOM      4  O   CYS A   1      0.000   0.000   0.000  1.00 20.00\n"
+            "ATOM      5  CB  CYS A   1      0.000   0.000   0.000  1.00 20.00\n"
+            "ATOM      6  SG  CYS A   1      0.000   0.000   0.000  1.00 20.00\n"
+            "ATOM      7  HG  CYS A   1      0.000   0.000   0.000  1.00 20.00\n"
+            "ATOM      8  N   CYS A   2      0.000   0.000   0.000  1.00 20.00\n"
+            "ATOM      9  CA  CYS A   2      0.000   0.000   0.000  1.00 20.00\n"
+            "ATOM     10  C   CYS A   2      0.000   0.000   0.000  1.00 20.00\n"
+            "ATOM     11  O   CYS A   2      0.000   0.000   0.000  1.00 20.00\n"
+            "ATOM     12  CB  CYS A   2      0.000   0.000   0.000  1.00 20.00\n"
+            "ATOM     13  SG  CYS A   2      0.000   0.000   0.000  1.00 20.00\n"
+            "ATOM     14  HG  CYS A   2      0.000   0.000   0.000  1.00 20.00\n"
+        )
+        ssbonds = [{"chain1": "A", "res1": 1, "chain2": "A", "res2": 2}]
+        cleaned = prep._remove_disulfide_hydrogens(pdb, ssbonds)
+        # Both HG atoms should have been removed
+        assert cleaned.count("HG  CYS") == 0
+        # SG atoms must remain
+        assert cleaned.count("SG  CYS") == 2
+        # Unrelated residues are untouched
+        assert cleaned.count("CA  CYS") == 2
 
 
 # ─────────────────────────────────────────────────────────────────────────────

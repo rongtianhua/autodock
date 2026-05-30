@@ -159,6 +159,57 @@ def _find_disulfide_bonds(pdb_path: str) -> list[dict[str, Any]]:
     return bonds
 
 
+def _remove_disulfide_hydrogens(pdb_content: str, ssbonds: list[dict[str, Any]]) -> str:
+    """Strip spurious HG hydrogens from CYS residues in disulfide bonds.
+
+    PDBFixer's ``addMissingHydrogens()`` may add a hydrogen to the SG atom
+    of a cysteine involved in a disulfide bond.  Reduce will also add hydrogens
+    if it sees a free thiol.  This function removes any atom named ``HG``
+    (element H) on CYS residues listed in ``ssbonds`` before the structure
+    enters the Reduce step.
+
+    Returns:
+        PDB content string with HG atoms removed from SSBOND CYS residues.
+    """
+    if not ssbonds:
+        return pdb_content
+
+    # Build set of (chain, resi) that participate in disulfide bonds
+    _cys_set: set[tuple[str, int]] = set()
+    for bond in ssbonds:
+        _cys_set.add((bond.get("chain1", "A"), bond.get("res1", 0)))
+        _cys_set.add((bond.get("chain2", "A"), bond.get("res2", 0)))
+
+    _cleaned: list[str] = []
+    _removed: list[str] = []
+    for line in pdb_content.splitlines(keepends=True):
+        if line.startswith(("ATOM  ", "HETATM")):
+            _resn = safe_pdb_slice(line, 17, 20)
+            _chain = safe_pdb_slice(line, 21, 22) or "A"
+            try:
+                _resi = int(safe_pdb_slice(line, 22, 26))
+            except ValueError:
+                _resi = None
+            _aname = safe_pdb_slice(line, 12, 16)
+            if (
+                _resn == "CYS"
+                and _resi is not None
+                and (_chain, _resi) in _cys_set
+                and _aname is not None
+                and _aname.strip() == "HG"
+            ):
+                _removed.append(f"{_chain}:{_resi}")
+                continue  # drop this HG atom
+        _cleaned.append(line)
+
+    if _removed:
+        logger.info(
+            f"Removed spurious HG hydrogen from CYS in disulfide bond(s): "
+            f"{', '.join(sorted(set(_removed)))}"
+        )
+    return "".join(_cleaned)
+
+
 def _find_functional_waters(
     pdb_content: str,
     metal_resnames: set[str],
@@ -333,6 +384,10 @@ def prepare_receptor(
         logger.info(f"Receptor PDBQT already exists — skipping prep: {output_pdbqt}")
         return os.path.abspath(output_pdbqt)
 
+    # Accumulators for report detail (enlarged scope so report section can see them)
+    gaps_detail: list[str] = []
+    _reduce_flip_detail: list[str] = []
+
     # ── Step 1: Convert mmCIF → PDB if needed ────────────────────────────
     ext = os.path.splitext(pdb_file)[1].lower()
     if input_format == "auto":
@@ -384,31 +439,69 @@ def prepare_receptor(
                     except ValueError:
                         continue
             if _bfactors and all(0 <= b <= 100 for b in _bfactors[:50]):
-                # If first 50 B-factors are all in 0-100 range, likely AF
-                _is_af = True
+                # If first 50 B-factors are all in 0-100 range, likely AF.
+                # Guard against false positives from very ordered experimental
+                # structures (e.g. 1.0 Å resolution) by checking mean B.
+                _mean_b = np.mean(_bfactors[:50])
+                if _mean_b > 45:
+                    _is_af = True
+                    logger.debug(
+                        f"AF heuristic triggered: B-factor mean={_mean_b:.1f} "
+                        f"(range 0-100, n={len(_bfactors[:50])})"
+                    )
+                else:
+                    logger.debug(
+                        f"AF heuristic rejected: B-factor mean={_mean_b:.1f} too low "
+                        f"for AlphaFold pLDDT signature"
+                    )
         if _is_af:
             try:
-                from autodock.alphafold_tools import assess_alphafold_quality
+                from autodock.alphafold_tools import (
+                    assess_alphafold_quality,
+                    relax_alphafold_structure,
+                )
 
                 _af_assessment = assess_alphafold_quality(tmp_raw)
                 _mean_plddt = _af_assessment.get("mean_plddt", 0.0)
                 if _mean_plddt < 70.0:
                     logger.warning(
                         f"AlphaFold structure detected — mean pLDDT={_mean_plddt:.1f} "
-                        f"(< 70). UNSUITABLE for docking. Run MD relaxation first."
+                        f"(< 70). Quality may be insufficient for docking."
                     )
                 elif _mean_plddt < 90.0:
                     logger.warning(
                         f"AlphaFold structure detected — mean pLDDT={_mean_plddt:.1f}. "
-                        f"Recommend MD relaxation (relax_alphafold_structure) before docking."
+                        f"Moderate confidence — MD relaxation applied."
                     )
                 else:
                     logger.info(
                         f"AlphaFold structure detected — mean pLDDT={_mean_plddt:.1f} "
                         f"(high confidence, suitable for docking)."
                     )
+                # Auto-relax all detected AlphaFold structures
+                logger.info("Running AlphaFold MD relaxation ...")
+                _relax_result = relax_alphafold_structure(
+                    tmp_raw,
+                    output_dir=os.path.join(os.path.dirname(output_pdbqt), "af_relaxed"),
+                    production_ns=1.0,
+                )
+                if _relax_result.get("success"):
+                    _relaxed_path = _relax_result["output_pdb"]
+                    if os.path.isfile(_relaxed_path):
+                        tmp_raw = _relaxed_path
+                        with open(tmp_raw) as fh:
+                            pdb_content = fh.read()
+                        logger.info(
+                            f"AlphaFold structure MD-relaxed (RMSD "
+                            f"{_relax_result.get('final_rmsd', 0):.2f} Å) — "
+                            f"relaxed model will be used for preparation"
+                        )
+                        _af_assessment["relaxed"] = True
+                        _af_assessment["relaxation_rmsd"] = _relax_result.get("final_rmsd")
+                else:
+                    logger.warning("AlphaFold MD relaxation failed — using raw structure")
             except Exception as exc:
-                logger.debug(f"AlphaFold assessment failed: {exc}")
+                logger.warning(f"AlphaFold handling failed ({exc}) — using raw structure")
 
     # Resolution / R-free warnings for experimental structures
     _res = _quality_header.get("resolution")
@@ -509,7 +602,7 @@ def prepare_receptor(
         missing_res = fixer.missingResidues if hasattr(fixer, "missingResidues") else {}
         if missing_res:
             total_filled = sum(len(res_list) for res_list in missing_res.values())
-            gaps_detail = []
+            gaps_detail.clear()
             for chain_idx, res_list in missing_res.items():
                 for _, res_seq, res_name in res_list:
                     gaps_detail.append(f"chain{chain_idx}:{res_seq}({res_name})")
@@ -538,6 +631,17 @@ def prepare_receptor(
             if os.path.exists(_tmp_fixer_in):
                 os.remove(_tmp_fixer_in)
 
+    # ── Step 3b: SSBOND post-processing — strip spurious HG on CYS-SG ─────
+    # PDBFixer may add hydrogens to CYS involved in disulfide bonds.
+    # Remove them before Reduce runs so the thiol is correctly recognised.
+    if _ssbonds and tmp_fixed != tmp_raw:
+        with open(tmp_fixed) as fh:
+            _fixed_pdb_str = fh.read()
+        _fixed_cleaned = _remove_disulfide_hydrogens(_fixed_pdb_str, _ssbonds)
+        if _fixed_cleaned != _fixed_pdb_str:
+            with open(tmp_fixed, "w") as fh:
+                fh.write(_fixed_cleaned)
+
     # ── Step 4: Reduce — ASN/GLN flip detection + HIS tautomer assignment ────
     tmp_reduced = write_temp_file("", suffix="_reduced.pdb")
     try:
@@ -553,8 +657,11 @@ def prepare_receptor(
             raise RuntimeError(f"reduce -FLIP failed: {stderr[:300]}")
         with open(tmp_reduced, "w") as fh:
             fh.write(stdout)
-        # Count flips from log
+        # Count flips from log and capture detail lines for report
         n_flips = stdout.count("FLIP") - stdout.count("NOFLIP")
+        _reduce_flip_detail = [
+            line.strip() for line in stdout.splitlines() if "FLIP" in line and "NOFLIP" not in line
+        ]
         if n_flips > 0:
             logger.info(f"Reduce: corrected {n_flips} ASN/GLN sidechain flip(s)")
         logger.info("Reduce: ASN/GLN flips processed, HIS tautomers assigned")
@@ -916,10 +1023,17 @@ def prepare_receptor(
             "structure_quality": _quality_header,
             "alphafold_assessment": _af_assessment,
             "disulfide_bonds": len(_ssbonds),
+            "disulfide_bonds_detail": [
+                {"chain1": b["chain1"], "res1": b["res1"], "chain2": b["chain2"], "res2": b["res2"]}
+                for b in _ssbonds
+            ],
             "alternate_conformations": len(multi_altloc),
-            "missing_residues_filled": locals().get("total_filled", 0),
-            "reduce_flips": locals().get("n_flips", 0),
+            "missing_residues_filled": len(gaps_detail),
+            "missing_residues_detail": gaps_detail,
+            "reduce_flips": len(_reduce_flip_detail),
+            "reduce_flips_detail": _reduce_flip_detail,
             "anomalous_pka_residues": len(_anomalous_pka) if "_anomalous_pka" in locals() else 0,
+            "anomalous_pka_detail": _anomalous_pka if "_anomalous_pka" in locals() else [],
             "openmm_restrained_atoms": locals().get("n_restrained", 0),
             "waters_removed": locals().get("n_waters_removed", 0),
             "waters_retained_functional": locals().get("n_waters_retained_functional", 0),
