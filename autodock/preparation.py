@@ -149,7 +149,7 @@ def _find_disulfide_bonds(pdb_path: str) -> list[dict[str, Any]]:
                             "chain2": safe_pdb_slice(line, 29, 30) or "A",
                             "res2": int(safe_pdb_slice(line, 31, 35)),
                             "sym1": safe_pdb_slice(line, 59, 65),
-                            "sym2": safe_pdb_slice(line, 72, 78),
+                            "sym2": safe_pdb_slice(line, 66, 72),
                         }
                     )
                 except (ValueError, IndexError):
@@ -413,6 +413,7 @@ def prepare_receptor(
 
     # Write to temp PDB for PDBFixer consumption
     tmp_raw = write_temp_file(pdb_content, suffix="_raw.pdb")
+    _original_tmp_raw = tmp_raw  # track for final cleanup
 
     # ── Structure quality & AlphaFold assessment (before modification) ─────
     _quality_header = _parse_pdb_header(tmp_raw)
@@ -485,6 +486,7 @@ def prepare_receptor(
                     output_dir=os.path.join(os.path.dirname(output_pdbqt), "af_relaxed"),
                     production_ns=1.0,
                     ph=ph,
+                    forcefield=forcefield,
                 )
                 if _relax_result.get("success"):
                     _relaxed_path = _relax_result["output_pdb"]
@@ -492,6 +494,9 @@ def prepare_receptor(
                         tmp_raw = _relaxed_path
                         with open(tmp_raw) as fh:
                             pdb_content = fh.read()
+                        # Re-parse SSBOND from relaxed structure in case
+                        # residue numbering shifted during relaxation.
+                        _ssbonds = _find_disulfide_bonds(tmp_raw)
                         logger.info(
                             f"AlphaFold structure MD-relaxed (RMSD "
                             f"{_relax_result.get('final_rmsd', 0):.2f} Å) — "
@@ -687,7 +692,18 @@ def prepare_receptor(
                     # Standard reference pKa ranges
                     _type = getattr(_g, "type", "")
                     _label = getattr(_g, "label", "")
-                    if _type == "ASP" and (_pka < 2.0 or _pka > 6.0):
+                    # Standard reference pKa ranges (Dawson et al.,
+                    # Data for Biochemical Research, 3rd ed.)
+                    if _type == "ASP" and (_pka < 2.0 or _pka > 5.0):
+                        _anomalous_pka.append(
+                            {
+                                "residue": _label,
+                                "type": _type,
+                                "pKa": round(_pka, 1),
+                                "expected_range": "2.0-5.0",
+                            }
+                        )
+                    elif _type == "GLU" and (_pka < 2.0 or _pka > 6.0):
                         _anomalous_pka.append(
                             {
                                 "residue": _label,
@@ -696,40 +712,31 @@ def prepare_receptor(
                                 "expected_range": "2.0-6.0",
                             }
                         )
-                    elif _type == "GLU" and (_pka < 2.0 or _pka > 7.0):
+                    elif _type == "HIS" and (_pka < 5.0 or _pka > 8.0):
                         _anomalous_pka.append(
                             {
                                 "residue": _label,
                                 "type": _type,
                                 "pKa": round(_pka, 1),
-                                "expected_range": "2.0-7.0",
+                                "expected_range": "5.0-8.0",
                             }
                         )
-                    elif _type == "HIS" and (_pka < 4.0 or _pka > 8.0):
+                    elif _type == "LYS" and (_pka < 9.0 or _pka > 12.0):
                         _anomalous_pka.append(
                             {
                                 "residue": _label,
                                 "type": _type,
                                 "pKa": round(_pka, 1),
-                                "expected_range": "4.0-8.0",
+                                "expected_range": "9.0-12.0",
                             }
                         )
-                    elif _type == "LYS" and (_pka < 8.0 or _pka > 12.0):
+                    elif _type == "CYS" and _pka > 9.0:
                         _anomalous_pka.append(
                             {
                                 "residue": _label,
                                 "type": _type,
                                 "pKa": round(_pka, 1),
-                                "expected_range": "8.0-12.0",
-                            }
-                        )
-                    elif _type == "CYS" and _pka > 11.0:
-                        _anomalous_pka.append(
-                            {
-                                "residue": _label,
-                                "type": _type,
-                                "pKa": round(_pka, 1),
-                                "expected_range": "<11.0",
+                                "expected_range": "<9.0",
                             }
                         )
                     elif _type == "TYR" and _pka > 13.0:
@@ -839,6 +846,14 @@ def prepare_receptor(
         simulation.context.setPositions(_pos)
         simulation.minimizeEnergy(maxIterations=200)
         min_positions = simulation.context.getState(getPositions=True).getPositions()
+        # NaN guard: validate coordinates before writing
+        _has_nan = False
+        for _pos in min_positions:
+            if _pos.x != _pos.x or _pos.y != _pos.y or _pos.z != _pos.z:
+                _has_nan = True
+                break
+        if _has_nan:
+            raise RuntimeError("OpenMM minimisation produced NaN coordinates — structure diverged")
         with open(tmp_min, "w") as fh:
             PDBFile.writeFile(_top, min_positions, fh)
         logger.info("OpenMM: receptor energy minimised (200 steps L-BFGS)")
@@ -850,16 +865,16 @@ def prepare_receptor(
     with open(tmp_min) as fh:
         pdb_content = fh.read()
 
-    # Clean up temp files (avoid deleting fallback aliases)
-    _keep = {tmp_raw}
+    # Clean up intermediate temp files; keep tmp_raw until the very end
+    # so that fallback paths always have a valid source file.
+    _to_clean = []
     for _t in (tmp_fixed, tmp_reduced, tmp_min):
-        if _t in _keep:
-            _keep.add(_t)
-    for _t in (tmp_raw, tmp_fixed, tmp_reduced, tmp_min):
-        if _t not in _keep:
-            with contextlib.suppress(OSError):
-                if os.path.exists(_t):
-                    os.remove(_t)
+        if _t != tmp_raw and _t is not None:
+            _to_clean.append(_t)
+    for _t in _to_clean:
+        with contextlib.suppress(OSError):
+            if os.path.exists(_t):
+                os.remove(_t)
 
     # ── Step 5: Filter waters / hetatms (second pass after PDBFixer) ─────
     _metal_set: set[str] = set()
@@ -908,22 +923,28 @@ def prepare_receptor(
                     n_metals_retained_step5 += 1
                     filtered.append(line)
                     continue
-                if remove_hetatms:
-                    continue
-                if keep_residues and resn not in keep_residues:
-                    continue
-                if remove_water and resn in _SKIP_WATER:
-                    # Check if this is a functional water near metal
+                # Water handling: checked BEFORE remove_hetatms so that
+                # functional waters are retained and remove_water=False is honoured.
+                if resn in _SKIP_WATER:
                     _chain = safe_pdb_slice(line, 21, 22) or "A"
                     try:
                         _resi = int(safe_pdb_slice(line, 22, 26))
                     except ValueError:
                         _resi = None
+                    # Always retain functional waters near metals
                     if _resi is not None and f"{_chain}:{_resi}" in _functional_waters:
                         n_waters_retained_functional += 1
                         filtered.append(line)
                         continue
+                    # Honour remove_water flag (don't let remove_hetatms delete water)
+                    if not remove_water:
+                        filtered.append(line)
+                        continue
                     n_waters_removed += 1
+                    continue
+                if remove_hetatms:
+                    continue
+                if keep_residues and resn not in keep_residues:
                     continue
                 filtered.append(line)
             else:
@@ -960,6 +981,10 @@ def prepare_receptor(
                 filtered.append(line)
                 continue
             if resn in _SKIP_ADDITIVES:
+                # Allow user-specified keep_residues to override skip list
+                if keep_residues and resn in keep_residues:
+                    filtered.append(line)
+                    continue
                 skipped_residues[resn] = skipped_residues.get(resn, 0) + 1
                 continue
         filtered.append(line)
@@ -992,13 +1017,13 @@ def prepare_receptor(
                 f"Meeko preparation failed even with allow_bad_res: {exc2} — "
                 f"falling back to Open Babel"
             )
-            return _prepare_receptor_with_obabel(pdb_file, output_pdbqt)
+            return _prepare_receptor_with_obabel(pdb_file, output_pdbqt, pdb_string=pdb_content)
 
     try:
         rigid_pdbqt, _ = PDBQTWriterLegacy.write_from_polymer(polymer)
     except Exception as exc:
         logger.error(f"PDBQT writing failed: {exc} — falling back to Open Babel")
-        return _prepare_receptor_with_obabel(pdb_file, output_pdbqt)
+        return _prepare_receptor_with_obabel(pdb_file, output_pdbqt, pdb_string=pdb_content)
 
     ensure_dir(os.path.dirname(output_pdbqt) or ".")
     with open(output_pdbqt, "w") as fh:
@@ -1044,20 +1069,45 @@ def prepare_receptor(
         _write_prep_report(output_report_json, _report)
         logger.info(f"Preparation report written: {output_report_json}")
 
+    # Final cleanup: remove the original raw temp file unless it was
+    # replaced by the AF-relaxed output (which lives in output_dir).
+    if _original_tmp_raw != tmp_raw:
+        with contextlib.suppress(OSError):
+            if os.path.exists(_original_tmp_raw):
+                os.remove(_original_tmp_raw)
     logger.info(f"Receptor prepared: {output_pdbqt}")
     return os.path.abspath(output_pdbqt)
 
 
-def _prepare_receptor_with_obabel(pdb_file: str, output_pdbqt: str) -> str:
-    """Fallback receptor preparation using Open Babel."""
+def _prepare_receptor_with_obabel(
+    pdb_file: str,
+    output_pdbqt: str,
+    pdb_string: str | None = None,
+    in_format: str = "pdb",
+) -> str:
+    """Fallback receptor preparation using Open Babel.
+
+    Args:
+        pdb_file: Path to input PDB/CIF file (used when pdb_string is None).
+        output_pdbqt: Path for output PDBQT file.
+        pdb_string: Optional PDB content string. When provided, it is written
+            to a temporary file and used as input instead of *pdb_file*.
+        in_format: Input format for Open Babel (default "pdb").
+    """
+    in_path = pdb_file
+    if pdb_string is not None:
+        in_path = write_temp_file(pdb_string, suffix=".pdb")
     success = obabel_convert(
-        pdb_file,
+        in_path,
         output_pdbqt,
-        in_format="pdb",
+        in_format=in_format,
         out_format="pdbqt",
         options=["-xr"],  # rigid receptor (no rotatable bonds)
         timeout=300,
     )
+    if pdb_string is not None:
+        with contextlib.suppress(OSError):
+            os.remove(in_path)
     if not success:
         raise PreparationError("Open Babel receptor preparation failed")
     logger.info(f"Receptor prepared (Open Babel fallback): {output_pdbqt}")

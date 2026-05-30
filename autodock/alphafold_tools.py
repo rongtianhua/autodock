@@ -18,6 +18,7 @@ References:
 
 from __future__ import annotations
 
+import contextlib
 import os
 from typing import Any
 
@@ -193,15 +194,17 @@ def _parse_plddt_from_pdb(pdb_path: str) -> tuple[list[float], list[tuple[str, i
             chain = line[21:22].strip() or "A"
             resi = int(line[22:26].strip())
             key = (chain, resi)
-            # Take CA atom's pLDDT as representative (or first atom if no CA)
+            # Prefer CA atom's pLDDT; fallback to the first atom of the residue.
+            # This avoids O(n²) set-comprehension and correctly prioritises CA.
             atom_name = line[12:16].strip()
-            if atom_name == "CA" or key not in {s for s, _ in residues}:
-                # Prevent duplicates
-                if key in seen:
-                    continue
+            if key not in seen:
                 seen.add(key)
                 plddt_vals.append(plddt)
                 residues.append((chain, resi))
+            elif atom_name == "CA":
+                # Replace first-atom pLDDT with CA pLDDT
+                idx = residues.index(key)
+                plddt_vals[idx] = plddt
 
     return plddt_vals, residues
 
@@ -351,10 +354,13 @@ def relax_alphafold_structure(
         import tempfile
 
         tmp_in = tempfile.mktemp(suffix="_af_raw.pdb")
-        with open(tmp_in, "w") as f:
-            f.write(pdb_str)
-        pdb = app.PDBFile(tmp_in)
-        os.unlink(tmp_in)
+        try:
+            with open(tmp_in, "w") as f:
+                f.write(pdb_str)
+            pdb = app.PDBFile(tmp_in)
+        finally:
+            with contextlib.suppress(OSError):
+                os.unlink(tmp_in)
     else:
         pdb = app.PDBFile(input_structure)
 
@@ -366,18 +372,21 @@ def relax_alphafold_structure(
         from pdbfixer import PDBFixer
 
         tmp_pdb = tempfile.mktemp(suffix="_af_fix.pdb")
-        with open(tmp_pdb, "w") as f:
-            app.PDBFile.writeFile(pdb.topology, pdb.positions, f)
-        fixer = PDBFixer(filename=tmp_pdb)
-        fixer.findMissingResidues()
-        fixer.findNonstandardResidues()
-        fixer.replaceNonstandardResidues()
-        fixer.findMissingAtoms()
-        fixer.addMissingAtoms()
-        fixer.addMissingHydrogens(ph)
-        topology = fixer.topology
-        positions = fixer.positions
-        os.unlink(tmp_pdb)
+        try:
+            with open(tmp_pdb, "w") as f:
+                app.PDBFile.writeFile(pdb.topology, pdb.positions, f)
+            fixer = PDBFixer(filename=tmp_pdb)
+            fixer.findMissingResidues()
+            fixer.findNonstandardResidues()
+            fixer.replaceNonstandardResidues()
+            fixer.findMissingAtoms()
+            fixer.addMissingAtoms()
+            fixer.addMissingHydrogens(ph)
+            topology = fixer.topology
+            positions = fixer.positions
+        finally:
+            with contextlib.suppress(OSError):
+                os.unlink(tmp_pdb)
     except Exception:
         logger.warning("PDBFixer unavailable or failed — using raw AlphaFold positions")
         topology = pdb.topology
@@ -505,6 +514,7 @@ def relax_alphafold_structure(
 def _build_af_system(
     topology: Any,
     forcefield: str = "amber14-all.xml",
+    implicit_solvent: str = "amber14_obc2.xml",
     restraint_c_alpha: bool = True,
     restraint_k: float = 5.0,
 ) -> Any:
@@ -519,7 +529,7 @@ def _build_af_system(
     import openmm.unit as _u
     from openmm import CustomExternalForce
 
-    ff = _app.ForceField(forcefield, "amber14_obc2.xml")
+    ff = _app.ForceField(forcefield, implicit_solvent)
     system = ff.createSystem(
         topology,
         nonbondedMethod=_app.CutoffNonPeriodic,
