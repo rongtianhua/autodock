@@ -204,7 +204,7 @@ def _find_functional_waters(
     for w_chain, w_resi, wx, wy, wz in waters:
         for _m_chain, _m_resi, mx, my, mz in metals:
             d_sq = (wx - mx) ** 2 + (wy - my) ** 2 + (wz - mz) ** 2
-            if d_sq <= distance_threshold ** 2:
+            if d_sq <= distance_threshold**2:
                 functional.add(f"{w_chain}:{w_resi}")
                 break  # one metal match is enough
 
@@ -389,6 +389,7 @@ def prepare_receptor(
         if _is_af:
             try:
                 from autodock.alphafold_tools import assess_alphafold_quality
+
                 _af_assessment = assess_alphafold_quality(tmp_raw)
                 _mean_plddt = _af_assessment.get("mean_plddt", 0.0)
                 if _mean_plddt < 70.0:
@@ -418,9 +419,7 @@ def prepare_receptor(
             f"Binding-pocket sidechain conformations may be unreliable."
         )
     if _rf is not None and _rf > 0.30:
-        logger.warning(
-            f"High R-free ({_rf:.2f} > 0.30). Structure quality may be poor."
-        )
+        logger.warning(f"High R-free ({_rf:.2f} > 0.30). Structure quality may be poor.")
     if _ssbonds:
         logger.info(f"Disulfide bonds detected: {len(_ssbonds)}")
 
@@ -452,6 +451,13 @@ def prepare_receptor(
 
         _metal_set_pdbfixer = _METAL_IONS | _METAL_COFACTORS
 
+    # Identify functional waters near metals so they survive PDBFixer pre-filter
+    _functional_waters_pdbfixer: set[str] = set()
+    if keep_waters_near_metal and remove_water:
+        _functional_waters_pdbfixer = _find_functional_waters(
+            pdb_content, _metal_set_pdbfixer, distance_threshold=2.5
+        )
+
     _pbfixer_lines: list[str] = []
     for _line in pdb_content.splitlines(keepends=True):
         if _line.startswith("ATOM  "):
@@ -463,6 +469,16 @@ def prepare_receptor(
                 _pbfixer_lines.append(_line)
             elif not remove_water and _resn in _SKIP_WATER:
                 _pbfixer_lines.append(_line)  # keep water when requested
+            elif _resn in _SKIP_WATER:
+                # keep_waters_near_metal: retain functional waters even when
+                # remove_water=True
+                _chain = safe_pdb_slice(_line, 21, 22) or "A"
+                try:
+                    _resi = int(safe_pdb_slice(_line, 22, 26))
+                except ValueError:
+                    _resi = None
+                if _resi is not None and f"{_chain}:{_resi}" in _functional_waters_pdbfixer:
+                    _pbfixer_lines.append(_line)
             # else: skip other HETATMs (ligands, buffers, etc.)
         else:
             _pbfixer_lines.append(_line)
@@ -751,9 +767,7 @@ def prepare_receptor(
             pdb_content, _metal_set, distance_threshold=2.5
         )
         if _functional_waters:
-            logger.info(
-                f"Functional waters near metal ions retained: {len(_functional_waters)}"
-            )
+            logger.info(f"Functional waters near metal ions retained: {len(_functional_waters)}")
 
     n_waters_removed = 0
     n_waters_retained_functional = 0
@@ -813,9 +827,7 @@ def prepare_receptor(
             + (" (set remove_water=False to retain them)" if remove_water else "")
         )
     if n_waters_retained_functional > 0:
-        logger.info(
-            f"Retained {n_waters_retained_functional} functional water(s) near metal ions"
-        )
+        logger.info(f"Retained {n_waters_retained_functional} functional water(s) near metal ions")
     if n_metals_retained_step5 > 0:
         logger.info(f"Retained {n_metals_retained_step5} metal/cofactor atoms")
 

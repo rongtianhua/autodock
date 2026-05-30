@@ -99,7 +99,8 @@ class TestPrepareReceptor:
             mock_poly_cls.from_pdb_string.return_value = MagicMock()
             mock_writer.write_from_polymer.return_value = ("REMARK\n", None)
             prep.prepare_receptor(
-                str(pdb), str(out),
+                str(pdb),
+                str(out),
                 remove_water=True,
                 remove_hetatms=False,
                 keep_waters_near_metal=True,
@@ -124,11 +125,10 @@ class TestPrepareReceptor:
         ):
             mock_poly_cls.from_pdb_string.return_value = MagicMock()
             mock_writer.write_from_polymer.return_value = ("REMARK\n", None)
-            prep.prepare_receptor(
-                str(pdb), str(out), output_report_json=str(report)
-            )
+            prep.prepare_receptor(str(pdb), str(out), output_report_json=str(report))
             assert report.exists()
             import json
+
             data = json.loads(report.read_text())
             assert data["input_file"] == str(pdb)
             assert data["output_pdbqt"] == str(out)

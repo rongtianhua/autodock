@@ -479,8 +479,10 @@ class TestCmdPrepareReceptor:
         rc = cli.cmd_prepare_receptor(args)
         assert rc == 0
         mock_prep.assert_called_once_with(
-            "rec.pdb", "rec.pdbqt",
-            remove_water=True, remove_hetatms=True,
+            "rec.pdb",
+            "rec.pdbqt",
+            remove_water=True,
+            remove_hetatms=True,
             keep_waters_near_metal=True,
             detect_af_structure=True,
             output_report_json=None,
@@ -504,8 +506,10 @@ class TestCmdPrepareReceptor:
         rc = cli.cmd_prepare_receptor(args)
         assert rc == 0
         mock_prep.assert_called_once_with(
-            "rec.pdb", "rec.pdbqt",
-            remove_water=False, remove_hetatms=False,
+            "rec.pdb",
+            "rec.pdbqt",
+            remove_water=False,
+            remove_hetatms=False,
             keep_waters_near_metal=True,
             detect_af_structure=True,
             output_report_json=None,
