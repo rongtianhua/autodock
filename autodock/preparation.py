@@ -484,6 +484,7 @@ def prepare_receptor(
                     tmp_raw,
                     output_dir=os.path.join(os.path.dirname(output_pdbqt), "af_relaxed"),
                     production_ns=1.0,
+                    ph=ph,
                 )
                 if _relax_result.get("success"):
                     _relaxed_path = _relax_result["output_pdb"]

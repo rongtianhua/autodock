@@ -18,7 +18,6 @@ References:
 
 from __future__ import annotations
 
-import math
 import os
 from typing import Any
 
@@ -42,7 +41,7 @@ class PLDDTThresholds:
 
 def assess_alphafold_quality(
     structure_path: str,
-    plddt_threshold_high: float = PLDDTThresholds.VERY_HIGH,
+    plddt_threshold_high: float = PLDDTThresholds.HIGH,
     plddt_threshold_low: float = PLDDTThresholds.LOW,
 ) -> dict[str, Any]:
     """
@@ -133,6 +132,7 @@ def assess_alphafold_quality(
             )
 
     # Determine suitability
+    # Jumper 2021 & Heo & Feig 2022: pLDDT > 70 is acceptable for docking.
     suitable = mean_p >= plddt_threshold_high and low_conf < 20.0
     warning = None
     if not suitable:
@@ -261,6 +261,30 @@ def _parse_plddt_from_cif(cif_path: str) -> tuple[list[float], list[tuple[str, i
 # ─────────────────────────────────────────────────────────────────────────────
 
 
+def _kabsch_rmsd(mobile: np.ndarray, reference: np.ndarray) -> float:
+    """Kabsch RMSD between two N×3 coordinate arrays (in nm).
+
+    Centres both sets, finds the optimal rotation via SVD, and returns the
+    least-squares RMSD.  This is the standard structural-alignment RMSD used
+    in MD analysis (not the coordinate-difference RMSD which is inflated by
+    global translation/rotation).
+    """
+    # Centre
+    mc = mobile - mobile.mean(axis=0)
+    rc = reference - reference.mean(axis=0)
+    # Covariance matrix
+    H = mc.T @ rc
+    U, S, Vt = np.linalg.svd(H)
+    R = Vt.T @ U.T
+    # Correct reflection
+    if np.linalg.det(R) < 0:
+        Vt[-1, :] *= -1
+        R = Vt.T @ U.T
+    # Rotate mobile onto reference
+    aligned = mc @ R.T
+    return float(np.sqrt(np.mean(np.sum((aligned - rc) ** 2, axis=1))))
+
+
 def relax_alphafold_structure(
     input_structure: str,
     output_pdb: str | None = None,
@@ -268,10 +292,10 @@ def relax_alphafold_structure(
     nvt_ns: float = 0.2,
     production_ns: float = 1.0,
     temperature_k: float = 300.0,
+    ph: float = 7.4,
     restraint_c_alpha: bool = True,
     restraint_k: float = 5.0,
     forcefield: str = "amber14-all.xml",
-    solvent_model: str = "implicit",
     platform_name: str | None = None,
 ) -> dict[str, Any]:
     """
@@ -291,10 +315,10 @@ def relax_alphafold_structure(
         nvt_ns: NVT equilibration length in ns (default 0.2).
         production_ns: Production length in ns (default 1.0).
         temperature_k: Simulation temperature (default 300 K).
+        ph: pH for hydrogen placement with PDBFixer (default 7.4).
         restraint_c_alpha: Restrain Cα atoms during production (default True).
         restraint_k: Cα restraint force constant in kcal/mol/Å² (default 5.0).
         forcefield: OpenMM force field (default ``"amber14-all.xml"``).
-        solvent_model: ``"implicit"`` (GBn2, fast) or ``"explicit"``.
         platform_name: OpenMM platform (None = auto).
 
     Returns:
@@ -350,7 +374,7 @@ def relax_alphafold_structure(
         fixer.replaceNonstandardResidues()
         fixer.findMissingAtoms()
         fixer.addMissingAtoms()
-        fixer.addMissingHydrogens(7.0)
+        fixer.addMissingHydrogens(ph)
         topology = fixer.topology
         positions = fixer.positions
         os.unlink(tmp_pdb)
@@ -363,10 +387,8 @@ def relax_alphafold_structure(
     system = _build_af_system(
         topology,
         forcefield=forcefield,
-        solvent_model=solvent_model,
         restraint_c_alpha=restraint_c_alpha,
         restraint_k=restraint_k,
-        temperature=temperature_k,
     )
 
     # 5. Minimise
@@ -376,13 +398,15 @@ def relax_alphafold_structure(
     simulation.context.setPositions(positions)
 
     # Set Cα restraint reference positions after context has positions
+    _ca_indices: list[int] = []
     if restraint_c_alpha:
         for force_i in range(system.getNumForces()):
             force = system.getForce(force_i)
             if isinstance(force, CustomExternalForce):
                 ca_idx = 0
                 for atom in topology.atoms():
-                    if atom.name == "CA" and atom.element.symbol != "H":
+                    if atom.name == "CA" and atom.element.symbol == "C":
+                        _ca_indices.append(atom.index)
                         p = positions[atom.index]
                         force.setParticleParameters(ca_idx, [p.x, p.y, p.z])
                         ca_idx += 1
@@ -412,16 +436,41 @@ def relax_alphafold_structure(
     traj_interval = max(1, prod_steps // 100)  # ~100 frames
 
     rmsd_trace: list[float] = []
+    _nan_detected = False
     logger.info(f"AF relax: production MD ({production_ns} ns)...")
     for _step_i in range(0, prod_steps, traj_interval):
         simulation.step(traj_interval)
         state = simulation.context.getState(getPositions=True)
         pos = state.getPositions(asNumpy=True)
-        # RMSD to minimised structure
-        diff = pos - ref_positions
-        rmsd_nm = math.sqrt(float(np.mean(np.sum(diff * diff, axis=1))))
+        # NaN / divergence guard
+        if np.isnan(pos).any() or np.isinf(pos).any():
+            _nan_detected = True
+            logger.error(
+                "AF relax: NaN/Inf coordinates detected during production MD — "
+                "simulation diverged. Stopping relaxation."
+            )
+            break
+        # Kabsch-aligned RMSD to minimised structure (Cα only)
+        if _ca_indices:
+            ca_pos = pos[_ca_indices, :]
+            ca_ref = ref_positions[_ca_indices, :]
+            rmsd_nm = _kabsch_rmsd(ca_pos, ca_ref)
+        else:
+            rmsd_nm = _kabsch_rmsd(pos, ref_positions)
         rmsd_A = rmsd_nm * 10.0
         rmsd_trace.append(rmsd_A)
+
+    if _nan_detected:
+        return {
+            "output_pdb": output_pdb,
+            "initial_rmsd": 0.0,
+            "final_rmsd": 0.0,
+            "rmsd_vs_time": rmsd_trace,
+            "final_energy_kj_mol": 0.0,
+            "n_residues": sum(1 for r in topology.residues()),
+            "success": False,
+            "error": "NaN/Inf coordinates during MD — simulation diverged",
+        }
 
     # 8. Extract final frame
     final_state = simulation.context.getState(getPositions=True)
@@ -456,31 +505,26 @@ def relax_alphafold_structure(
 def _build_af_system(
     topology: Any,
     forcefield: str = "amber14-all.xml",
-    solvent_model: str = "implicit",
     restraint_c_alpha: bool = True,
     restraint_k: float = 5.0,
-    temperature: float = 300.0,
 ) -> Any:
-    """Build OpenMM system for AlphaFold relaxation with Cα restraints."""
+    """Build OpenMM system for AlphaFold relaxation with Cα restraints.
+
+    Uses AMBER14 + GB-OBC2 implicit solvent (standard for AF relaxation per
+    Jumper 2021 / ColabFold).  Explicit solvent was removed because the prior
+    implementation did not add a water box, producing a physically incorrect
+    vacuum+PME system.
+    """
     import openmm.app as _app
     import openmm.unit as _u
     from openmm import CustomExternalForce
 
-    if solvent_model == "implicit":
-        ff = _app.ForceField(forcefield, "amber14_obc2.xml")
-        system = ff.createSystem(
-            topology,
-            nonbondedMethod=_app.CutoffNonPeriodic,
-            constraints=_app.HBonds,
-        )
-    else:
-        ff = _app.ForceField(forcefield, "amber14/tip3pfb.xml")
-        system = ff.createSystem(
-            topology,
-            nonbondedMethod=_app.PME,
-            nonbondedCutoff=1.0 * _u.nanometer,
-            constraints=_app.HBonds,
-        )
+    ff = _app.ForceField(forcefield, "amber14_obc2.xml")
+    system = ff.createSystem(
+        topology,
+        nonbondedMethod=_app.CutoffNonPeriodic,
+        constraints=_app.HBonds,
+    )
 
     if restraint_c_alpha:
         k_val = restraint_k * _u.kilocalories_per_mole / _u.angstrom**2
@@ -491,7 +535,8 @@ def _build_af_system(
         rest_force.addPerParticleParameter("z0")
 
         for atom in topology.atoms():
-            if atom.name == "CA" and atom.element.symbol != "H":
+            # Restrict to protein Cα (carbon); exclude calcium (element Ca)
+            if atom.name == "CA" and atom.element.symbol == "C":
                 rest_force.addParticle(atom.index, [0.0, 0.0, 0.0])
 
         system.addForce(rest_force)
