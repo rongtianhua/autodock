@@ -1120,15 +1120,18 @@ def _prepare_receptor_with_obabel(
 
 
 def _has_nan_charges(mol) -> bool:
-    """Check if any atom has a NaN Gasteiger charge."""
+    """Check if any atom has a NaN or missing Gasteiger charge."""
+    _n_charged = 0
     for atom in mol.GetAtoms():
         try:
             c = atom.GetDoubleProp("_GasteigerCharge")
             if c != c:  # NaN check
                 return True
+            _n_charged += 1
         except KeyError:
-            return True
-    return False
+            continue
+    # If none of the atoms received a charge, the calculation failed entirely
+    return _n_charged == 0
 
 
 def _prepare_ligand_with_obabel(smiles: str, output_pdbqt: str, name: str = "LIG") -> str:
@@ -1136,7 +1139,7 @@ def _prepare_ligand_with_obabel(smiles: str, output_pdbqt: str, name: str = "LIG
     from autodock.utils import write_temp_file
 
     tmp_smi = write_temp_file(smiles, ".smi")
-    tmp_pdbqt = tmp_smi.replace(".smi", "_obabel.pdbqt")
+    tmp_pdbqt = os.path.splitext(tmp_smi)[0] + "_obabel.pdbqt"
     try:
         success = obabel_convert(
             tmp_smi,
@@ -1484,7 +1487,16 @@ def prepare_ligand_from_file(
 
         mol = Chem.MolFromMol2File(str(path), removeHs=False)
         if mol is None:
-            raise PreparationError(f"Could not parse MOL2: {path}")
+            # Fallback: try Open Babel MOL2 → PDBQT directly
+            logger.warning(f"RDKit could not parse MOL2: {path} — trying Open Babel")
+            success = obabel_convert(
+                str(path), str(output_pdbqt),
+                in_format="mol2", out_format="pdbqt",
+                options=["-p", "7.4"], timeout=120,
+            )
+            if success:
+                return str(output_pdbqt)
+            raise PreparationError(f"Could not parse MOL2 with RDKit or Open Babel: {path}")
 
         smiles = Chem.MolToSmiles(mol)
         return prepare_ligand(
@@ -1562,7 +1574,16 @@ def prepare_ligand_from_sdf(
             return _prepare_ligand_with_obabel(Chem.MolToSmiles(mol), output_pdbqt, name=name)
         raise PreparationError(f"PDBQT export failed: {err}")
 
-    pdbqt_str = pdbqt_str.replace("UNL", name)
+    safe_name = (name or "LIG")[:3]
+    if safe_name != "LIG":
+        lines = pdbqt_str.splitlines()
+        renamed = []
+        for line in lines:
+            if line.startswith(("ATOM  ", "HETATM")):
+                line = line[:17] + f"{safe_name:>3}" + line[20:]
+            renamed.append(line)
+        pdbqt_str = "\n".join(renamed)
+
     with open(output_pdbqt, "w") as fh:
         fh.write(pdbqt_str)
     logger.info(f"Prepared ligand from SDF: {output_pdbqt}")
@@ -1596,9 +1617,14 @@ def prepare_ligand_conformers(
     paths = []
     for i in range(n_conformers):
         out_path = os.path.join(output_dir, f"conformer_{i}.pdbqt")
-        prepare_ligand(smiles, out_path, name=name, seed=seed_start + i, ph=ph)
-        paths.append(out_path)
-    logger.info(f"Generated {n_conformers} conformers in {output_dir}")
+        try:
+            prepare_ligand(smiles, out_path, name=name, seed=seed_start + i, ph=ph)
+            paths.append(out_path)
+        except Exception as exc:
+            logger.warning(f"Conformer {i} preparation failed: {exc} — skipping")
+    if not paths:
+        raise PreparationError(f"All {n_conformers} conformer preparations failed for {smiles}")
+    logger.info(f"Generated {len(paths)}/{n_conformers} conformers in {output_dir}")
     return paths
 
 
@@ -1627,7 +1653,9 @@ def _classify_ligand_complexity(mol) -> str:
 
     # Chiral centers restrict accessible conformational space;
     # many chirals = harder for single-conformer generation
-    n_chiral = len(Chem.FindMolChiralCenters(mol, includeUnassigned=True))
+    # Only count assigned chiral centres — unassigned centres in plain SMILES
+    # do not restrict conformational space.
+    n_chiral = len(Chem.FindMolChiralCenters(mol, includeUnassigned=False))
 
     # Macrocycles are inherently hard for distance-geometry methods
     ring_info = mol.GetRingInfo()
