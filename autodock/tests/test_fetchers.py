@@ -140,10 +140,12 @@ class TestFetchPubChemSMILES:
     @patch("autodock.fetchers._http_get_json")
     def test_not_found(self, mock_json):
         import urllib.error
+        from unittest.mock import MagicMock
 
         mock_json.side_effect = urllib.error.URLError("network error")
-        with patch("autodock.fetchers.pubchempy") as mock_pcp:
-            mock_pcp.get_compounds.side_effect = urllib.error.URLError("network error")
+        mock_pcp = MagicMock()
+        mock_pcp.get_compounds.side_effect = urllib.error.URLError("network error")
+        with patch.dict("sys.modules", {"pubchempy": mock_pcp}):
             with pytest.raises(DataSourceError):
                 fetchers.fetch_pubchem_smiles("notarealcompound12345")
 
