@@ -628,7 +628,8 @@ def pdb_chain_to_smiles(pdb_path: str, chain_id: str) -> str | None:
     import subprocess
     import tempfile
 
-    chain_pdb = tempfile.mktemp(suffix="_chain.pdb")
+    fd, chain_pdb = tempfile.mkstemp(suffix="_chain.pdb")
+    os.close(fd)
     extract_chain_from_pdb(pdb_path, chain_id, chain_pdb)
 
     obabel = find_conda_tool("obabel")
@@ -764,8 +765,18 @@ class StructureCache:
     def put(self, key: str, source_path: str, ext: str = ".pdb") -> str:
         dest = self._cache_path(key, ext)
         import shutil
+        import tempfile
 
-        shutil.copy2(source_path, dest)
+        # Atomic write: copy to temp file in same directory, then rename
+        fd, tmp_path = tempfile.mkstemp(dir=self.cache_dir, suffix=".tmp")
+        os.close(fd)
+        try:
+            shutil.copy2(source_path, tmp_path)
+            os.replace(tmp_path, dest)
+        except OSError:
+            with contextlib.suppress(OSError):
+                os.unlink(tmp_path)
+            raise
         return str(dest)
 
     def clear(self) -> int:

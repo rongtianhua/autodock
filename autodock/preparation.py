@@ -6,6 +6,7 @@ autodock.preparation — Receptor / ligand preparation and binding-site detectio
 from __future__ import annotations
 
 import contextlib
+import math
 import os
 import re
 import shutil
@@ -1136,12 +1137,12 @@ def _prepare_receptor_with_obabel(
 
 
 def _has_nan_charges(mol) -> bool:
-    """Check if any atom has a NaN or missing Gasteiger charge."""
+    """Check if any atom has a NaN, inf, or missing Gasteiger charge."""
     _n_charged = 0
     for atom in mol.GetAtoms():
         try:
             c = atom.GetDoubleProp("_GasteigerCharge")
-            if c != c:  # NaN check
+            if c != c or math.isinf(c):  # NaN or inf check
                 return True
             _n_charged += 1
         except KeyError:
@@ -1150,7 +1151,9 @@ def _has_nan_charges(mol) -> bool:
     return _n_charged == 0
 
 
-def _prepare_ligand_with_obabel(smiles: str, output_pdbqt: str, name: str = "LIG") -> str:
+def _prepare_ligand_with_obabel(
+    smiles: str, output_pdbqt: str, name: str = "LIG", ph: float = 7.4
+) -> str:
     """Fallback ligand preparation using Open Babel (SMILES → PDBQT)."""
     from autodock.utils import write_temp_file
 
@@ -1162,7 +1165,7 @@ def _prepare_ligand_with_obabel(smiles: str, output_pdbqt: str, name: str = "LIG
             tmp_pdbqt,
             in_format="smi",
             out_format="pdbqt",
-            options=["-p", "7.4", "--gen3d"],
+            options=["-p", str(ph), "--gen3d"],
             timeout=120,
         )
         if not success:
@@ -1411,7 +1414,7 @@ def prepare_ligand(
 
     if not candidate_mols:
         logger.warning("RDKit embedding failed — falling back to Open Babel")
-        return _prepare_ligand_with_obabel(smiles, output_pdbqt, name=name)
+        return _prepare_ligand_with_obabel(smiles, output_pdbqt, name=name, ph=ph)
 
     # Compute Gasteiger charges and pick the best across all candidates
     best_mol: Any | None = None
@@ -1432,7 +1435,7 @@ def prepare_ligand(
     if best_mol is None:
         # All candidates had NaN charges — fall through to OBabel
         logger.warning("Gasteiger charges contain NaN — falling back to Open Babel")
-        return _prepare_ligand_with_obabel(smiles, output_pdbqt, name=name)
+        return _prepare_ligand_with_obabel(smiles, output_pdbqt, name=name, ph=ph)
 
     if molscrub_states and len(candidate_mols) > 1:
         logger.info(f"Selected best state: {best_label} (MMFF={best_energy:.1f} kcal/mol)")
@@ -1445,7 +1448,7 @@ def prepare_ligand(
         err_str = str(exc)
         if "non finite charge" in err_str or "charge" in err_str.lower():
             logger.warning(f"Meeko charge failure ({exc}) — falling back to Open Babel")
-            return _prepare_ligand_with_obabel(smiles, output_pdbqt, name=name)
+            return _prepare_ligand_with_obabel(smiles, output_pdbqt, name=name, ph=ph)
         raise PreparationError(f"Meeko ligand prep failed: {exc}")
 
     setup = mol_setup[0] if isinstance(mol_setup, list) else mol_setup
@@ -1453,7 +1456,7 @@ def prepare_ligand(
     if not success:
         if "non finite charge" in err or "charge" in err.lower():
             logger.warning("Meeko PDBQT write charge failure — falling back to Open Babel")
-            return _prepare_ligand_with_obabel(smiles, output_pdbqt, name=name)
+            return _prepare_ligand_with_obabel(smiles, output_pdbqt, name=name, ph=ph)
         raise PreparationError(f"Meeko ligand prep failed: {err}")
 
     safe_name = (name or "LIG")[:3]
@@ -1478,6 +1481,7 @@ def prepare_ligand_from_file(
     path: str,
     output_pdbqt: str,
     name: str = "LIG",
+    ph: float = 7.4,
 ) -> str:
     """
     Prepare a ligand from a structure file, auto-detecting the format.
@@ -1510,7 +1514,7 @@ def prepare_ligand_from_file(
                 str(output_pdbqt),
                 in_format="mol2",
                 out_format="pdbqt",
-                options=["-p", "7.4"],
+                options=["-p", str(ph)],
                 timeout=120,
             )
             if success:
@@ -1524,6 +1528,7 @@ def prepare_ligand_from_file(
             name=name,
             molscrub_states=False,
             enumerate_stereo=False,
+            ph=ph,
         )
 
     # SDF / MOL — use prepare_ligand_from_sdf
@@ -1573,7 +1578,7 @@ def prepare_ligand_from_sdf(
     rdPartialCharges.ComputeGasteigerCharges(mol)
     if _has_nan_charges(mol):
         logger.warning("Gasteiger charges contain NaN — falling back to Open Babel")
-        return _prepare_ligand_with_obabel(Chem.MolToSmiles(mol), output_pdbqt, name=name)
+        return _prepare_ligand_with_obabel(Chem.MolToSmiles(mol), output_pdbqt, name=name, ph=ph)
 
     params_mk = MoleculePreparation(charge_model="gasteiger")
     try:
@@ -1582,7 +1587,7 @@ def prepare_ligand_from_sdf(
         err_str = str(exc)
         if "non finite charge" in err_str or "charge" in err_str.lower():
             logger.warning(f"Meeko charge failure ({exc}) — falling back to Open Babel")
-            return _prepare_ligand_with_obabel(Chem.MolToSmiles(mol), output_pdbqt, name=name)
+            return _prepare_ligand_with_obabel(Chem.MolToSmiles(mol), output_pdbqt, name=name, ph=ph)
         raise PreparationError(f"Meeko ligand prep failed: {exc}")
 
     setup = mol_setup[0] if isinstance(mol_setup, list) else mol_setup
@@ -1590,7 +1595,7 @@ def prepare_ligand_from_sdf(
     if not success:
         if "non finite charge" in err or "charge" in err.lower():
             logger.warning("Meeko charge error — falling back to Open Babel")
-            return _prepare_ligand_with_obabel(Chem.MolToSmiles(mol), output_pdbqt, name=name)
+            return _prepare_ligand_with_obabel(Chem.MolToSmiles(mol), output_pdbqt, name=name, ph=ph)
         raise PreparationError(f"PDBQT export failed: {err}")
 
     safe_name = (name or "LIG")[:3]
@@ -1843,7 +1848,7 @@ def prepare_ligand_multi(
             logger.warning(f"Rep {idx}: NaN charges — trying Open Babel for this conformer")
             # Fallback: write SMILES, use obabel with a different seed
             ob_path = os.path.join(output_dir, f"conformer_{idx}.pdbqt")
-            _prepare_ligand_with_obabel(smiles, ob_path, name=name)
+            _prepare_ligand_with_obabel(smiles, ob_path, name=name, ph=ph)
             paths.append(ob_path)
             continue
 
@@ -1854,7 +1859,7 @@ def prepare_ligand_multi(
         except (OSError, ValueError, RuntimeError, TypeError, ImportError) as exc:
             logger.warning(f"Rep {idx}: Meeko failed ({exc}) — Open Babel fallback")
             ob_path = os.path.join(output_dir, f"conformer_{idx}.pdbqt")
-            _prepare_ligand_with_obabel(smiles, ob_path, name=name)
+            _prepare_ligand_with_obabel(smiles, ob_path, name=name, ph=ph)
             paths.append(ob_path)
             continue
 
@@ -1863,7 +1868,7 @@ def prepare_ligand_multi(
         if not success:
             logger.warning(f"Rep {idx}: PDBQT write failed ({err}) — Open Babel fallback")
             ob_path = os.path.join(output_dir, f"conformer_{idx}.pdbqt")
-            _prepare_ligand_with_obabel(smiles, ob_path, name=name)
+            _prepare_ligand_with_obabel(smiles, ob_path, name=name, ph=ph)
             paths.append(ob_path)
             continue
 
@@ -2658,7 +2663,8 @@ def _run_fpocket_detect(
         logger.warning("fpocket not found — skipping fpocket detection")
         return None
 
-    prep_pdb = tempfile.mktemp(suffix="_fpocket_prep.pdb")
+    fd, prep_pdb = tempfile.mkstemp(suffix="_fpocket_prep.pdb")
+    os.close(fd)
     _prepare_pdb_for_fpocket(receptor_pdb, prep_pdb)
 
     prep_pdb_abs = os.path.abspath(prep_pdb)
@@ -2939,7 +2945,8 @@ def find_top_pockets(
             )
 
     # ── Preparation ─────────────────────────────────────────────────────────
-    prep_pdb = tempfile.mktemp(suffix="_prep.pdb")
+    fd, prep_pdb = tempfile.mkstemp(suffix="_prep.pdb")
+    os.close(fd)
     prep_pdb_abs: str | None = None
     prep_dir: str | None = None
     try:

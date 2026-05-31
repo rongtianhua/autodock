@@ -127,10 +127,11 @@ def _rmsd_kabsch_mols(mol1: Any, mol2: Any) -> float | None:
     Qc = Q - Q_mean
     H = Pc.T @ Qc
     U, S, Vt = np.linalg.svd(H)
-    R = Vt.T @ U.T
+    # For the objective ||Pc @ R - Qc||^2, the optimal rotation is U @ Vt
+    R = U @ Vt
     if np.linalg.det(R) < 0:
         Vt[-1, :] *= -1
-        R = Vt.T @ U.T
+        R = U @ Vt
     Pr = Pc @ R
     return float(np.sqrt(np.mean(np.sum((Pr - Qc) ** 2, axis=1))))
 

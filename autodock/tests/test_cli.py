@@ -1101,6 +1101,7 @@ class TestCmdRun:
         capsys,
     ):
         mock_compound = MagicMock()
+        mock_compound.connectivity_smiles = "CC(=O)Oc1ccccc1C(=O)O"
         mock_compound.canonical_smiles = "CC(=O)Oc1ccccc1C(=O)O"
         mock_pcp.return_value = [mock_compound]
 

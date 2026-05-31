@@ -353,7 +353,8 @@ def relax_alphafold_structure(
         pdb_str = structure.make_pdb_string()
         import tempfile
 
-        tmp_in = tempfile.mktemp(suffix="_af_raw.pdb")
+        fd, tmp_in = tempfile.mkstemp(suffix="_af_raw.pdb")
+        os.close(fd)
         try:
             with open(tmp_in, "w") as f:
                 f.write(pdb_str)
@@ -371,7 +372,8 @@ def relax_alphafold_structure(
 
         from pdbfixer import PDBFixer
 
-        tmp_pdb = tempfile.mktemp(suffix="_af_fix.pdb")
+        fd, tmp_pdb = tempfile.mkstemp(suffix="_af_fix.pdb")
+        os.close(fd)
         try:
             with open(tmp_pdb, "w") as f:
                 app.PDBFile.writeFile(pdb.topology, pdb.positions, f)

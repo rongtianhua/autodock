@@ -110,6 +110,10 @@ markers = [
     "requires_vina: marks tests requiring AutoDock Vina",
     "requires_rdkit: marks tests requiring RDKit",
 ]
+filterwarnings = [
+    # MDAnalysis internal import point deprecated in 2.8.0; not actionable
+    "ignore::DeprecationWarning:MDAnalysis.topology.tables",
+]
 
 # ─────────────────────────────────────────────────────────────────────────────
 # coverage

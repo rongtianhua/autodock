@@ -535,7 +535,8 @@ def dock_ligand(
         logger.info(f"Poses saved: {best_pose_path}, {all_poses_path}")
     else:
         # Temp files if no output_dir
-        best_pose_path = tempfile.mktemp(suffix="_best.pdbqt")
+        fd, best_pose_path = tempfile.mkstemp(suffix="_best.pdbqt")
+        os.close(fd)
         best_lines = poses[0].splitlines()
         if best_lines and best_lines[0].startswith("MODEL"):
             best_lines = best_lines[2:]
@@ -975,8 +976,6 @@ def virtual_screen(
     else:
         # Parallel execution
         if n_workers == -1:
-            import multiprocessing
-
             n_workers = multiprocessing.cpu_count()
 
         work_items = []
@@ -1000,7 +999,10 @@ def virtual_screen(
 
         logger.info(f"Starting parallel virtual screening with {n_workers} workers")
         results = [None] * len(work_items)
-        with ProcessPoolExecutor(max_workers=n_workers) as executor:
+        mp_ctx = multiprocessing.get_context("spawn")
+        with ProcessPoolExecutor(
+            max_workers=n_workers, mp_context=mp_ctx
+        ) as executor:
             futures = {
                 executor.submit(_dock_single_compound, item): i for i, item in enumerate(work_items)
             }
@@ -1166,7 +1168,10 @@ def batch_dock(
         from concurrent.futures import ProcessPoolExecutor, as_completed
 
         raw_results = [None] * len(work_items)
-        with ProcessPoolExecutor(max_workers=n_workers) as executor:
+        mp_ctx = multiprocessing.get_context("spawn")
+        with ProcessPoolExecutor(
+            max_workers=n_workers, mp_context=mp_ctx
+        ) as executor:
             futures = {executor.submit(_dock_one, item): i for i, item in enumerate(work_items)}
             for future in as_completed(futures):
                 idx = futures[future]

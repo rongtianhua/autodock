@@ -236,7 +236,8 @@ def render_scene_pymol(
         save_pse=save_pse,
     )
 
-    script_path = tempfile.mktemp(suffix=".pml")
+    fd, script_path = tempfile.mkstemp(suffix=".pml")
+    os.close(fd)
     with open(script_path, "w") as fh:
         fh.write(script)
 

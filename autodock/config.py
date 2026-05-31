@@ -71,7 +71,7 @@ def _apply_defaults(cfg: dict[str, Any]) -> dict[str, Any]:
             "chain": None,
             "remove_water": True,
             "remove_hetatms": True,
-            "ph": 7.0,
+            "ph": 7.4,
             "minimize": True,
             "forcefield": "amber14-all",
         },
@@ -186,7 +186,7 @@ receptor:
   chain: "A"
   remove_water: true
   remove_hetatms: true
-  ph: 7.0
+  ph: 7.4
   minimize: true
   forcefield: "amber14-all"
 

@@ -79,6 +79,7 @@ def minimize_docked_pose(
     restraint_k: float = 10000.0,
     force_field: str = "amber14-all.xml",
     small_molecule_forcefield: str = "openff-2.2.0",
+    ph: float = 7.4,
 ) -> dict[str, Any]:
     """
     Energy-minimize a docked ligand pose.
@@ -158,6 +159,7 @@ def minimize_docked_pose(
                 restraint_k,
                 force_field,
                 small_molecule_forcefield,
+                ph,
             )
         else:
             result = _minimize_ligand_only(
@@ -256,6 +258,7 @@ def _minimize_complex(
     restraint_k: float,
     force_field: str,
     small_molecule_forcefield: str,
+    ph: float = 7.4,
 ) -> dict[str, Any]:
     """Minimise ligand in complex with receptor (requires continuous chain)."""
     try:
@@ -274,7 +277,7 @@ def _minimize_complex(
     fixer.removeHeterogens(keepWater=False)
     fixer.findMissingAtoms()
     fixer.addMissingAtoms()
-    fixer.addMissingHydrogens(7.0)
+    fixer.addMissingHydrogens(ph)
     receptor_n = fixer.topology.getNumAtoms()
 
     system_generator = SystemGenerator(
