@@ -629,7 +629,14 @@ def prepare_receptor(
         with open(tmp_fixed, "w") as fh:
             _OMM_PDBFile.writeFile(fixer.topology, fixer.positions, fh)
         logger.info(f"PDBFixer: missing residues filled, hydrogens added (pH {ph})")
-    except (OSError, ValueError, RuntimeError, TypeError, ImportError, openmm.OpenMMException) as exc:
+    except (
+        OSError,
+        ValueError,
+        RuntimeError,
+        TypeError,
+        ImportError,
+        openmm.OpenMMException,
+    ) as exc:
         logger.warning(f"PDBFixer failed ({exc}) — falling back to raw structure")
         tmp_fixed = tmp_raw  # use raw structure
     finally:
@@ -859,7 +866,14 @@ def prepare_receptor(
         with open(tmp_min, "w") as fh:
             PDBFile.writeFile(_top, min_positions, fh)
         logger.info("OpenMM: receptor energy minimised (200 steps L-BFGS)")
-    except (OSError, ValueError, RuntimeError, TypeError, ImportError, openmm.OpenMMException) as exc:
+    except (
+        OSError,
+        ValueError,
+        RuntimeError,
+        TypeError,
+        ImportError,
+        openmm.OpenMMException,
+    ) as exc:
         logger.warning(f"OpenMM minimisation skipped ({exc}) — using PDBFixer output")
         tmp_min = tmp_fixed
 
