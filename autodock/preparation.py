@@ -2461,7 +2461,7 @@ def _compute_pocket_shape_descriptors(
         desc["surface_area"] = round(float(hull.area), 1)
     except ImportError:
         pass
-    except (OSError, ValueError, RuntimeError, TypeError):
+    except (OSError, ValueError, RuntimeError):
         pass
 
     return desc
@@ -3181,7 +3181,7 @@ def find_top_pockets(
                 from autodock.alphafold_tools import assess_alphafold_quality
 
                 af_data = assess_alphafold_quality(receptor_pdb)
-            except (OSError, ValueError, RuntimeError, TypeError, ImportError):
+            except (OSError, ValueError, RuntimeError, ImportError):
                 pass
 
         # Step 5: Build enriched result list ─────────────────────────────────────

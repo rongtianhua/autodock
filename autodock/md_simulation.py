@@ -215,7 +215,7 @@ def run_md_stability(
                     forcefield_xmls = list(forcefield_xmls) + [gaff.forcefield]
                     _have_gaff = True
                     logger.info("Ligand parameterized with GAFF via openmmforcefields")
-            except (RuntimeError, ValueError, TypeError, ImportError) as exc:
+            except (RuntimeError, ValueError, ImportError) as exc:
                 logger.warning(f"GAFF parameterization failed: {exc}")
 
         system_generator = SystemGenerator(

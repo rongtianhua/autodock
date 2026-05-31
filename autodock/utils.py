@@ -42,7 +42,7 @@ def write_temp_file(content: str, suffix: str = ".tmp") -> str:
     try:
         with os.fdopen(fd, "w") as fh:
             fh.write(content)
-    except (OSError, TypeError, ValueError):
+    except (OSError, ValueError):
         with contextlib.suppress(OSError):
             os.close(fd)
         with contextlib.suppress(OSError):
