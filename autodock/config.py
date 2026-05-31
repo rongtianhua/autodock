@@ -46,7 +46,7 @@ def load_config(path: str | Path) -> dict[str, Any]:
     try:
         with open(path) as fh:
             cfg = yaml.safe_load(fh)
-    except Exception as exc:
+    except (OSError, yaml.YAMLError) as exc:
         raise ConfigurationError(f"Failed to parse YAML config: {exc}")
 
     if not isinstance(cfg, dict):
