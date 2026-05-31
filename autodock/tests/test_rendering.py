@@ -88,7 +88,7 @@ def _have_rdkit() -> bool:
         import importlib.util as _iu
 
         return _iu.find_spec("rdkit") is not None
-    except Exception:
+    except (ImportError, OSError):
         return False
 
 
