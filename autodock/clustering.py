@@ -21,7 +21,7 @@ try:
     from rdkit.Chem import AllChem
 
     _HAVE_RDKIT_CLUSTERING = True
-except Exception:
+except ImportError:
     _HAVE_RDKIT_CLUSTERING = False
 
 
@@ -72,12 +72,12 @@ def _rmsd_between_mols(mol1: Any, mol2: Any) -> float | None:
     # Attempt 1: topology-aware GetBestRMS
     try:
         return float(AllChem.GetBestRMS(mol1, mol2))
-    except Exception:
+    except (RuntimeError, ValueError, TypeError):
         pass
     # Attempt 2: coordinate-based Kabsch on matched heavy atoms
     try:
         return _rmsd_kabsch_mols(mol1, mol2)
-    except Exception:
+    except (ValueError, TypeError, RuntimeError, IndexError):
         return None
 
 
