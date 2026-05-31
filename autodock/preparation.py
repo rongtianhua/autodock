@@ -1554,6 +1554,7 @@ def prepare_ligand_from_sdf(
     sdf_path: str,
     output_pdbqt: str,
     name: str = "LIG",
+    ph: float = 7.4,
 ) -> str:
     """
     Prepare a ligand from an SDF file, preserving existing 3D coordinates.
@@ -1602,7 +1603,9 @@ def prepare_ligand_from_sdf(
         err_str = str(exc)
         if "non finite charge" in err_str or "charge" in err_str.lower():
             logger.warning(f"Meeko charge failure ({exc}) — falling back to Open Babel")
-            return _prepare_ligand_with_obabel(Chem.MolToSmiles(mol), output_pdbqt, name=name, ph=ph)
+            return _prepare_ligand_with_obabel(
+                Chem.MolToSmiles(mol), output_pdbqt, name=name, ph=ph
+            )
         raise PreparationError(f"Meeko ligand prep failed: {exc}")
 
     setup = mol_setup[0] if isinstance(mol_setup, list) else mol_setup
@@ -1610,7 +1613,9 @@ def prepare_ligand_from_sdf(
     if not success:
         if "non finite charge" in err or "charge" in err.lower():
             logger.warning("Meeko charge error — falling back to Open Babel")
-            return _prepare_ligand_with_obabel(Chem.MolToSmiles(mol), output_pdbqt, name=name, ph=ph)
+            return _prepare_ligand_with_obabel(
+                Chem.MolToSmiles(mol), output_pdbqt, name=name, ph=ph
+            )
         raise PreparationError(f"PDBQT export failed: {err}")
 
     safe_name = (name or "LIG")[:3]
@@ -1797,6 +1802,7 @@ def prepare_ligand_multi(
     seed: int = 42,
     n_conformers: int = 50,
     max_representatives: int = 5,
+    ph: float = 7.4,
 ) -> list[str]:
     """
     Prepare a ligand with multi-conformer sampling for flexible molecules.

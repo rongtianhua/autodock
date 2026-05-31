@@ -2,7 +2,6 @@
 
 from unittest.mock import MagicMock, patch
 
-import numpy as np
 import pytest
 
 from autodock import analysis
@@ -112,16 +111,13 @@ class TestAnalyzeScoringBias:
         crystal.write_text("ATOM 1 C\n")
 
         # Pre-import matplotlib.pyplot so patch() can find it
-        import matplotlib.pyplot
 
         with patch.object(analysis, "compute_rmsd_to_crystal", return_value=1.5):
             with patch("matplotlib.pyplot") as mock_plt:
                 fig = MagicMock()
                 ax = MagicMock()
                 mock_plt.subplots.return_value = (fig, ax)
-                results = analysis.analyze_scoring_bias(
-                    str(out), target_ids=["1ABC"]
-                )
+                results = analysis.analyze_scoring_bias(str(out), target_ids=["1ABC"])
 
         assert "1ABC" in results
         assert len(results["1ABC"]["poses"]) == 2
@@ -146,8 +142,6 @@ class TestAnalyzeScoringBias:
 
         with patch.object(analysis, "compute_rmsd_to_crystal", return_value=1.0):
             with patch.dict("sys.modules", {"matplotlib": None}):
-                results = analysis.analyze_scoring_bias(
-                    str(out), target_ids=["1ABC"]
-                )
+                results = analysis.analyze_scoring_bias(str(out), target_ids=["1ABC"])
         assert "1ABC" in results
         assert "figure_path" not in results["1ABC"]

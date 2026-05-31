@@ -2,11 +2,10 @@
 
 from unittest.mock import MagicMock, patch
 
-import numpy as np
 import pytest
 
-from autodock.core import DockingResult
 from autodock import heatmap
+from autodock.core import DockingResult
 
 
 class TestPlotEnergyHeatmap:
@@ -79,9 +78,7 @@ class TestPlotEnergyHeatmap:
                     cbar = MagicMock()
                     fig.colorbar.return_value = cbar
                     cbar.ax = MagicMock()
-                    heatmap.plot_energy_heatmap(
-                        batch, output_dir=str(tmp_path), figsize=None
-                    )
+                    heatmap.plot_energy_heatmap(batch, output_dir=str(tmp_path), figsize=None)
                     # figsize should be auto-computed
                     call_args = mock_plt.subplots.call_args
                     assert call_args[1]["figsize"] is not None

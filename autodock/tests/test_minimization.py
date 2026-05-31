@@ -7,8 +7,6 @@ and focus on API contract, parameter validation, and graceful fallback paths.
 
 from unittest.mock import MagicMock, patch
 
-import pytest
-
 from autodock import minimization
 
 
@@ -28,8 +26,9 @@ class TestMinimizeDockedPose:
 
     def test_returns_error_when_openmm_unavailable(self, tmp_path):
         """If OpenMM is missing, return a structured error dict."""
-        with patch.object(minimization, "_HAVE_OPENFF", True), patch.object(
-            minimization, "_HAVE_OPENMM", False
+        with (
+            patch.object(minimization, "_HAVE_OPENFF", True),
+            patch.object(minimization, "_HAVE_OPENMM", False),
         ):
             result = minimization.minimize_docked_pose(
                 receptor_pdb=str(tmp_path / "rec.pdb"),
@@ -41,9 +40,11 @@ class TestMinimizeDockedPose:
 
     def test_returns_error_when_rdkit_unavailable(self, tmp_path):
         """If RDKit is missing, return a structured error dict."""
-        with patch.object(minimization, "_HAVE_OPENFF", True), patch.object(
-            minimization, "_HAVE_OPENMM", True
-        ), patch.object(minimization, "_HAVE_RDKIT", False):
+        with (
+            patch.object(minimization, "_HAVE_OPENFF", True),
+            patch.object(minimization, "_HAVE_OPENMM", True),
+            patch.object(minimization, "_HAVE_RDKIT", False),
+        ):
             result = minimization.minimize_docked_pose(
                 receptor_pdb=str(tmp_path / "rec.pdb"),
                 ligand_pdbqt=str(tmp_path / "lig.pdbqt"),
@@ -57,9 +58,11 @@ class TestMinimizeDockedPose:
         ligand_pdbqt = tmp_path / "lig.pdbqt"
         ligand_pdbqt.write_text("ATOM   ")
 
-        with patch.object(minimization, "_HAVE_OPENFF", True), patch.object(
-            minimization, "_HAVE_OPENMM", True
-        ), patch.object(minimization, "_HAVE_RDKIT", True):
+        with (
+            patch.object(minimization, "_HAVE_OPENFF", True),
+            patch.object(minimization, "_HAVE_OPENMM", True),
+            patch.object(minimization, "_HAVE_RDKIT", True),
+        ):
             with patch.object(minimization, "_build_ligand", return_value=(None, None)):
                 result = minimization.minimize_docked_pose(
                     receptor_pdb=str(tmp_path / "rec.pdb"),
@@ -82,9 +85,11 @@ class TestMinimizeDockedPose:
         mock_offmol = MagicMock()
         mock_positions = MagicMock()
 
-        with patch.object(minimization, "_HAVE_OPENFF", True), patch.object(
-            minimization, "_HAVE_OPENMM", True
-        ), patch.object(minimization, "_HAVE_RDKIT", True):
+        with (
+            patch.object(minimization, "_HAVE_OPENFF", True),
+            patch.object(minimization, "_HAVE_OPENMM", True),
+            patch.object(minimization, "_HAVE_RDKIT", True),
+        ):
             with patch.object(
                 minimization, "_build_ligand", return_value=(mock_offmol, mock_positions)
             ):
@@ -113,9 +118,11 @@ class TestMinimizeDockedPose:
         mock_offmol = MagicMock()
         mock_positions = MagicMock()
 
-        with patch.object(minimization, "_HAVE_OPENFF", True), patch.object(
-            minimization, "_HAVE_OPENMM", True
-        ), patch.object(minimization, "_HAVE_RDKIT", True):
+        with (
+            patch.object(minimization, "_HAVE_OPENFF", True),
+            patch.object(minimization, "_HAVE_OPENMM", True),
+            patch.object(minimization, "_HAVE_RDKIT", True),
+        ):
             with patch.object(
                 minimization, "_build_ligand", return_value=(mock_offmol, mock_positions)
             ):
@@ -133,12 +140,12 @@ class TestMinimizeDockedPose:
 
     def test_build_ligand_failure_returns_early(self, tmp_path):
         """If _build_ligand fails, return early with error info."""
-        with patch.object(minimization, "_HAVE_OPENFF", True), patch.object(
-            minimization, "_HAVE_OPENMM", True
-        ), patch.object(minimization, "_HAVE_RDKIT", True):
-            with patch.object(
-                minimization, "_build_ligand", return_value=(None, None)
-            ):
+        with (
+            patch.object(minimization, "_HAVE_OPENFF", True),
+            patch.object(minimization, "_HAVE_OPENMM", True),
+            patch.object(minimization, "_HAVE_RDKIT", True),
+        ):
+            with patch.object(minimization, "_build_ligand", return_value=(None, None)):
                 result = minimization.minimize_docked_pose(
                     receptor_pdb=str(tmp_path / "rec.pdb"),
                     ligand_pdbqt=str(tmp_path / "lig.pdbqt"),
@@ -203,9 +210,7 @@ class TestBuildLigand:
                 mock_chem.MolFromSmiles.return_value.GetConformer.return_value = MagicMock()
                 mock_chem.MolFromSmiles.return_value.GetNumAtoms.return_value = 1
                 mock_chem.MolFromSmiles.return_value.GetAtoms.return_value = []
-                with patch.object(
-                    minimization, "OpenFFMolecule"
-                ) as mock_off:
+                with patch.object(minimization, "OpenFFMolecule") as mock_off:
                     mock_off.from_smiles.return_value = mock_mol
                     result = minimization._build_ligand(
                         ligand_pdbqt=str(pdbqt),
@@ -288,9 +293,7 @@ class TestBuildLigandKabsch:
         import numpy as np
 
         # Non-coplanar 4-atom set so the SVD gives a well-determined 3-D rotation
-        docked = np.array(
-            [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]]
-        )
+        docked = np.array([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]])
         # 90° rotation around Z
         rot = np.array([[0.0, -1.0, 0.0], [1.0, 0.0, 0.0], [0.0, 0.0, 1.0]])
         template = (docked - docked.mean(axis=0)) @ rot.T + docked.mean(axis=0)

@@ -45,9 +45,7 @@ class TestParsePLDDTFromPDB:
 
     def test_skips_non_atom_lines(self, tmp_path):
         pdb = tmp_path / "af.pdb"
-        het_line = (
-            "HETATM    2  O   HOH A 100       1.000   1.000   1.000  1.00 10.00"
-        )
+        het_line = "HETATM    2  O   HOH A 100       1.000   1.000   1.000  1.00 10.00"
         lines = [
             "REMARK   1",
             _pdb_atom(1, "CA ", "ALA", "A", 1, 0.0, 0.0, 0.0, 1.0, 88.0),
@@ -68,9 +66,7 @@ class TestParsePLDDTFromPDB:
 
     def test_invalid_bfactor_skipped(self, tmp_path):
         pdb = tmp_path / "af.pdb"
-        bad_line = (
-            f"ATOM      1  CA  ALA A   1       0.000   0.000   0.000  1.00 xx.xx"
-        )
+        bad_line = "ATOM      1  CA  ALA A   1       0.000   0.000   0.000  1.00 xx.xx"
         pdb.write_text(bad_line + "\n")
         vals, residues = alphafold_tools._parse_plddt_from_pdb(str(pdb))
         assert vals == []
@@ -231,9 +227,7 @@ class TestRelaxAlphaFoldStructure:
     def test_nan_guard_returns_failure(self, tmp_path):
         """If coordinates become NaN during MD, return success=False."""
         pdb = tmp_path / "af.pdb"
-        pdb.write_text(
-            _pdb_atom(1, "CA ", "ALA", "A", 1, 0.0, 0.0, 0.0, 1.0, 90.0) + "\n"
-        )
+        pdb.write_text(_pdb_atom(1, "CA ", "ALA", "A", 1, 0.0, 0.0, 0.0, 1.0, 90.0) + "\n")
         out_dir = tmp_path / "out"
 
         mock_sim = MagicMock()

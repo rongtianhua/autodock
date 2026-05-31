@@ -2,12 +2,9 @@
 
 import json
 import os
-from unittest.mock import MagicMock, patch
 
-import pytest
-
-from autodock.core import DockingResult
 from autodock import pipeline
+from autodock.core import DockingResult
 
 
 class TestBuildPairDir:
@@ -86,7 +83,7 @@ class TestPostProcessDocking:
             all_poses_pdbqt=str(all_poses),
         )
         pair_root = tmp_path / "pair"
-        out = pipeline.post_process_docking(
+        pipeline.post_process_docking(
             result,
             str(pair_root),
             receptor_pdb=str(rec_pdb),
@@ -102,9 +99,7 @@ class TestPostProcessDocking:
         assert (struct_dir / "receptor.pdb").exists()
 
     def test_interactions_saved_when_provided(self, tmp_path):
-        result = self._make_result(
-            interactions=[{"type": "H-bond", "residue": "ALA:1"}]
-        )
+        result = self._make_result(interactions=[{"type": "H-bond", "residue": "ALA:1"}])
         pair_root = tmp_path / "pair"
         out = pipeline.post_process_docking(
             result,
@@ -143,7 +138,7 @@ class TestPostProcessDocking:
             n_clusters=3,
         )
         pair_root = tmp_path / "pair"
-        out = pipeline.post_process_docking(
+        pipeline.post_process_docking(
             result,
             str(pair_root),
             do_interactions=False,
@@ -170,7 +165,7 @@ class TestReadDockingResults:
             "best_affinity": -7.5,
         }
         (subdir / "result.json").write_text(json.dumps(data))
-        results = pipeline.read_docking_results(str(tmp_dir := tmp_path))
+        results = pipeline.read_docking_results(str(tmp_path))
         assert len(results) == 1
         assert results[0].compound_name == "aspirin"
 

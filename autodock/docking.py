@@ -1000,9 +1000,7 @@ def virtual_screen(
         logger.info(f"Starting parallel virtual screening with {n_workers} workers")
         results = [None] * len(work_items)
         mp_ctx = multiprocessing.get_context("spawn")
-        with ProcessPoolExecutor(
-            max_workers=n_workers, mp_context=mp_ctx
-        ) as executor:
+        with ProcessPoolExecutor(max_workers=n_workers, mp_context=mp_ctx) as executor:
             futures = {
                 executor.submit(_dock_single_compound, item): i for i, item in enumerate(work_items)
             }
@@ -1169,9 +1167,7 @@ def batch_dock(
 
         raw_results = [None] * len(work_items)
         mp_ctx = multiprocessing.get_context("spawn")
-        with ProcessPoolExecutor(
-            max_workers=n_workers, mp_context=mp_ctx
-        ) as executor:
+        with ProcessPoolExecutor(max_workers=n_workers, mp_context=mp_ctx) as executor:
             futures = {executor.submit(_dock_one, item): i for i, item in enumerate(work_items)}
             for future in as_completed(futures):
                 idx = futures[future]

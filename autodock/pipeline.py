@@ -319,7 +319,9 @@ def read_docking_results(result_dir: str) -> list[DockingResult]:
                     with open(path) as fh:
                         data = json.load(fh)
                     if not isinstance(data, dict):
-                        logger.warning(f"Skipping {path}: expected JSON object, got {type(data).__name__}")
+                        logger.warning(
+                            f"Skipping {path}: expected JSON object, got {type(data).__name__}"
+                        )
                         continue
                     # Schema validation for required fields
                     _required = {"compound_name", "receptor"}
