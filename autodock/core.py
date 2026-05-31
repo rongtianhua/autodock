@@ -794,14 +794,18 @@ _POCKET_MIN_DIM = 5.0
 _POCKET_MAX_DIM = 40.0
 _POCKET_MAX_VOLUME = 2000.0
 _POCKET_MIN_DEPTH = 3.0
-# P2Rank probability threshold.
-# Krivák & Hoksza 2018 (Bioinformatics) define ≥0.5 as "high confidence"
-# for the original P2Rank model.  However, at this threshold the recall
-# drops to ~55-65% on diverse targets.  For pocket detection in a docking
-# pipeline (where false positives are less harmful than missed pockets),
-# 0.3 gives ~85-90% recall with acceptable precision (precision ~70%
-# on the COACH420 test set per Krivák & Hoksza Table 2).
-# Users can override via find_top_pockets(p2rank_prob_threshold=...).
+# P2Rank probability threshold — used as a log-level filter, NOT a hard cutoff.
+# Krivák & Hoksza 2018 (Bioinformatics) define ≥0.5 as "high confidence";
+# at 0.3 recall is ~85% but precision drops to ~70% (COACH420).
+#
+# Critical design note: In this pipeline the primary selector is top-10 ranking
+# (see _P2RANK_CROSSVAL_TOPK in find_top_pockets).  ALL top-10 pockets enter
+# fpocket cross-validation regardless of score.  _P2RANK_PROB_THRESHOLD here
+# only controls a DEBUG log message — it NEVER discards pockets.
+#
+# Users who want ultra-high precision at the cost of recall can override via
+# find_top_pockets(p2rank_prob_threshold=...) which will discard below-threshold
+# pockets BEFORE fpocket validation.
 _P2RANK_PROB_THRESHOLD = 0.3
 # Druggability threshold (fpocket: ≥0.3 druggable, adapted from Schmidtke et al. 2010)
 _DRUGGABILITY_THRESHOLD = 0.3

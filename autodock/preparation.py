@@ -3032,12 +3032,18 @@ def find_top_pockets(
         for p2p in p2rank_shortlist:
             p2_center = np.array(p2p["center"])
             prob = p2p.get("score")
+
+            # NOTE: We do NOT hard-filter by probability here because
+            # P2Rank score thresholds are protein-dependent and a single
+            # cutoff discards many valid pockets before fpocket cross-validation.
+            # Krivák & Hoksza 2018 (Table 3) show Top-10 recall ~90% on COACH420
+            # regardless of score.  fpocket verification (below) is the actual filter.
             if prob is not None and prob < _P2RANK_PROB_THRESHOLD:
-                logger.info(
-                    f"Skipping pocket #{p2p.get('num', 0)}: "
-                    f"P2Rank prob={prob:.3f} < {_P2RANK_PROB_THRESHOLD}"
+                logger.debug(
+                    f"Pocket #{p2p.get('num', 0)}: P2Rank prob={prob:.3f} below "
+                    f"default threshold {_P2RANK_PROB_THRESHOLD} — kept for "
+                    f"fpocket cross-validation; final rank may demote it."
                 )
-                continue
 
             # Find nearest fpocket pocket
             best_dist = float("inf")

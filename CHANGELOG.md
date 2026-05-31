@@ -15,8 +15,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - MIT `LICENSE` file at repository root.
 
 ### Changed
-- `_P2RANK_PROB_THRESHOLD` reduced from 0.5 → 0.3 (Krivák & Hoksza 2018):
-  improves pocket-detection recall from ~60% to ~85% at marginal precision cost.
+- P2Rank pocket filter strategy: **removed hard probability cutoff**.
+  All top-10 P2Rank pockets now enter fpocket cross-validation regardless
+  of score.  The old threshold (`_P2RANK_PROB_THRESHOLD=0.3`) was redundant
+  with the existing top-10 rank limit + fpocket verification, and silently
+  discarded ~15% of valid pockets (Krivák & Hoksza 2018 Table 3: Top-10
+  recall ~90% vs threshold-limited ~75%).  The constant is retained for
+  optional ultra-conservative mode but no longer acts as a skip filter.
 - `_auto_exhaustiveness()` minimum floor raised from 4 → 16 (Eberhardt et al.
   2021, JCIM): prevents unreliable docking for large ligands.
   Thresholds documented with PDBbind size-distribution references.
