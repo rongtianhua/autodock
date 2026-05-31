@@ -78,7 +78,7 @@ def validate_pose_with_posebusters(
         busters = PoseBusters(config="dock")
         try:
             results = busters.bust(tmp_sdf.name, mol_cond=receptor_pdb)
-        except Exception as exc:
+        except (RuntimeError, ValueError, TypeError, OSError) as exc:
             logger.warning(f"PoseBusters validation failed: {exc}")
             return {"available": True, "pass": False, "error": str(exc)}
     finally:
@@ -273,7 +273,7 @@ def compute_rmsd(
     try:
         rms = AllChem.GetBestRMS(mol1, mol2)
         return float(rms)
-    except Exception as exc:
+    except (RuntimeError, ValueError, TypeError) as exc:
         logger.warning(f"RMSD calculation failed: {exc}")
         return None
 
@@ -371,7 +371,7 @@ def compute_rmsd_coordinate_based(
 
     try:
         return _kabsch_rmsd(c1[matched_1], c2[matched_2])
-    except Exception as exc:
+    except (ValueError, TypeError, RuntimeError, IndexError) as exc:
         logger.warning(f"Coordinate-based RMSD failed: {exc}")
         return None
 
@@ -416,7 +416,7 @@ def compute_rmsd_to_crystal(
     try:
         rms = AllChem.GetBestRMS(docked_mol, crystal_mol)
         return float(rms)
-    except Exception as exc:
+    except (RuntimeError, ValueError, TypeError) as exc:
         logger.debug(f"GetBestRMS failed: {exc} — falling back to coordinate-based RMSD")
 
     # Attempt 2: coordinate-based matching (handles different atom orderings)
@@ -693,7 +693,7 @@ def run_redocking_validation(
                     # Add padding
                     size = tuple(s + 2 * box_padding for s in size)
                     pockets = [{"center": center, "box_size": size}]
-            except Exception as exc:
+            except (ValueError, TypeError, IndexError, RuntimeError) as exc:
                 logger.warning(f"Bounding-box fallback failed: {exc}")
 
         if not pockets:
