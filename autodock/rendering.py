@@ -266,7 +266,7 @@ def render_scene_pymol(
             _rgb = _img.convert("RGB")
             _rgb.save(output_pdf, dpi=(DEFAULT_DPI, DEFAULT_DPI), format="PDF")
             logger.info(f"3D scene (PDF): {output_pdf}")
-        except Exception as exc:
+        except (OSError, TypeError, ValueError) as exc:
             logger.warning(f"3D PDF output skipped: {exc}")
 
     return output_png
@@ -700,7 +700,7 @@ def render_interactions_2d(
             if os.path.isfile(path):
                 try:
                     return ImageFont.truetype(path, size)
-                except Exception:
+                except OSError:
                     continue
         return ImageFont.load_default()
 
@@ -979,7 +979,7 @@ def render_interactions_2d(
             rgb_img = img.convert("RGB")
             rgb_img.save(output_pdf, dpi=(dpi, dpi), format="PDF")
             logger.info(f"2D interaction diagram (PDF): {output_pdf}")
-        except Exception as exc:
+        except (OSError, TypeError, ValueError) as exc:
             logger.warning(f"2D PDF output skipped: {exc}")
 
     return output_png
