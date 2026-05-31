@@ -295,6 +295,7 @@ def prepare_receptor(
     restraint_radius: float = 8.0,
     retain_metal_ions: bool = True,
     predict_pka: bool = True,
+    fix_protonation: bool = False,
     keep_waters_near_metal: bool = True,
     output_report_json: str | None = None,
     detect_af_structure: bool = True,
@@ -359,6 +360,16 @@ def prepare_receptor(
             Residues with pKa within ±1 of the target pH are flagged as
             having potentially wrong protonation states.  Pure reporting;
             does not modify the structure.  Set False to skip.
+            **Deprecated** — use ``fix_protonation`` instead for active
+            structure modification.
+        fix_protonation: If True, run PDB2PQR+PROPKA to **actively correct**
+            protonation states based on predicted pKa values.  Unlike
+            ``predict_pka`` (read-only), this modifies the PDB structure:
+            PROPKA pKa predictions are applied via PDB2PQR's
+            ``apply_pka_values()``, hydrogens are added with corrected
+            tautomer/protonation states, and the H-bond network is
+            optimized.  Requires ``pdb2pqr`` (conda-forge).
+            Default: False.  When True, ``predict_pka`` is implied.
         keep_waters_near_metal: If True (default), retain crystallographic
             waters that coordinate metal ions (distance < 2.5 Å).
             Functional waters are often critical for metalloprotein
@@ -789,6 +800,52 @@ def prepare_receptor(
         except (OSError, ValueError, RuntimeError, TypeError) as exc:
             logger.warning(f"PROPKA pKa prediction failed ({exc}) — skipping")
 
+    # ── Step 4c: PDB2PQR — active protonation correction ────────────────
+    # Replaces `predict_pka` read-only mode with actual structure modification.
+    # PDB2PQR runs PROPKA internally, applies pKa-corrected protonation states,
+    # adds hydrogens, and optimises the H-bond network via its built-in reduce.
+    # The `--noopt` flag avoids re-running reduce (already done in Step 4).
+    tmp_pdb2pqr = tmp_reduced  # default: fall back to reduce output
+    if fix_protonation:
+        pdb2pqr_bin = find_conda_tool("pdb2pqr")
+        if pdb2pqr_bin:
+            tmp_pdb2pqr_pdb = write_temp_file("", suffix="_pdb2pqr.pdb")
+            _all_temps.append(tmp_pdb2pqr_pdb)
+            try:
+                success, _stdout, stderr = safe_subprocess(
+                    [
+                        pdb2pqr_bin,
+                        "--ff=AMBER",
+                        f"--with-ph={ph}",
+                        "--pdb-output",
+                        tmp_pdb2pqr_pdb,
+                        "--titration-state-method=propka",
+                        "--noopt",  # reduce already did H-bond opt (Step 4)
+                        "--keep-chain",
+                        "--drop-water",  # will be filtered in Step 6 anyway
+                        tmp_reduced,
+                        os.devnull,  # discard .pqr output (not needed)
+                    ],
+                    timeout=300,
+                )
+                if success and os.path.getsize(tmp_pdb2pqr_pdb) > 100:
+                    tmp_pdb2pqr = tmp_pdb2pqr_pdb
+                    logger.info("PDB2PQR: protonation states corrected via PROPKA " f"(pH {ph})")
+                    # Override predict_pka — PDB2PQR already did the analysis
+                    predict_pka = False
+                else:
+                    logger.warning(
+                        f"PDB2PQR produced unusable output ({stderr[:200]}) "
+                        "— using reduce output"
+                    )
+            except (OSError, ValueError, RuntimeError, TypeError) as exc:
+                logger.warning(f"PDB2PQR failed ({exc}) — using reduce output")
+        else:
+            logger.info(
+                "pdb2pqr not found (install: conda install -c conda-forge pdb2pqr) "
+                "— protonation correction skipped"
+            )
+
     # ── Step 5: OpenMM pocket-restrained energy minimisation ─────────────
     tmp_min = write_temp_file("", suffix="_minimized.pdb")
     _all_temps.append(tmp_min)
@@ -801,7 +858,7 @@ def prepare_receptor(
         # Reload from Reduce output for OpenMM
         from pdbfixer import PDBFixer as _PBFixer
 
-        _reduce_fixer = _PBFixer(filename=tmp_reduced)
+        _reduce_fixer = _PBFixer(filename=tmp_pdb2pqr)
         _top = _reduce_fixer.topology
         _pos = _reduce_fixer.positions  # OpenMM: units in nm
 
@@ -895,7 +952,10 @@ def prepare_receptor(
 
     # Clean up intermediate temp files; keep tmp_raw until the very end
     # so that fallback paths always have a valid source file.
-    for _t in (tmp_fixed, tmp_reduced, tmp_min):
+    _cleanup_temps = {tmp_fixed, tmp_reduced, tmp_min}
+    if fix_protonation:
+        _cleanup_temps.add(tmp_pdb2pqr)
+    for _t in _cleanup_temps:
         if _t != tmp_raw and _t not in (_original_tmp_raw,):
             with contextlib.suppress(OSError):
                 if os.path.exists(_t):
@@ -1018,6 +1078,28 @@ def prepare_receptor(
     if retained_metals:
         logger.info(f"Retained metal ions / cofactors: {dict(sorted(retained_metals.items()))}")
     pdb_content = "\n".join(filtered)
+
+    # ── Step 6b: OpenBabel normalization (PDB2PQR compatibility) ────────
+    # PDB2PQR's --pdb-output uses forcefield-specific atom naming (AMBER).
+    # OpenBabel re-writes atom/residue names to standard PDB conventions
+    # that Meeko's Polymer.from_pdb_string() can parse reliably.
+    # This also catches any naming anomalies introduced by PDB2PQR+PROPKA.
+    if fix_protonation and find_conda_tool("obabel"):
+        tmp_norm = write_temp_file(pdb_content, suffix="_normalized.pdb")
+        _all_temps.append(tmp_norm)
+        try:
+            norm_success, _norm_out, norm_err = safe_subprocess(
+                ["obabel", "-ipdb", tmp_norm, "-opdb", "-O", tmp_norm],
+                timeout=120,
+            )
+            if norm_success:
+                with open(tmp_norm) as _fh:
+                    pdb_content = _fh.read()
+                logger.debug("OpenBabel: PDB atom naming normalised for Meeko")
+            else:
+                logger.debug(f"OpenBabel normalisation skipped ({norm_err[:100]})")
+        except (OSError, ValueError, RuntimeError, TypeError) as exc:
+            logger.debug(f"OpenBabel normalisation skipped ({exc})")
 
     # ── Step 7: Meeko preparation ────────────────────────────────────────
     try:

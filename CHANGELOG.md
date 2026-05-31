@@ -13,6 +13,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `strip_model_headers()` utility in `autodock.utils` — centralized PDBQT
   multi-model header stripping replaces 3+ copy-pasted blocks.
 - MIT `LICENSE` file at repository root.
+- `fix_protonation` parameter to `prepare_receptor()` — PDB2PQR+PROPKA
+  active protonation correction (Option B).  Inserted between `reduce`
+  and OpenMM: runs PDB2PQR with PROPKA pKa prediction, applies corrected
+  protonation states, re-adds hydrogens, outputs corrected PDB.  Falls
+  back gracefully to `reduce` output if PDB2PQR is unavailable.
+- OpenBabel PDB normalization step after PDB2PQR: normalises atom/residue
+  naming from PDB2PQR's AMBER-style naming to standard PDB conventions,
+  improving Meeko Polymer parse reliability.  Runs only when
+  `fix_protonation=True` and `obabel` is available.
+- `tmp_pdb2pqr` tracked in temp-file cleanup list for leak safety.
 
 ### Changed
 - P2Rank pocket filter strategy: **removed hard probability cutoff**.
