@@ -516,6 +516,7 @@ def extract_ligand_from_pdb(
     pdb_path: str,
     ligand_resname: str = "LIG",
     output_sdf: str | None = None,
+    keep_all_fragments: bool = False,
 ) -> tuple[Any, str | None]:
     """
     Extract a ligand from a structure file (PDB or mmCIF) and optionally save as SDF.
@@ -524,6 +525,13 @@ def extract_ligand_from_pdb(
     (different chains / residue numbers).  We group by (chain, res_seq) and
     keep only the largest group so that the returned molecule is a single
     ligand instance.
+
+    Args:
+        keep_all_fragments: If *False* (default), when the ligand contains
+            multiple disconnected fragments (e.g. a metal ion plus an organic
+            ligand), only the largest fragment is retained.  Set to *True* to
+            keep all fragments — useful when cofactors or metal ions are
+            essential for the binding site.
 
     Returns:
         (rdkit_mol, sdf_path_or_none)
@@ -570,15 +578,22 @@ def extract_ligand_from_pdb(
     mol = Chem.AddHs(mol, addCoords=True)
 
     # Sanity check: if the ligand still contains multiple fragments (e.g.
-    # a covalent adduct split across residues), keep only the largest fragment.
+    # a covalent adduct split across residues or a metal cofactor).
     frags = Chem.GetMolFrags(mol, asMols=True, sanitizeFrags=True)
     if len(frags) > 1:
-        logger.warning(
-            f"Ligand '{ligand_resname}' has {len(frags)} fragments; keeping the largest one."
-        )
-        mol = max(frags, key=lambda m: m.GetNumAtoms())
-        # Re-add Hs because GetMolFrags may strip them
-        mol = Chem.AddHs(mol, addCoords=True)
+        if keep_all_fragments:
+            logger.info(
+                f"Ligand '{ligand_resname}' has {len(frags)} fragments; "
+                f"keeping all fragments (keep_all_fragments=True)."
+            )
+        else:
+            logger.warning(
+                f"Ligand '{ligand_resname}' has {len(frags)} fragments; "
+                f"keeping the largest one. Set keep_all_fragments=True to retain all."
+            )
+            mol = max(frags, key=lambda m: m.GetNumAtoms())
+            # Re-add Hs because GetMolFrags may strip them
+            mol = Chem.AddHs(mol, addCoords=True)
 
     if output_sdf:
         writer = Chem.SDWriter(output_sdf)

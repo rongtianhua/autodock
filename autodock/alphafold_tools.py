@@ -220,7 +220,11 @@ def _parse_plddt_from_cif(cif_path: str) -> tuple[list[float], list[tuple[str, i
     block = doc.sole_block()
     try:
         atom_site = block.find_mmcif_category("_atom_site")
-    except (ValueError, TypeError, RuntimeError, AttributeError):
+    except AttributeError:
+        # gemmi API mismatch (e.g. older version without find_mmcif_category)
+        return [], []
+    except (ValueError, RuntimeError):
+        # Corrupt or unexpected mmCIF data
         return [], []
 
     col_label = atom_site.find_column("label_atom_id")
@@ -300,6 +304,7 @@ def relax_alphafold_structure(
     restraint_k: float = 5.0,
     forcefield: str = "amber14-all.xml",
     platform_name: str | None = None,
+    seed: int | None = None,
 ) -> dict[str, Any]:
     """
     Relax an AlphaFold-predicted structure with short MD in implicit solvent.
@@ -323,6 +328,9 @@ def relax_alphafold_structure(
         restraint_k: Cα restraint force constant in kcal/mol/Å² (default 5.0).
         forcefield: OpenMM force field (default ``"amber14-all.xml"``).
         platform_name: OpenMM platform (None = auto).
+        seed: Random seed for the Langevin integrator.  If *None*, OpenMM
+            uses a non-deterministic seed.  Set to an integer for
+            reproducible relaxation trajectories.
 
     Returns:
         Dict with keys: ``output_pdb``, ``initial_rmsd``, ``final_rmsd``,
@@ -389,8 +397,12 @@ def relax_alphafold_structure(
         finally:
             with contextlib.suppress(OSError):
                 os.unlink(tmp_pdb)
-    except (ImportError, OSError, ValueError, TypeError, RuntimeError):
-        logger.warning("PDBFixer unavailable or failed — using raw AlphaFold positions")
+    except ImportError:
+        logger.warning("PDBFixer not installed — using raw AlphaFold positions")
+        topology = pdb.topology
+        positions = pdb.positions
+    except (OSError, ValueError) as exc:
+        logger.warning(f"PDBFixer failed ({exc}) — using raw AlphaFold positions")
         topology = pdb.topology
         positions = pdb.positions
 
@@ -405,6 +417,8 @@ def relax_alphafold_structure(
     # 5. Minimise
     dt = 0.002 * unit.picoseconds
     integrator = LangevinMiddleIntegrator(temperature_k * unit.kelvin, 1.0 / unit.picosecond, dt)
+    if seed is not None:
+        integrator.setRandomNumberSeed(seed)
     simulation = app.Simulation(topology, system, integrator)
     simulation.context.setPositions(positions)
 
