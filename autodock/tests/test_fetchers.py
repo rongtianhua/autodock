@@ -142,8 +142,10 @@ class TestFetchPubChemSMILES:
         import urllib.error
 
         mock_json.side_effect = urllib.error.URLError("network error")
-        with pytest.raises(DataSourceError):
-            fetchers.fetch_pubchem_smiles("notarealcompound12345")
+        with patch("autodock.fetchers.pubchempy") as mock_pcp:
+            mock_pcp.get_compounds.side_effect = urllib.error.URLError("network error")
+            with pytest.raises(DataSourceError):
+                fetchers.fetch_pubchem_smiles("notarealcompound12345")
 
 
 class TestFetchChemblSMILES:
