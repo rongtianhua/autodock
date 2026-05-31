@@ -41,7 +41,7 @@ try:
     from openmmforcefields.generators import SystemGenerator
 
     _HAVE_OPENFF = True
-except Exception:
+except ImportError:
     _HAVE_OPENFF = False
 
 try:
@@ -54,14 +54,14 @@ try:
     )
 
     _HAVE_OPENMM = True
-except Exception:
+except ImportError:
     _HAVE_OPENMM = False
 
 try:
     from rdkit import Chem
 
     _HAVE_RDKIT = True
-except Exception:
+except ImportError:
     _HAVE_RDKIT = False
 
 
@@ -171,7 +171,7 @@ def minimize_docked_pose(
 
         return result
 
-    except Exception as exc:
+    except (RuntimeError, ValueError, TypeError, OSError) as exc:
         logger.warning(f"OpenMM minimization failed: {exc}")
         return {
             "success": False,
@@ -260,7 +260,7 @@ def _minimize_complex(
     """Minimise ligand in complex with receptor (requires continuous chain)."""
     try:
         from pdbfixer import PDBFixer
-    except Exception:
+    except (ImportError, OSError, ValueError):
         return {
             "success": False,
             "error": "PDBFixer not available for complex minimisation",
@@ -454,7 +454,7 @@ def _build_ligand_from_smiles(
 
     try:
         offmol = OpenFFMolecule.from_smiles(ligand_smiles, allow_undefined_stereo=True)
-    except Exception as exc:
+    except (ValueError, TypeError, RuntimeError) as exc:
         logger.warning(f"OpenFF Molecule.from_smiles failed: {exc}")
         return None, []
 
