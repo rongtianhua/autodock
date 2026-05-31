@@ -64,7 +64,7 @@ jobs:
       - name: Run tests
         shell: bash -el {0}
         run: |
-          pytest autodock/tests/ -q --tb=short --cov=autodock --cov-report=xml --ignore=autodock/tests/test_preparation.py
+          pytest autodock/tests/ -q --tb=short --cov=autodock --cov-report=xml
 
       - name: Upload coverage
         if: matrix.os == 'ubuntu-latest' && matrix.python-version == '3.12'
