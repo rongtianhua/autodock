@@ -463,8 +463,30 @@ class TestSafePdbSlice:
 class TestWritePdbAtoms:
     def test_roundtrip(self, tmp_path):
         atoms = [
-            {"record": "ATOM", "atom_num": 1, "atom_name": "N", "res_name": "SER", "chain": "A", "res_seq": 1, "x": 1.0, "y": 2.0, "z": 3.0, "element": "N"},
-            {"record": "ATOM", "atom_num": 2, "atom_name": "CA", "res_name": "SER", "chain": "A", "res_seq": 1, "x": 2.0, "y": 3.0, "z": 4.0, "element": "C"},
+            {
+                "record": "ATOM",
+                "atom_num": 1,
+                "atom_name": "N",
+                "res_name": "SER",
+                "chain": "A",
+                "res_seq": 1,
+                "x": 1.0,
+                "y": 2.0,
+                "z": 3.0,
+                "element": "N",
+            },
+            {
+                "record": "ATOM",
+                "atom_num": 2,
+                "atom_name": "CA",
+                "res_name": "SER",
+                "chain": "A",
+                "res_seq": 1,
+                "x": 2.0,
+                "y": 3.0,
+                "z": 4.0,
+                "element": "C",
+            },
         ]
         out = tmp_path / "out.pdb"
         utils.write_pdb_atoms(atoms, str(out))
@@ -474,7 +496,20 @@ class TestWritePdbAtoms:
         assert "SER" in text
 
     def test_with_header_lines(self, tmp_path):
-        atoms = [{"record": "ATOM", "atom_num": 1, "atom_name": "N", "res_name": "ALA", "chain": "A", "res_seq": 1, "x": 0.0, "y": 0.0, "z": 0.0, "element": "N"}]
+        atoms = [
+            {
+                "record": "ATOM",
+                "atom_num": 1,
+                "atom_name": "N",
+                "res_name": "ALA",
+                "chain": "A",
+                "res_seq": 1,
+                "x": 0.0,
+                "y": 0.0,
+                "z": 0.0,
+                "element": "N",
+            }
+        ]
         out = tmp_path / "out.pdb"
         utils.write_pdb_atoms(atoms, str(out), header_lines=["REMARK   1", "HEADER    TEST\n"])
         text = out.read_text()
@@ -484,14 +519,36 @@ class TestWritePdbAtoms:
         assert lines[-1] == "END"
 
     def test_atom_dict_to_pdb_line_short_name(self):
-        atom = {"record": "ATOM", "atom_num": 1, "atom_name": "N", "res_name": "ALA", "chain": "A", "res_seq": 1, "x": 0.0, "y": 0.0, "z": 0.0, "element": "N"}
+        atom = {
+            "record": "ATOM",
+            "atom_num": 1,
+            "atom_name": "N",
+            "res_name": "ALA",
+            "chain": "A",
+            "res_seq": 1,
+            "x": 0.0,
+            "y": 0.0,
+            "z": 0.0,
+            "element": "N",
+        }
         line = utils._atom_dict_to_pdb_line(atom)
         assert line.startswith("ATOM")
         assert "ALA" in line
         assert line[12:16].strip() == "N"
 
     def test_atom_dict_to_pdb_line_long_name(self):
-        atom = {"record": "HETATM", "atom_num": 1, "atom_name": "FE", "res_name": "HEM", "chain": "A", "res_seq": 1, "x": 0.0, "y": 0.0, "z": 0.0, "element": "FE"}
+        atom = {
+            "record": "HETATM",
+            "atom_num": 1,
+            "atom_name": "FE",
+            "res_name": "HEM",
+            "chain": "A",
+            "res_seq": 1,
+            "x": 0.0,
+            "y": 0.0,
+            "z": 0.0,
+            "element": "FE",
+        }
         line = utils._atom_dict_to_pdb_line(atom)
         assert line.startswith("HETATM")
 

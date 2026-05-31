@@ -76,16 +76,56 @@ def _fake_run_rescue(item):
     pdb = item["target"]["pdb_id"]
     _rescue_calls.append(pdb)
     if pdb == "PASS":
-        return {"pdb_id": pdb, "family": "x", "success": True, "rmsd": 1.0, "success_raw": True, "rmsd_raw": 1.2, "best_rmsd": 0.9}
+        return {
+            "pdb_id": pdb,
+            "family": "x",
+            "success": True,
+            "rmsd": 1.0,
+            "success_raw": True,
+            "rmsd_raw": 1.2,
+            "best_rmsd": 0.9,
+        }
     if pdb == "RESC":
-        return {"pdb_id": pdb, "family": "x", "success": True, "rmsd": 1.0, "success_raw": False, "rmsd_raw": None, "best_rmsd": 0.9}
+        return {
+            "pdb_id": pdb,
+            "family": "x",
+            "success": True,
+            "rmsd": 1.0,
+            "success_raw": False,
+            "rmsd_raw": None,
+            "best_rmsd": 0.9,
+        }
     if pdb == "DEGR":
-        return {"pdb_id": pdb, "family": "x", "success": False, "rmsd": None, "success_raw": True, "rmsd_raw": 1.2, "best_rmsd": 0.9}
-    return {"pdb_id": pdb, "family": "x", "success": False, "rmsd": None, "success_raw": False, "rmsd_raw": None, "best_rmsd": 5.0}
+        return {
+            "pdb_id": pdb,
+            "family": "x",
+            "success": False,
+            "rmsd": None,
+            "success_raw": True,
+            "rmsd_raw": 1.2,
+            "best_rmsd": 0.9,
+        }
+    return {
+        "pdb_id": pdb,
+        "family": "x",
+        "success": False,
+        "rmsd": None,
+        "success_raw": False,
+        "rmsd_raw": None,
+        "best_rmsd": 5.0,
+    }
 
 
 def _fake_run_parallel(item):
-    return {"pdb_id": item["target"]["pdb_id"], "family": "x", "success": True, "rmsd": 1.0, "success_raw": True, "rmsd_raw": 1.1, "best_rmsd": 0.9}
+    return {
+        "pdb_id": item["target"]["pdb_id"],
+        "family": "x",
+        "success": True,
+        "rmsd": 1.0,
+        "success_raw": True,
+        "rmsd_raw": 1.1,
+        "best_rmsd": 0.9,
+    }
 
 
 class TestRunRedockingBenchmark:
@@ -153,9 +193,7 @@ class TestRunRedockingBenchmark:
 
     def test_empty_targets(self, tmp_path):
         out = tmp_path / "bench"
-        summary = benchmark.run_redocking_benchmark(
-            targets=[], output_dir=str(out), n_workers=1
-        )
+        summary = benchmark.run_redocking_benchmark(targets=[], output_dir=str(out), n_workers=1)
         assert summary["n_total"] == 0
         assert summary["success_rate"] == 0.0
 
