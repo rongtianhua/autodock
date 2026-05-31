@@ -318,8 +318,18 @@ def read_docking_results(result_dir: str) -> list[DockingResult]:
                 try:
                     with open(path) as fh:
                         data = json.load(fh)
-                    if "compound_name" in data:
-                        results.append(DockingResult(**data))
-                except (TypeError, ValueError, KeyError) as exc:
-                    logger.warning(f"Skipping {path}: {exc}")
+                    if not isinstance(data, dict):
+                        logger.warning(f"Skipping {path}: expected JSON object, got {type(data).__name__}")
+                        continue
+                    # Schema validation for required fields
+                    _required = {"compound_name", "receptor"}
+                    _missing = _required - data.keys()
+                    if _missing:
+                        logger.warning(f"Skipping {path}: missing required fields {_missing}")
+                        continue
+                    results.append(DockingResult(**data))
+                except json.JSONDecodeError as exc:
+                    logger.warning(f"Skipping {path}: invalid JSON ({exc})")
+                except (OSError, UnicodeDecodeError) as exc:
+                    logger.warning(f"Skipping {path}: read error ({exc})")
     return results

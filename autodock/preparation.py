@@ -388,6 +388,7 @@ def prepare_receptor(
     # Accumulators for report detail (enlarged scope so report section can see them)
     gaps_detail: list[str] = []
     _reduce_flip_detail: list[str] = []
+    _all_temps: list[str] = []
 
     # ── Step 1: Convert mmCIF → PDB if needed ────────────────────────────
     ext = os.path.splitext(pdb_file)[1].lower()
@@ -415,6 +416,7 @@ def prepare_receptor(
     # Write to temp PDB for PDBFixer consumption
     tmp_raw = write_temp_file(pdb_content, suffix="_raw.pdb")
     _original_tmp_raw = tmp_raw  # track for final cleanup
+    _all_temps.append(tmp_raw)
 
     # ── Structure quality & AlphaFold assessment (before modification) ─────
     _quality_header = _parse_pdb_header(tmp_raw)
@@ -584,6 +586,7 @@ def prepare_receptor(
             _pbfixer_lines.append(_line)
     _pbfixer_pdb = "".join(_pbfixer_lines)
     _tmp_fixer_in = write_temp_file(_pbfixer_pdb, suffix="_pdbfixer_in.pdb")
+    _all_temps.append(_tmp_fixer_in)
 
     try:
         import openmm
@@ -596,6 +599,7 @@ def prepare_receptor(
         )
 
     tmp_fixed = write_temp_file("", suffix="_fixed.pdb")
+    _all_temps.append(tmp_fixed)
     try:
         fixer = PDBFixer(filename=_tmp_fixer_in)
         fixer.findMissingResidues()
@@ -639,6 +643,8 @@ def prepare_receptor(
         openmm.OpenMMException,
     ) as exc:
         logger.warning(f"PDBFixer failed ({exc}) — falling back to raw structure")
+        with contextlib.suppress(OSError):
+            os.remove(tmp_fixed)
         tmp_fixed = tmp_raw  # use raw structure
     finally:
         # Clean up PDBFixer input temp
@@ -682,6 +688,8 @@ def prepare_receptor(
         logger.info("Reduce: ASN/GLN flips processed, HIS tautomers assigned")
     except (OSError, ValueError, RuntimeError, TypeError) as exc:
         logger.warning(f"Reduce step skipped ({exc}) — using PDBFixer output")
+        with contextlib.suppress(OSError):
+            os.remove(tmp_reduced)
         tmp_reduced = tmp_fixed
 
     # ── Step 4b: PROPKA — pKa prediction for active-site residues ────────
@@ -783,6 +791,7 @@ def prepare_receptor(
 
     # ── Step 5: OpenMM pocket-restrained energy minimisation ─────────────
     tmp_min = write_temp_file("", suffix="_minimized.pdb")
+    _all_temps.append(tmp_min)
     try:
         import openmm
         from openmm import CustomExternalForce, LangevinIntegrator
@@ -876,6 +885,8 @@ def prepare_receptor(
         openmm.OpenMMException,
     ) as exc:
         logger.warning(f"OpenMM minimisation skipped ({exc}) — using PDBFixer output")
+        with contextlib.suppress(OSError):
+            os.remove(tmp_min)
         tmp_min = tmp_fixed
 
     # Read back the cleaned PDB content
@@ -884,14 +895,11 @@ def prepare_receptor(
 
     # Clean up intermediate temp files; keep tmp_raw until the very end
     # so that fallback paths always have a valid source file.
-    _to_clean = []
     for _t in (tmp_fixed, tmp_reduced, tmp_min):
-        if _t != tmp_raw and _t is not None:
-            _to_clean.append(_t)
-    for _t in _to_clean:
-        with contextlib.suppress(OSError):
-            if os.path.exists(_t):
-                os.remove(_t)
+        if _t != tmp_raw and _t not in (_original_tmp_raw,):
+            with contextlib.suppress(OSError):
+                if os.path.exists(_t):
+                    os.remove(_t)
 
     # ── Step 5: Filter waters / hetatms (second pass after PDBFixer) ─────
     _metal_set: set[str] = set()
@@ -1022,14 +1030,14 @@ def prepare_receptor(
 
     try:
         polymer = Polymer.from_pdb_string(pdb_content, templates, mk_prep, default_altloc="A")
-    except (OSError, ValueError, RuntimeError, TypeError, ImportError):
+    except (OSError, ValueError, RuntimeError, ImportError):
         # Retry with allow_bad_res=True: removes unknown residues and continues
         logger.warning("Some residues failed template matching — retrying with allow_bad_res=True")
         try:
             polymer = Polymer.from_pdb_string(
                 pdb_content, templates, mk_prep, allow_bad_res=True, default_altloc="A"
             )
-        except (OSError, ValueError, RuntimeError, TypeError, ImportError) as exc2:
+        except (OSError, ValueError, RuntimeError, ImportError) as exc2:
             logger.error(
                 f"Meeko preparation failed even with allow_bad_res: {exc2} — "
                 f"falling back to Open Babel"
@@ -1038,7 +1046,7 @@ def prepare_receptor(
 
     try:
         rigid_pdbqt, _ = PDBQTWriterLegacy.write_from_polymer(polymer)
-    except (OSError, ValueError, RuntimeError, TypeError, ImportError) as exc:
+    except (OSError, ValueError, RuntimeError, ImportError) as exc:
         logger.error(f"PDBQT writing failed: {exc} — falling back to Open Babel")
         return _prepare_receptor_with_obabel(pdb_file, output_pdbqt, pdb_string=pdb_content)
 
@@ -1092,6 +1100,13 @@ def prepare_receptor(
         with contextlib.suppress(OSError):
             if os.path.exists(_original_tmp_raw):
                 os.remove(_original_tmp_raw)
+
+    # Comprehensive cleanup: ensure no tracked temp files leak on exception
+    for _t in _all_temps:
+        with contextlib.suppress(OSError):
+            if os.path.exists(_t) and _t != tmp_raw:
+                os.remove(_t)
+
     logger.info(f"Receptor prepared: {output_pdbqt}")
     return os.path.abspath(output_pdbqt)
 
@@ -1395,7 +1410,7 @@ def prepare_ligand(
             except ImportError:
                 logger.debug("molscrub not installed — skipping state enumeration")
                 molscrub_states = False
-            except (OSError, ValueError, RuntimeError, TypeError) as exc:
+            except (OSError, ValueError, RuntimeError) as exc:
                 logger.warning(f"molscrub failed ({exc}) — falling back to single-state")
 
     # ── Single-state fallback (no molscrub, may still have stereoisomers) ──
@@ -1429,7 +1444,7 @@ def prepare_ligand(
                 best_mol = cand_mol
                 best_energy = energy
                 best_label = label
-        except (OSError, ValueError, RuntimeError, TypeError):
+        except (OSError, ValueError, RuntimeError):
             continue
 
     if best_mol is None:
@@ -1444,7 +1459,7 @@ def prepare_ligand(
     params_mk = MoleculePreparation(charge_model="gasteiger")
     try:
         mol_setup = params_mk.prepare(best_mol)
-    except (OSError, ValueError, RuntimeError, TypeError, ImportError) as exc:
+    except (OSError, ValueError, RuntimeError, ImportError) as exc:
         err_str = str(exc)
         if "non finite charge" in err_str or "charge" in err_str.lower():
             logger.warning(f"Meeko charge failure ({exc}) — falling back to Open Babel")
@@ -1583,7 +1598,7 @@ def prepare_ligand_from_sdf(
     params_mk = MoleculePreparation(charge_model="gasteiger")
     try:
         mol_setup = params_mk.prepare(mol)
-    except (OSError, ValueError, RuntimeError, TypeError, ImportError) as exc:
+    except (OSError, ValueError, RuntimeError, ImportError) as exc:
         err_str = str(exc)
         if "non finite charge" in err_str or "charge" in err_str.lower():
             logger.warning(f"Meeko charge failure ({exc}) — falling back to Open Babel")
@@ -1644,7 +1659,7 @@ def prepare_ligand_conformers(
         try:
             prepare_ligand(smiles, out_path, name=name, seed=seed_start + i, ph=ph)
             paths.append(out_path)
-        except (OSError, ValueError, RuntimeError, TypeError, ImportError) as exc:
+        except (OSError, ValueError, RuntimeError, ImportError) as exc:
             logger.warning(f"Conformer {i} preparation failed: {exc} — skipping")
     if not paths:
         raise PreparationError(f"All {n_conformers} conformer preparations failed for {smiles}")
@@ -1856,7 +1871,7 @@ def prepare_ligand_multi(
         params_mk = MoleculePreparation(charge_model="gasteiger")
         try:
             mol_setup = params_mk.prepare(mol_single)
-        except (OSError, ValueError, RuntimeError, TypeError, ImportError) as exc:
+        except (OSError, ValueError, RuntimeError, ImportError) as exc:
             logger.warning(f"Rep {idx}: Meeko failed ({exc}) — Open Babel fallback")
             ob_path = os.path.join(output_dir, f"conformer_{idx}.pdbqt")
             _prepare_ligand_with_obabel(smiles, ob_path, name=name, ph=ph)
