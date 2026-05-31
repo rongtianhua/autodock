@@ -159,7 +159,7 @@ def detect_interactions_plip(
             my_mol = PDBComplex()
             my_mol.load_pdb(complex_pdb)
             my_mol.analyze()
-        except Exception as exc:
+        except (RuntimeError, OSError, ValueError, TypeError, ImportError) as exc:
             raise VisualizationError(f"PLIP analysis failed: {exc}")
 
         interactions: list[dict[str, Any]] = []
@@ -209,7 +209,7 @@ def detect_interactions_plip(
                                 "ligand_atoms": ligand_atoms,
                             }
                         )
-                    except Exception as exc:
+                    except (ValueError, TypeError, IndexError, KeyError, AttributeError) as exc:
                         logger.debug(f"Skipping malformed PLIP record: {exc}")
                         continue
 
@@ -322,7 +322,14 @@ def detect_interactions(
             plip_intx = detect_interactions_plip(receptor_pdb, ligand_pdbqt, output_dir)
             if method == "plip":
                 return plip_intx
-        except Exception as exc:
+        except (
+            RuntimeError,
+            OSError,
+            ValueError,
+            TypeError,
+            ImportError,
+            VisualizationError,
+        ) as exc:
             if method == "plip":
                 raise
             logger.warning(f"PLIP failed, falling back to ProLIF: {exc}")
@@ -333,7 +340,14 @@ def detect_interactions(
             prolif_intx = detect_interactions_prolif(receptor_pdb, ligand_pdbqt)
             if method == "prolif":
                 return prolif_intx
-        except Exception as exc:
+        except (
+            RuntimeError,
+            OSError,
+            ValueError,
+            TypeError,
+            ImportError,
+            VisualizationError,
+        ) as exc:
             if method == "prolif":
                 raise
             logger.warning(f"ProLIF failed: {exc}")

@@ -1047,7 +1047,7 @@ def composite_summary(
             if os.path.isfile(path):
                 try:
                     return ImageFont.truetype(path, size)
-                except Exception:
+                except OSError:
                     continue
         return ImageFont.load_default()
 
