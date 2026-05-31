@@ -167,10 +167,12 @@ def run_redocking_benchmark(
             import multiprocessing
 
             n_workers = multiprocessing.cpu_count()
+        import multiprocessing
         from concurrent.futures import ProcessPoolExecutor, as_completed
 
         raw_results = [None] * len(work_items)
-        with ProcessPoolExecutor(max_workers=n_workers) as executor:
+        mp_ctx = multiprocessing.get_context("spawn")
+        with ProcessPoolExecutor(max_workers=n_workers, mp_context=mp_ctx) as executor:
             futures = {
                 executor.submit(_run_single_benchmark, item): i for i, item in enumerate(work_items)
             }
@@ -178,7 +180,7 @@ def run_redocking_benchmark(
                 idx = futures[future]
                 try:
                     raw_results[idx] = future.result()
-                except (TimeoutError, RuntimeError, TypeError, OSError) as exc:
+                except (TimeoutError, RuntimeError, OSError) as exc:
                     target = work_items[idx]["target"]
                     logger.error(f"Benchmark worker crashed for {target['pdb_id']}: {exc}")
                     raw_results[idx] = {

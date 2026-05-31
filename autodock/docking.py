@@ -753,6 +753,9 @@ def dock_ligand_multi_conformer(
     else:
         max_workers = min(max_workers, len(conformer_pdbqts))
 
+    # Derive a unique seed per conformer so that parallel searches are
+    # statistically independent while remaining fully reproducible.
+    base_seed = _get_vina_seed(seed)
     work_items = [
         (
             receptor_pdbqt,
@@ -762,13 +765,13 @@ def dock_ligand_multi_conformer(
             exhaustiveness,
             n_poses,
             energy_range,
-            seed,
+            base_seed + i if seed is not None else None,
             timeout,
             auto_exhaustiveness,
             "vina",  # default scoring_function for conformer docking
             1.0,  # default min_rmsd for conformer docking
         )
-        for conf_path in conformer_pdbqts
+        for i, conf_path in enumerate(conformer_pdbqts)
     ]
 
     if max_workers > 1:
