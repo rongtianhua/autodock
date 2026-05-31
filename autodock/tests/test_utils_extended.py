@@ -431,3 +431,188 @@ class TestExtractChainFromPdb:
         # END line is always preserved; no ATOM/HETATM lines for chain Z
         assert "END" in text
         assert not any(ln.startswith("ATOM") or ln.startswith("HETATM") for ln in text.splitlines())
+
+
+# ── safe_pdb_slice ───────────────────────────────────────────────────────────
+
+
+class TestSafePdbSlice:
+    def test_normal_slice(self):
+        line = "ATOM      1  N   SER A   1      0.000   0.000   0.000"
+        assert utils.safe_pdb_slice(line, 12, 16) == "N"
+        assert utils.safe_pdb_slice(line, 17, 20) == "SER"
+
+    def test_truncated_line(self):
+        short = "ATOM      1  N   SER"
+        assert utils.safe_pdb_slice(short, 17, 20) == "SER"
+        assert utils.safe_pdb_slice(short, 17, 20, default="X") == "SER"
+
+    def test_line_shorter_than_start(self):
+        short = "ATOM"
+        assert utils.safe_pdb_slice(short, 17, 20) == ""
+        assert utils.safe_pdb_slice(short, 17, 20, default="X") == "X"
+
+    def test_line_between_start_and_end(self):
+        line = "ATOM      1  N   SER A"
+        assert utils.safe_pdb_slice(line, 17, 20) == "SER"
+
+
+# ── write_pdb_atoms / _atom_dict_to_pdb_line ─────────────────────────────────
+
+
+class TestWritePdbAtoms:
+    def test_roundtrip(self, tmp_path):
+        atoms = [
+            {"record": "ATOM", "atom_num": 1, "atom_name": "N", "res_name": "SER", "chain": "A", "res_seq": 1, "x": 1.0, "y": 2.0, "z": 3.0, "element": "N"},
+            {"record": "ATOM", "atom_num": 2, "atom_name": "CA", "res_name": "SER", "chain": "A", "res_seq": 1, "x": 2.0, "y": 3.0, "z": 4.0, "element": "C"},
+        ]
+        out = tmp_path / "out.pdb"
+        utils.write_pdb_atoms(atoms, str(out))
+        text = out.read_text()
+        assert text.startswith("ATOM")
+        assert text.endswith("END\n")
+        assert "SER" in text
+
+    def test_with_header_lines(self, tmp_path):
+        atoms = [{"record": "ATOM", "atom_num": 1, "atom_name": "N", "res_name": "ALA", "chain": "A", "res_seq": 1, "x": 0.0, "y": 0.0, "z": 0.0, "element": "N"}]
+        out = tmp_path / "out.pdb"
+        utils.write_pdb_atoms(atoms, str(out), header_lines=["REMARK   1", "HEADER    TEST\n"])
+        text = out.read_text()
+        lines = text.splitlines()
+        assert lines[0] == "REMARK   1"
+        assert lines[1] == "HEADER    TEST"
+        assert lines[-1] == "END"
+
+    def test_atom_dict_to_pdb_line_short_name(self):
+        atom = {"record": "ATOM", "atom_num": 1, "atom_name": "N", "res_name": "ALA", "chain": "A", "res_seq": 1, "x": 0.0, "y": 0.0, "z": 0.0, "element": "N"}
+        line = utils._atom_dict_to_pdb_line(atom)
+        assert line.startswith("ATOM")
+        assert "ALA" in line
+        assert line[12:16].strip() == "N"
+
+    def test_atom_dict_to_pdb_line_long_name(self):
+        atom = {"record": "HETATM", "atom_num": 1, "atom_name": "FE", "res_name": "HEM", "chain": "A", "res_seq": 1, "x": 0.0, "y": 0.0, "z": 0.0, "element": "FE"}
+        line = utils._atom_dict_to_pdb_line(atom)
+        assert line.startswith("HETATM")
+
+
+# ── compute_bounding_box_from_pdb / pdbqt ────────────────────────────────────
+
+
+class TestComputeBoundingBoxFromPdb:
+    def test_with_residue_filter(self, tmp_path):
+        pdb = tmp_path / "test.pdb"
+        pdb.write_text(
+            "ATOM      1  N   SER A   1      0.000   0.000   0.000  1.00  0.00           N  \n"
+            "ATOM      2  CA  SER A   1      1.000   0.000   0.000  1.00  0.00           C  \n"
+            "ATOM      3  N   ALA A   2      5.000   0.000   0.000  1.00  0.00           N  \n"
+        )
+        center, size = utils.compute_bounding_box_from_pdb(str(pdb), residue_filter={"SER"})
+        assert center == (0.5, 0.0, 0.0)
+        assert size == (1.0, 0.0, 0.0)
+
+
+class TestComputeBoundingBoxFromPdbqt:
+    def test_basic(self, tmp_path):
+        pdbqt = tmp_path / "test.pdbqt"
+        pdbqt.write_text(
+            "ATOM      1  N   UNL     1       0.000   0.000   0.000  0.00  0.00    +0.000 NA\n"
+            "ATOM      2  C   UNL     1       2.000   4.000   6.000  0.00  0.00    +0.000 C \n"
+        )
+        center, size = utils.compute_bounding_box_from_pdbqt(str(pdbqt))
+        assert center == (1.0, 2.0, 3.0)
+        assert size == (2.0, 4.0, 6.0)
+
+    def test_skips_non_atom_lines(self, tmp_path):
+        pdbqt = tmp_path / "test.pdbqt"
+        pdbqt.write_text(
+            "REMARK   1\n"
+            "ATOM      1  N   UNL     1       1.000   2.000   3.000  0.00  0.00    +0.000 N \n"
+            "TER\n"
+        )
+        center, size = utils.compute_bounding_box_from_pdbqt(str(pdbqt))
+        assert center == (1.0, 2.0, 3.0)
+
+    def test_malformed_coords_ignored(self, tmp_path):
+        pdbqt = tmp_path / "test.pdbqt"
+        pdbqt.write_text(
+            "ATOM      1  N   UNL     1       1.000   2.000   3.000  0.00  0.00    +0.000 N \n"
+            "ATOM      2  C   UNL     1       xxxxx   yyyyy   zzzzz  0.00  0.00    +0.000 C \n"
+        )
+        center, size = utils.compute_bounding_box_from_pdbqt(str(pdbqt))
+        assert center == (1.0, 2.0, 3.0)
+
+
+# ── filter_pdb_lines ─────────────────────────────────────────────────────────
+
+
+class TestFilterPdbLinesExtended:
+    def test_keep_residues(self, tmp_path):
+        inp = tmp_path / "in.pdb"
+        inp.write_text(
+            "ATOM      1  N   SER A   1      0.000   0.000   0.000\n"
+            "ATOM      2  CA  ALA A   2      1.000   1.000   1.000\n"
+            "HETATM    3  O   LIG A   3      2.000   2.000   2.000\n"
+        )
+        out = tmp_path / "out.pdb"
+        utils.filter_pdb_lines(str(inp), str(out), keep_residues={"ALA", "LIG"})
+        lines = out.read_text().splitlines()
+        assert len(lines) == 2
+        assert any("ALA" in ln for ln in lines)
+        assert any("LIG" in ln for ln in lines)
+
+    def test_remove_hetatms(self, tmp_path):
+        inp = tmp_path / "in.pdb"
+        inp.write_text(
+            "ATOM      1  N   SER A   1      0.000   0.000   0.000\n"
+            "HETATM    2  O   HOH A   2      1.000   1.000   1.000\n"
+        )
+        out = tmp_path / "out.pdb"
+        utils.filter_pdb_lines(str(inp), str(out), remove_hetatms=True)
+        lines = out.read_text().splitlines()
+        assert len(lines) == 1
+        assert "SER" in lines[0]
+
+    def test_remove_water_false_keeps_hoh(self, tmp_path):
+        inp = tmp_path / "in.pdb"
+        inp.write_text(
+            "ATOM      1  N   SER A   1      0.000   0.000   0.000\n"
+            "HETATM    2  O   HOH A   2      1.000   1.000   1.000\n"
+        )
+        out = tmp_path / "out.pdb"
+        utils.filter_pdb_lines(str(inp), str(out), remove_water=False)
+        lines = out.read_text().splitlines()
+        assert len(lines) == 2
+
+    def test_non_atom_lines_preserved(self, tmp_path):
+        inp = tmp_path / "in.pdb"
+        inp.write_text(
+            "HEADER    TEST\n"
+            "ATOM      1  N   SER A   1      0.000   0.000   0.000\n"
+            "REMARK   1\n"
+        )
+        out = tmp_path / "out.pdb"
+        utils.filter_pdb_lines(str(inp), str(out))
+        text = out.read_text()
+        assert "HEADER" in text
+        assert "REMARK" in text
+
+
+# ── write_temp_file exception path ───────────────────────────────────────────
+
+
+class TestWriteTempFileExceptions:
+    def test_exception_cleanup(self, monkeypatch):
+        import tempfile
+
+        original_mkstemp = tempfile.mkstemp
+
+        def bad_mkstemp(*args, **kwargs):
+            fd, path = original_mkstemp(*args, **kwargs)
+            os.close(fd)
+            # Return a closed fd so os.fdopen raises OSError
+            return fd, path
+
+        monkeypatch.setattr(tempfile, "mkstemp", bad_mkstemp)
+        with pytest.raises(OSError):
+            utils.write_temp_file("hello")

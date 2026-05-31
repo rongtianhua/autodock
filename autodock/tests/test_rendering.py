@@ -165,3 +165,41 @@ class TestCompositeSummary:
         mock_open.side_effect = Exception("bad image")
         with pytest.raises(VisualizationError, match="No valid panel"):
             rend.composite_summary([str(tmp_path / "bad.png")], str(tmp_path / "out.png"))
+
+
+class TestParsePdbqtHelpers:
+    def test_parse_smiles_idx(self, tmp_path):
+        pdbqt = tmp_path / "lig.pdbqt"
+        pdbqt.write_text(
+            "REMARK SMILES IDX 1 5 2 6 3 7\n"
+            "ATOM      1  C   UNL     1       0.000   0.000   0.000\n"
+        )
+        mapping = rend._parse_smiles_idx_from_pdbqt(str(pdbqt))
+        assert mapping == {5: 1, 6: 2, 7: 3}
+
+    def test_parse_smiles_idx_empty(self, tmp_path):
+        pdbqt = tmp_path / "lig.pdbqt"
+        pdbqt.write_text("ATOM      1  C   UNL     1       0.000   0.000   0.000\n")
+        mapping = rend._parse_smiles_idx_from_pdbqt(str(pdbqt))
+        assert mapping == {}
+
+    def test_parse_pdbqt_coords(self, tmp_path):
+        pdbqt = tmp_path / "lig.pdbqt"
+        pdbqt.write_text(
+            "ATOM      1  C   UNL     1       1.234   2.345   3.456\n"
+            "ATOM      2  N   UNL     1       4.567   5.678   6.789\n"
+        )
+        coords = rend._parse_pdbqt_coords(str(pdbqt))
+        assert len(coords) == 2
+        assert coords[(1.234, 2.345, 3.456)] == 1
+        assert coords[(4.567, 5.678, 6.789)] == 2
+
+    def test_parse_pdbqt_coords_skips_malformed(self, tmp_path):
+        pdbqt = tmp_path / "lig.pdbqt"
+        pdbqt.write_text(
+            "ATOM      1  C   UNL     1       1.234   2.345   3.456\n"
+            "ATOM    BAD  C   UNL     1       xxxxx   yyyyy   zzzzz\n"
+        )
+        coords = rend._parse_pdbqt_coords(str(pdbqt))
+        assert len(coords) == 1
+        assert coords[(1.234, 2.345, 3.456)] == 1
