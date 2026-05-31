@@ -1378,7 +1378,7 @@ def prepare_ligand(
             except ImportError:
                 logger.debug("molscrub not installed — skipping state enumeration")
                 molscrub_states = False
-            except (OSError, ValueError, RuntimeError, TypeError, ImportError) as exc:
+            except (OSError, ValueError, RuntimeError, TypeError) as exc:
                 logger.warning(f"molscrub failed ({exc}) — falling back to single-state")
 
     # ── Single-state fallback (no molscrub, may still have stereoisomers) ──
