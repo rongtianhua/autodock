@@ -194,7 +194,7 @@ def find_java() -> str | None:
             candidate = os.path.join(java_home, "bin", "java")
             if os.path.isfile(candidate) and os.access(candidate, os.X_OK):
                 return candidate
-    except Exception:
+    except (subprocess.SubprocessError, OSError):
         pass
     return shutil.which("java")
 
@@ -265,7 +265,7 @@ def safe_subprocess(
     except FileNotFoundError:
         logger.error(f"Command not found: {cmd[0]}")
         return False, "", f"command not found: {cmd[0]}"
-    except Exception as exc:
+    except (subprocess.SubprocessError, OSError, ValueError) as exc:
         logger.error(f"Unexpected error running {' '.join(cmd[:6])}...: {exc}")
         return False, "", str(exc)
 
@@ -279,7 +279,7 @@ def _probe(module_name: str) -> bool:
     try:
         __import__(module_name)
         return True
-    except Exception:
+    except ImportError:
         return False
 
 
@@ -374,7 +374,7 @@ def detect_receptor_source(pdb_path: str) -> str | None:
     try:
         with open(pdb_path) as fh:
             text = fh.read(5000)
-    except Exception:
+    except OSError:
         return None
     text_upper = text.upper()
     if "ALPHAFOLD" in text_upper or "TITLE  ALPHAFOLD" in text_upper:

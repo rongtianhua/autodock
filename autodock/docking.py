@@ -11,6 +11,7 @@ import concurrent.futures
 import contextlib
 import multiprocessing
 import os
+import queue
 import tempfile
 import threading
 from pathlib import Path
@@ -114,11 +115,12 @@ def _vina_dock_worker(
 
         try:
             result_queue.put(("ok", energies, poses))
-        except Exception as exc:
+        except (TypeError, ValueError) as exc:
             # Queue put can fail if payloads are not serialisable (spawn context)
             result_queue.put(("error", f"result_queue put failed: {exc}", []))
-    except Exception as exc:
-        with contextlib.suppress(Exception):
+    except Exception as exc:  # noqa: BLE001
+        # Worker safety net — any crash must be reported via queue
+        with contextlib.suppress(TypeError, ValueError, OSError):
             result_queue.put(("error", str(exc), []))
 
 
@@ -188,7 +190,7 @@ def _run_vina_dock(
                 try:
                     v.dock(exhaustiveness=exhaustiveness, n_poses=n_poses, min_rmsd=min_rmsd)
                     result_state["done"] = True
-                except Exception as exc:
+                except (RuntimeError, ValueError, TypeError, OSError) as exc:
                     result_state["error"] = str(exc)
                     result_state["done"] = True
 
@@ -259,7 +261,7 @@ def _run_vina_dock(
     # detailed error message before crashing.
     try:
         status, payload1, payload2 = result_queue.get(timeout=30)
-    except Exception:
+    except (queue.Empty, OSError, EOFError):
         if p.exitcode != 0:
             raise DockingCalculationError(
                 f"Docking subprocess exited with code {p.exitcode}"
@@ -747,7 +749,14 @@ def dock_ligand_multi_conformer(
             ):
                 try:
                     pool, ok = future.result(timeout=timeout + 5)
-                except Exception as exc:
+                except (
+                    TimeoutError,
+                    DockingCalculationError,
+                    RuntimeError,
+                    OSError,
+                    ValueError,
+                    TypeError,
+                ) as exc:
                     conf_path = future_to_item[future][1]
                     logger.warning(f"Conformer docking failed for {conf_path}: {exc}")
                     continue
@@ -900,7 +909,7 @@ def _dock_single_compound(
             compound_name=name,
         )
         return result
-    except Exception as exc:
+    except (RuntimeError, OSError, ValueError, TypeError, DockingCalculationError) as exc:
         logger.error(f"{name}: docking failed — {exc}")
         return DockingResult(
             compound_name=name,
@@ -999,7 +1008,14 @@ def virtual_screen(
                 idx = futures[future]
                 try:
                     results[idx] = future.result()
-                except Exception as exc:
+                except (
+                    TimeoutError,
+                    DockingCalculationError,
+                    RuntimeError,
+                    OSError,
+                    ValueError,
+                    TypeError,
+                ) as exc:
                     name = work_items[idx][0]
                     logger.error(f"{name}: worker crashed — {exc}")
                     results[idx] = DockingResult(
@@ -1156,7 +1172,14 @@ def batch_dock(
                 idx = futures[future]
                 try:
                     raw_results[idx] = future.result()
-                except Exception as exc:
+                except (
+                    TimeoutError,
+                    DockingCalculationError,
+                    RuntimeError,
+                    OSError,
+                    ValueError,
+                    TypeError,
+                ) as exc:
                     rec_name, _, lig_name, _, _, _ = work_items[idx]
                     logger.error(f"[{rec_name} × {lig_name}] worker crashed: {exc}")
                     raw_results[idx] = (
@@ -1190,7 +1213,7 @@ def batch_dock(
             csv_path = os.path.join(output_dir, "batch_docking_results.csv")
             df.to_csv(csv_path, index=False, float_format="%.4f")
             logger.info(f"Batch results CSV: {csv_path}")
-    except Exception as exc:
+    except (OSError, TypeError) as exc:
         logger.warning(f"Failed to write batch CSV: {exc}")
 
     return results_by_receptor
