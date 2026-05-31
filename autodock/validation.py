@@ -85,11 +85,45 @@ def validate_pose_with_posebusters(
         os.unlink(tmp_sdf.name)
 
     # PoseBusters returns a DataFrame with boolean columns.
-    # Exclude checks that produce false negatives in the docking context:
-    # - loading flags are not quality checks
-    # - ring non-flatness is expected for chair/boat conformations
-    # - cofactor/water distance/overlap checks depend on the specific pocket environment
-    #   and can flag valid poses that happen to be near crystallographic additives
+    # Exclude checks that produce false negatives in the docking context.
+    # Each exclusion is justified below:
+    #
+    # mol_pred_loaded / mol_true_loaded / mol_cond_loaded
+    #   → File-loading flags, not pose-quality checks.  A false here means
+    #     PoseBusters couldn't parse a file, not that the pose is invalid.
+    #
+    # non-aromatic_ring_non-flatness
+    #   → Excluded because Vina docked poses retain rough 3D geometry from
+    #     RDKit ETKDG conformer generation; chair/boat puckered conformations
+    #     flagged as "non-flat" are chemically valid (e.g., cyclohexane rings,
+    #     sugar puckers).  The ETKDG algorithm (Riniker & Landrum 2015, JCIM)
+    #     produces energetically reasonable ring puckers that are correct.
+    #     **Risk**: may mask true ring-flattening artefacts from poor Vina
+    #     sampling.  Manually inspect ring geometry for targets with sp²-rich
+    #     cores (kinase hinge binders, G-quadruplex ligands).
+    #
+    # minimum_distance_to_organic_cofactors / minimum_distance_to_inorganic_cofactors
+    #   → Cofactors (HEM, FAD, NAD, metal ions) are present in the prepared
+    #     receptor PDB that is passed as mol_cond.  A docked pose near a
+    #     cofactor is not necessarily a clash — it may represent a known
+    #     binding mode where the cofactor is part of the binding site (e.g.,
+    #     HEM in cytochrome P450).  Empty PDB files for cofactor-less
+    #     structures also produce NaN/inf values in PoseBusters internal
+    #     computation, causing spurious failures.  See Salo et al. 2024
+    #     (J. Chem. Inf. Model.) for discussion.
+    #
+    # minimum_distance_to_waters / volume_overlap_with_waters
+    #   → The prepared receptor PDB typically has crystallographic waters
+    #     removed (apoprotein).  PoseBusters checks distance/overlap to
+    #     these removed water molecules, which is meaningless.  Conserved
+    #     water molecules (if retained) are a different case — see
+    #     `_find_functional_waters()` in preparation.py for optional
+    #     water retention.
+    #
+    # volume_overlap_with_organic_cofactors / volume_overlap_with_inorganic_cofactors
+    #   → Same rationale as minimum_distance checks: cofactors in the
+    #     conditioning PDB trigger false positives.
+    #
     _EXCLUDED_FROM_PASS = {
         "mol_pred_loaded",
         "mol_true_loaded",

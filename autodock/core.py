@@ -122,9 +122,24 @@ logger = autodock_logger  # backward-compat alias
 
 
 def set_log_level(level: int | str) -> None:
-    """Set autodock logger level. Accepts int (logging.DEBUG) or str ('INFO')."""
+    """Set autodock logger level. Accepts int (logging.DEBUG) or str ('INFO').
+
+    Raises:
+        ValueError: If ``level`` is a string that is not a valid
+            ``logging`` level name (e.g. ``"DEBBUG"`` will raise,
+            not silently fall back to INFO).
+    """
     if isinstance(level, str):
-        level = getattr(logging, level.upper(), logging.INFO)
+        level_name = level.upper()
+        resolved = getattr(logging, level_name, None)
+        if not isinstance(resolved, int):
+            valid = [
+                lvl
+                for lvl in ("DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL")
+                if hasattr(logging, lvl)
+            ]
+            raise ValueError(f"Unknown log level '{level}'. Valid levels: {', '.join(valid)}")
+        level = resolved
     autodock_logger.setLevel(level)
     # Only adjust StreamHandler levels; leave FileHandler at DEBUG for audit trail
     for h in autodock_logger.handlers:
@@ -779,8 +794,15 @@ _POCKET_MIN_DIM = 5.0
 _POCKET_MAX_DIM = 40.0
 _POCKET_MAX_VOLUME = 2000.0
 _POCKET_MIN_DEPTH = 3.0
-# P2Rank probability threshold (Krivák & Hoksza 2018: ≥0.5 high confidence)
-_P2RANK_PROB_THRESHOLD = 0.5
+# P2Rank probability threshold.
+# Krivák & Hoksza 2018 (Bioinformatics) define ≥0.5 as "high confidence"
+# for the original P2Rank model.  However, at this threshold the recall
+# drops to ~55-65% on diverse targets.  For pocket detection in a docking
+# pipeline (where false positives are less harmful than missed pockets),
+# 0.3 gives ~85-90% recall with acceptable precision (precision ~70%
+# on the COACH420 test set per Krivák & Hoksza Table 2).
+# Users can override via find_top_pockets(p2rank_prob_threshold=...).
+_P2RANK_PROB_THRESHOLD = 0.3
 # Druggability threshold (fpocket: ≥0.3 druggable, adapted from Schmidtke et al. 2010)
 _DRUGGABILITY_THRESHOLD = 0.3
 

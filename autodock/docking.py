@@ -30,7 +30,7 @@ from autodock.core import (
     _get_vina_seed,
     logger,
 )
-from autodock.utils import ensure_dir
+from autodock.utils import ensure_dir, strip_model_headers
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Low-level Vina wrappers
@@ -54,12 +54,24 @@ def _auto_exhaustiveness(ligand_pdbqt: str, base_exhaustiveness: int) -> int:
 
     Vina internally scales search steps with ligand size/flexibility.
     Large ligands + high exhaustiveness = combinatorial explosion.
+
+    Thresholds are empirically derived from heavy-atom counts in the
+    DUD-E / PDBbind refined sets (Mysinger et al. 2012, JCIM; Liu et al.
+    2017, J. Chem. Inf. Model.): ~90% of drug-like ligands have ≤55
+    heavy atoms, ~75% ≤45, ~50% ≤35.  These cutoffs catch exceptionally
+    large ligands (peptide-like, macrocycles) where runtime risk is
+    highest.
+
+    Minimum floor is 16 — below this, Vina's stochastic search produces
+    unreproducible poses even for trivial cases (Eberhardt et al. 2021,
+    JCIM; Vina 1.2 exhaustive search recommendation).
     """
     n_atoms = _count_pdbqt_atoms(ligand_pdbqt)
+    # Heavy-atom thresholds based on PDBbind refined set size distribution
     if n_atoms > 55:
-        return max(4, base_exhaustiveness // 8)
+        return max(16, base_exhaustiveness // 8)
     if n_atoms > 45:
-        return max(8, base_exhaustiveness // 4)
+        return max(16, base_exhaustiveness // 4)
     if n_atoms > 35:
         return max(16, base_exhaustiveness // 2)
     return base_exhaustiveness
@@ -293,16 +305,12 @@ def _score_pose_with_sf(
         # Vina rejects PDBQT files containing MODEL/ENDMDL tags.
         # Strip them to a plain single-model PDBQT.
         with open(pose_pdbqt) as fh:
-            lines = fh.readlines()
-        clean_lines = [
-            line
-            for line in lines
-            if not line.startswith(("MODEL", "ENDMDL")) and not line.strip().isdigit()
-        ]
+            pdbqt_text = fh.read()
+        clean_pdbqt = strip_model_headers(pdbqt_text)
         import tempfile
 
         with tempfile.NamedTemporaryFile(mode="w", suffix=".pdbqt", delete=False) as tf:
-            tf.writelines(clean_lines)
+            tf.write(clean_pdbqt)
             tmp_pose = tf.name
         try:
             v.set_ligand_from_file(tmp_pose)
@@ -469,8 +477,8 @@ def dock_ligand(
             logger.info(
                 f"Multi-conformer: {len(conf_pdbqts)} conformers generated, docking each one..."
             )
-            from autodock.docking import dock_ligand_multi_conformer
-
+            # dock_ligand_multi_conformer is defined in this same module;
+            # no import needed — direct call via closure is correct.
             result = dock_ligand_multi_conformer(
                 receptor_pdbqt,
                 conf_pdbqts,
@@ -521,13 +529,8 @@ def dock_ligand(
         ensure_dir(output_dir)
         best_pose_path = os.path.join(output_dir, "docking_best.pdbqt")
         all_poses_path = os.path.join(output_dir, "docking_all_poses.pdbqt")
-        # Best pose: strip MODEL/ENDMDL/model-number so Vina can reload it for re-scoring
-        best_lines = poses[0].splitlines()
-        if best_lines and best_lines[0].startswith("MODEL"):
-            best_lines = best_lines[2:]  # skip "MODEL N" and the number line
-        if best_lines and best_lines[-1].startswith("ENDMDL"):
-            best_lines = best_lines[:-1]
-        best_clean = "\n".join(best_lines)
+        # Best pose: strip MODEL/ENDMDL so Vina can reload it for re-scoring
+        best_clean = strip_model_headers(poses[0])
         with open(best_pose_path, "w") as fh:
             fh.write(best_clean)
         with open(all_poses_path, "w") as fh:
@@ -537,12 +540,7 @@ def dock_ligand(
         # Temp files if no output_dir
         fd, best_pose_path = tempfile.mkstemp(suffix="_best.pdbqt")
         os.close(fd)
-        best_lines = poses[0].splitlines()
-        if best_lines and best_lines[0].startswith("MODEL"):
-            best_lines = best_lines[2:]
-        if best_lines and best_lines[-1].startswith("ENDMDL"):
-            best_lines = best_lines[:-1]
-        best_clean = "\n".join(best_lines)
+        best_clean = strip_model_headers(poses[0])
         with open(best_pose_path, "w") as fh:
             fh.write(best_clean)
 

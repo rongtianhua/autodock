@@ -264,9 +264,9 @@ mypy autodock
 
 ## 📚 Documentation
 
-- **API Reference**: https://autodock.readthedocs.io
-- **Tutorials**: See `docs/tutorials/`
-- **Methodology**: See `METHODS.md`
+- **API Reference**: See `autodock/__init__.py` for full public API exports
+- **Tutorials**: See `docs/agents/domain.md` for development domain documentation
+- **Changelog**: See `CHANGELOG.md` for version history
 
 ---
 

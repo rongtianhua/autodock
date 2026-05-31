@@ -1,0 +1,45 @@
+{
+  "compound_name": "LIG",
+  "receptor": "rec.pdbqt",
+  "method": "AutoDock Vina",
+  "receptor_source": null,
+  "center": [
+    0.0,
+    0.0,
+    0.0
+  ],
+  "box_size": [
+    20.0,
+    20.0,
+    20.0
+  ],
+  "exhaustiveness": 32,
+  "n_poses": 10,
+  "seed": null,
+  "best_affinity": -8.0,
+  "scoring_functions": [
+    "vina"
+  ],
+  "all_scores": {},
+  "consensus_affinity": null,
+  "pre_dock_score": null,
+  "score_improvement": null,
+  "rmsd_from_crystal": null,
+  "protocol_valid": null,
+  "redocking_threshold": null,
+  "posebusters_pass": null,
+  "clash_score": null,
+  "clash_acceptable": null,
+  "pose_clusters": null,
+  "n_clusters": null,
+  "rmsd_clustering_threshold": null,
+  "interactions": [],
+  "binding_pocket": null,
+  "pocket_source": null,
+  "best_pose_pdbqt": "pose.pdbqt",
+  "all_poses_pdbqt": null,
+  "output_dir": "./out",
+  "version": "1.0.0",
+  "timestamp": "2026-05-31T17:54:15.995770",
+  "runtime_seconds": null
+}

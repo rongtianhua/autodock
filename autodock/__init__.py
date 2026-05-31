@@ -65,6 +65,7 @@ from autodock.utils import (
     obabel_convert,
     read_pdb_atoms,
     rmsd_matrix,
+    strip_model_headers,
     write_temp_file,
 )
 from autodock.validation import (
@@ -134,6 +135,7 @@ __all__ = [
     "rmsd_matrix",
     "run_redocking_validation",
     "search_pdb_by_name",
+    "strip_model_headers",
     "set_log_level",
     "validate_pose_with_posebusters",
     "virtual_screen",

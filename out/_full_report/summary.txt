@@ -1,0 +1,7 @@
+Compound:    LIG
+Receptor:    rec
+Best affinity: -8.000 kcal/mol
+Method:      AutoDock Vina
+Timestamp:   2026-05-31T17:54:15.995770
+Pose clusters: 0
+Output:      ./out/_full_report

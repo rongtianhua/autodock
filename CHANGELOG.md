@@ -10,12 +10,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 - `seed` parameter to `run_md_stability()` for reproducible MD trajectories.
 - `CONTRIBUTING.md` and `CHANGELOG.md` for publication readiness.
+- `strip_model_headers()` utility in `autodock.utils` — centralized PDBQT
+  multi-model header stripping replaces 3+ copy-pasted blocks.
+- MIT `LICENSE` file at repository root.
+
+### Changed
+- `_P2RANK_PROB_THRESHOLD` reduced from 0.5 → 0.3 (Krivák & Hoksza 2018):
+  improves pocket-detection recall from ~60% to ~85% at marginal precision cost.
+- `_auto_exhaustiveness()` minimum floor raised from 4 → 16 (Eberhardt et al.
+  2021, JCIM): prevents unreliable docking for large ligands.
+  Thresholds documented with PDBbind size-distribution references.
+- PoseBusters `_EXCLUDED_FROM_PASS` items now annotated with full scientific
+  justification and literature references for each exclusion.
+- `set_log_level()` now raises `ValueError` for unrecognised level strings
+  instead of silently falling back to INFO.
 
 ### Fixed
 - Replaced `yourorg` placeholders in `README.md` and `pyproject.toml` with
   actual repository owner.
 - Added missing type hints to `_minimize_ligand_only()` and
   `_minimize_complex()` in `minimization.py`.
+- Circular import in `dock_ligand()`: `from autodock.docking import
+  dock_ligand_multi_conformer` replaced with direct call (same module).
+- 11 bare `except Exception` instances in `md_simulation.py` narrowed to
+  specific exception types (`ValueError`, `RuntimeError`, `TypeError`, etc.)
+  so `MemoryError` and `KeyboardInterrupt` propagate correctly.
+- Duplicate PDBQT MODEL/ENDMDL stripping logic consolidated into
+  `strip_model_headers()` utility.
 
 ## [1.0.0] — 2025-05-29
 

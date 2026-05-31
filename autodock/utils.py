@@ -51,6 +51,44 @@ def write_temp_file(content: str, suffix: str = ".tmp") -> str:
     return path
 
 
+def strip_model_headers(pdbqt_text: str) -> str:
+    """Remove MODEL/ENDMDL multi-model headers from a PDBQT string.
+
+    Vina produces multi-MODEL PDBQT output with ``MODEL N`` and
+    ``ENDMDL`` delimiters.  Some tools (e.g. re-scoring with a
+    different SF) require flat single-model input.
+
+    Strips:
+      - Leading ``MODEL`` line and the model-number line that follows
+      - Trailing ``ENDMDL`` line
+      - Standalone model-number lines (pure integers)
+
+    Returns:
+        Clean PDBQT string, empty string if input is all header.
+    """
+    lines = pdbqt_text.splitlines()
+    if not lines:
+        return ""
+
+    # Skip first "MODEL" line and the number-only line that follows
+    start = 0
+    if lines[0].startswith("MODEL"):
+        start = 2  # skip "MODEL N" and the number line
+    elif lines[0].strip().isdigit():
+        # Some generators put the model number alone on the first line
+        start = 1
+
+    # Strip trailing ENDMDL
+    clean = lines[start:]
+    if clean and clean[-1].startswith("ENDMDL"):
+        clean = clean[:-1]
+
+    # Filter any remaining pure-number lines (some generators add them mid-file)
+    clean = [line for line in clean if not line.strip().isdigit()]
+
+    return "\n".join(clean)
+
+
 def _read_pdb_atoms_impl(pdb_path: str) -> list[dict[str, Any]]:
     """Low-level PDB ATOM/HETATM parser (PDB format only)."""
     atoms = []
