@@ -454,3 +454,230 @@ def test_analyze_md_trajectory_success(tmp_path):
     assert result["receptor_ca_rmsf_max"] == 0.7
     assert result["n_hbonds_mean"] == 2.0
     assert result["n_hbonds_max"] == 2
+
+
+def test_run_md_stability_deprecated_n_steps(tmp_path):
+    """Deprecated n_steps / nvt_steps / npt_steps are converted to ns."""
+    receptor_pdb = tmp_path / "receptor.pdb"
+    _make_receptor_pdb(receptor_pdb)
+    ligand_pdbqt = tmp_path / "ligand.pdbqt"
+    ligand_pdbqt.write_text("dummy")
+    output_dir = tmp_path / "md"
+
+    modules, mock_app, mock_openmm, mock_simulation, mock_system_generator = _setup_openmm_mocks()
+
+    with (
+        patch("autodock.md_simulation._pdbqt_to_pdb"),
+        patch("autodock.md_simulation._merge_receptor_ligand_pdb"),
+        patch("autodock.md_simulation.analyze_md_trajectory", return_value={}),
+        patch.dict(sys.modules, modules),
+    ):
+        result = run_md_stability(
+            str(receptor_pdb),
+            str(ligand_pdbqt),
+            output_dir=str(output_dir),
+            n_steps=1000,
+            nvt_steps=500,
+            npt_steps=0,
+        )
+    assert "trajectory" in result
+
+
+def test_run_md_stability_openmmforcefields_missing(tmp_path):
+    """Fallback to basic Amber FF when openmmforcefields is unavailable."""
+    receptor_pdb = tmp_path / "receptor.pdb"
+    _make_receptor_pdb(receptor_pdb)
+    ligand_pdbqt = tmp_path / "ligand.pdbqt"
+    ligand_pdbqt.write_text("dummy")
+    output_dir = tmp_path / "md"
+
+    modules, mock_app, mock_openmm, mock_simulation, mock_system_generator = _setup_openmm_mocks()
+    # Remove openmmforcefields to trigger the ImportError fallback
+    modules["openmmforcefields"] = None
+    modules["openmmforcefields.generators"] = None
+
+    with (
+        patch("autodock.md_simulation._pdbqt_to_pdb"),
+        patch("autodock.md_simulation._merge_receptor_ligand_pdb"),
+        patch("autodock.md_simulation.analyze_md_trajectory", return_value={}),
+        patch.dict(sys.modules, modules),
+    ):
+        result = run_md_stability(
+            str(receptor_pdb),
+            str(ligand_pdbqt),
+            output_dir=str(output_dir),
+            n_steps=100,
+            nvt_steps=0,
+            npt_steps=0,
+            solvent_model="implicit",
+        )
+    assert "trajectory" in result
+    mock_app.ForceField.assert_called_once()
+
+
+def test_run_md_stability_local_minimize_radius(tmp_path):
+    """Local minimization path: only minimize ligand + nearby receptor atoms."""
+    receptor_pdb = tmp_path / "receptor.pdb"
+    _make_receptor_pdb(receptor_pdb)
+    ligand_pdbqt = tmp_path / "ligand.pdbqt"
+    ligand_pdbqt.write_text("dummy")
+    output_dir = tmp_path / "md"
+
+    modules, mock_app, mock_openmm, mock_simulation, mock_system_generator = _setup_openmm_mocks()
+
+    # Set up a ligand residue and atoms with positions
+    mock_lig_res = MagicMock()
+    mock_lig_res.name = "LIG"
+
+    mock_lig_atom = MagicMock()
+    mock_lig_atom.residue = mock_lig_res
+    mock_lig_atom.index = 0
+
+    mock_rec_atom = MagicMock()
+    mock_rec_atom.residue = MagicMock()
+    mock_rec_atom.residue.name = "ALA"
+    mock_rec_atom.index = 1
+
+    mock_topology = modules["openmm.app"].PDBFile.return_value.topology
+    mock_topology.residues.return_value = [mock_lig_res]
+    mock_topology.atoms.return_value = [mock_lig_atom, mock_rec_atom]
+
+    mock_modeller = modules["openmm.app"].Modeller.return_value
+    # Positions in nm: ligand at origin, receptor at 0.3 nm (3 Å)
+    mock_pos_lig = MagicMock()
+    mock_pos_lig.value_in_unit.return_value = [0.0, 0.0, 0.0]
+    mock_pos_rec = MagicMock()
+    mock_pos_rec.value_in_unit.return_value = [0.3, 0.0, 0.0]
+    mock_modeller.positions = [mock_pos_lig, mock_pos_rec]
+
+    with (
+        patch("autodock.md_simulation._pdbqt_to_pdb"),
+        patch("autodock.md_simulation._merge_receptor_ligand_pdb"),
+        patch("autodock.md_simulation.analyze_md_trajectory", return_value={}),
+        patch.dict(sys.modules, modules),
+    ):
+        result = run_md_stability(
+            str(receptor_pdb),
+            str(ligand_pdbqt),
+            output_dir=str(output_dir),
+            n_steps=100,
+            nvt_steps=0,
+            npt_steps=0,
+            local_minimize_radius=5.0,
+            minimize=True,
+        )
+    assert "trajectory" in result
+    mock_simulation.minimizeEnergy.assert_called_once_with(maxIterations=500)
+
+
+def test_analyze_md_trajectory_contact_map_pca_clustering(tmp_path):
+    """Contact map, PCA, and clustering branches of analyze_md_trajectory."""
+    traj_dcd = tmp_path / "traj.dcd"
+    topology_pdb = tmp_path / "top.pdb"
+    traj_dcd.write_text("dummy")
+    topology_pdb.write_text("dummy")
+
+    mock_residue = MagicMock()
+    mock_residue.resname = "ALA"
+    mock_residue.resid = 1
+
+    mock_protein = MagicMock()
+    mock_protein.__len__ = MagicMock(return_value=100)
+    mock_protein_residues = MagicMock()
+    mock_protein_residues.atoms.positions = np.array([[0.0, 0.0, 0.0]])
+    mock_protein_residues.__iter__ = MagicMock(return_value=iter([mock_residue]))
+    mock_protein.residues = mock_protein_residues
+
+    mock_ca = MagicMock()
+    mock_ca.__len__ = MagicMock(return_value=10)
+
+    mock_ligand = MagicMock()
+    mock_ligand.__len__ = MagicMock(return_value=5)
+    mock_ligand.positions = np.array([[0.0, 0.0, 0.0]])
+
+    def select_atoms_side_effect(selection):
+        mapping = {
+            "protein": mock_protein,
+            "protein and name CA": mock_ca,
+            "resname LIG": mock_ligand,
+            "not protein and not water and not resname NA CL K CA MG ZN": mock_ligand,
+        }
+        return mapping.get(selection, MagicMock())
+
+    mock_u = MagicMock()
+    mock_u.select_atoms.side_effect = select_atoms_side_effect
+    # 11 frames triggers both PCA (>10) and clustering (>5)
+    mock_u.trajectory = [MagicMock() for _ in range(11)]
+
+    mock_mda = MagicMock()
+    mock_mda.Universe.return_value = mock_u
+
+    mock_align = MagicMock()
+    mock_align_traj = MagicMock()
+    mock_align_traj.run.return_value = None
+    mock_align.AlignTraj.return_value = mock_align_traj
+
+    mock_rms = MagicMock()
+    mock_rms.RMSD.return_value.run.return_value = MagicMock(
+        results=MagicMock(rmsd=np.array([[0, 0, 1.0]]))
+    )
+    mock_rms.RMSF.return_value.run.return_value = MagicMock(results=MagicMock(rmsf=np.array([0.5])))
+    mock_rms.rmsd.return_value = 0.5
+
+    mock_hbonds = MagicMock()
+    mock_hbonds.results.hbonds = []
+    mock_hbonds.run.return_value = mock_hbonds
+
+    mock_hbonds_module = MagicMock()
+    mock_hbonds_module.HydrogenBondAnalysis.return_value = mock_hbonds
+
+    mock_distances = MagicMock()
+    mock_distances.distance_array.return_value = np.array([[3.0]])
+
+    mock_mda_lib = MagicMock()
+    mock_mda_lib.distances = mock_distances
+    mock_mda.lib = mock_mda_lib
+
+    mock_pca = MagicMock()
+    mock_pca.results.variance = np.array([50.0, 30.0])
+    mock_pca.run.return_value = mock_pca
+
+    mock_pca_module = MagicMock()
+    mock_pca_module.PCA.return_value = mock_pca
+
+    mock_scipy_linkage = MagicMock(return_value=np.array([[0, 1, 0.5, 2]]))
+    mock_scipy_fcluster = MagicMock(return_value=np.array([1, 1, 2, 2, 1, 1, 1, 2, 2, 1, 1]))
+    mock_scipy_squareform = MagicMock(return_value=np.array([0.5]))
+
+    mock_mda_analysis = MagicMock()
+    mock_mda_analysis.align = mock_align
+    mock_mda_analysis.rms = mock_rms
+    mock_mda_analysis.hydrogenbonds = mock_hbonds_module
+    mock_mda_analysis.pca = mock_pca_module
+
+    modules = {
+        "MDAnalysis": mock_mda,
+        "MDAnalysis.analysis": mock_mda_analysis,
+        "MDAnalysis.analysis.align": mock_align,
+        "MDAnalysis.analysis.rms": mock_rms,
+        "MDAnalysis.analysis.hydrogenbonds": mock_hbonds_module,
+        "MDAnalysis.analysis.pca": mock_pca_module,
+        "MDAnalysis.lib": mock_mda_lib,
+        "MDAnalysis.lib.distances": mock_distances,
+        "scipy.cluster.hierarchy": MagicMock(
+            linkage=mock_scipy_linkage, fcluster=mock_scipy_fcluster
+        ),
+        "scipy.spatial.distance": MagicMock(squareform=mock_scipy_squareform),
+    }
+
+    with patch.dict(sys.modules, modules):
+        result = analyze_md_trajectory(str(traj_dcd), str(topology_pdb), {"LIG"}, str(tmp_path))
+
+    assert "contact_map" in result
+    assert "n_contacting_residues" in result
+    assert "pca_explained_variance_pc1" in result
+    assert result["pca_explained_variance_pc1"] == 50.0
+    assert "pca_explained_variance_pc2" in result
+    assert result["pca_explained_variance_pc2"] == 30.0
+    assert "n_clusters" in result
+    assert "cluster_sizes" in result

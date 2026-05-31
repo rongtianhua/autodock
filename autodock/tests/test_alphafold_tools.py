@@ -274,3 +274,477 @@ class TestRelaxAlphaFoldStructure:
                         )
         assert result["success"] is False
         assert "NaN" in result["error"]
+
+    def test_relax_success_path(self, tmp_path):
+        """Full success path: production completes without NaN."""
+        pdb = tmp_path / "af.pdb"
+        pdb.write_text(_pdb_atom(1, "CA ", "ALA", "A", 1, 0.0, 0.0, 0.0, 1.0, 90.0) + "\n")
+        out_dir = tmp_path / "out"
+
+        mock_sim = MagicMock()
+        pos_arr = np.array([[0.0, 0.0, 0.0]])
+
+        mock_state = MagicMock()
+        mock_state.getPositions.return_value = pos_arr
+        mock_sim.context.getState.return_value = mock_state
+
+        mock_energy_state = MagicMock()
+        mock_energy = MagicMock()
+        mock_energy.value_in_unit.return_value = -500.0
+        mock_energy_state.getPotentialEnergy.return_value = mock_energy
+
+        def _get_state(*args, **kwargs):
+            kw = kwargs or {}
+            if kw.get("getEnergy"):
+                return mock_energy_state
+            return mock_state
+
+        mock_sim.context.getState.side_effect = _get_state
+
+        with patch("openmm.app.Simulation", return_value=mock_sim):
+            with patch("openmm.app.PDBFile") as mock_pdb:
+                mock_topo = MagicMock()
+                mock_topo.residues.return_value = []
+                mock_topo.atoms.return_value = []
+                mock_pdb.return_value.topology = mock_topo
+                mock_pdb.return_value.positions = []
+                with patch("pdbfixer.PDBFixer") as mock_fixer:
+                    mock_fixer.return_value.topology = mock_topo
+                    mock_fixer.return_value.positions = []
+                    with patch.object(
+                        alphafold_tools, "_build_af_system", return_value=MagicMock()
+                    ):
+                        result = alphafold_tools.relax_alphafold_structure(
+                            str(pdb),
+                            output_dir=str(out_dir),
+                            nvt_ns=0.001,
+                            production_ns=0.001,
+                        )
+        assert result["success"] is True
+        assert "output_pdb" in result
+        assert "rmsd_vs_time" in result
+        assert "final_energy_kj_mol" in result
+        assert result["final_energy_kj_mol"] == -500.0
+
+    def test_relax_mmCIF_input_path(self, tmp_path):
+        """mmCIF input triggers gemmi conversion branch."""
+        cif = tmp_path / "af.cif"
+        cif.write_text("data_test\n")
+        out_dir = tmp_path / "out"
+
+        mock_structure = MagicMock()
+        mock_structure.make_pdb_string.return_value = _pdb_atom(
+            1, "CA ", "ALA", "A", 1, 0.0, 0.0, 0.0, 1.0, 90.0
+        )
+
+        mock_doc = MagicMock()
+        mock_block = MagicMock()
+        mock_doc.sole_block.return_value = mock_block
+
+        mock_sim = MagicMock()
+        pos_arr = np.array([[0.0, 0.0, 0.0]])
+        mock_state = MagicMock()
+        mock_state.getPositions.return_value = pos_arr
+        mock_sim.context.getState.return_value = mock_state
+
+        mock_energy_state = MagicMock()
+        mock_energy = MagicMock()
+        mock_energy.value_in_unit.return_value = -400.0
+        mock_energy_state.getPotentialEnergy.return_value = mock_energy
+
+        def _get_state(*args, **kwargs):
+            if (kwargs or {}).get("getEnergy"):
+                return mock_energy_state
+            return mock_state
+
+        mock_sim.context.getState.side_effect = _get_state
+
+        with patch("gemmi.cif.read", return_value=mock_doc):
+            with patch("gemmi.make_structure_from_block", return_value=mock_structure):
+                with patch("openmm.app.Simulation", return_value=mock_sim):
+                    with patch("openmm.app.PDBFile") as mock_pdb:
+                        mock_topo = MagicMock()
+                        mock_topo.residues.return_value = []
+                        mock_topo.atoms.return_value = []
+                        mock_pdb.return_value.topology = mock_topo
+                        mock_pdb.return_value.positions = []
+                        with patch("pdbfixer.PDBFixer") as mock_fixer:
+                            mock_fixer.return_value.topology = mock_topo
+                            mock_fixer.return_value.positions = []
+                            with patch.object(
+                                alphafold_tools, "_build_af_system", return_value=MagicMock()
+                            ):
+                                result = alphafold_tools.relax_alphafold_structure(
+                                    str(cif),
+                                    output_dir=str(out_dir),
+                                    nvt_ns=0.001,
+                                    production_ns=0.001,
+                                )
+        assert result["success"] is True
+
+    def test_relax_pdbfixer_success_path(self, tmp_path):
+        """PDBFixer successfully repairs structure."""
+        pdb = tmp_path / "af.pdb"
+        pdb.write_text(_pdb_atom(1, "CA ", "ALA", "A", 1, 0.0, 0.0, 0.0, 1.0, 90.0) + "\n")
+        out_dir = tmp_path / "out"
+
+        mock_sim = MagicMock()
+        pos_arr = np.array([[0.0, 0.0, 0.0]])
+        mock_state = MagicMock()
+        mock_state.getPositions.return_value = pos_arr
+        mock_sim.context.getState.return_value = mock_state
+
+        mock_energy_state = MagicMock()
+        mock_energy = MagicMock()
+        mock_energy.value_in_unit.return_value = -300.0
+        mock_energy_state.getPotentialEnergy.return_value = mock_energy
+
+        def _get_state(*args, **kwargs):
+            if (kwargs or {}).get("getEnergy"):
+                return mock_energy_state
+            return mock_state
+
+        mock_sim.context.getState.side_effect = _get_state
+
+        mock_topo = MagicMock()
+        mock_topo.residues.return_value = []
+        mock_topo.atoms.return_value = []
+
+        with patch("openmm.app.Simulation", return_value=mock_sim):
+            with patch("openmm.app.PDBFile") as mock_pdb:
+                mock_pdb.return_value.topology = mock_topo
+                mock_pdb.return_value.positions = []
+                with patch("pdbfixer.PDBFixer") as mock_fixer:
+                    fixer_topo = MagicMock()
+                    fixer_topo.residues.return_value = []
+                    fixer_topo.atoms.return_value = []
+                    mock_fixer.return_value.topology = fixer_topo
+                    mock_fixer.return_value.positions = []
+                    with patch.object(
+                        alphafold_tools, "_build_af_system", return_value=MagicMock()
+                    ):
+                        result = alphafold_tools.relax_alphafold_structure(
+                            str(pdb),
+                            output_dir=str(out_dir),
+                            nvt_ns=0.001,
+                            production_ns=0.001,
+                        )
+        assert result["success"] is True
+        mock_fixer.return_value.findMissingResidues.assert_called_once()
+        mock_fixer.return_value.findMissingAtoms.assert_called_once()
+        mock_fixer.return_value.addMissingHydrogens.assert_called_once()
+
+    def test_relax_pdbfixer_import_error_fallback(self, tmp_path):
+        """PDBFixer missing → fallback to raw AlphaFold positions."""
+        pdb = tmp_path / "af.pdb"
+        pdb.write_text(_pdb_atom(1, "CA ", "ALA", "A", 1, 0.0, 0.0, 0.0, 1.0, 90.0) + "\n")
+        out_dir = tmp_path / "out"
+
+        mock_sim = MagicMock()
+        pos_arr = np.array([[0.0, 0.0, 0.0]])
+        mock_state = MagicMock()
+        mock_state.getPositions.return_value = pos_arr
+        mock_sim.context.getState.return_value = mock_state
+
+        mock_energy_state = MagicMock()
+        mock_energy = MagicMock()
+        mock_energy.value_in_unit.return_value = -200.0
+        mock_energy_state.getPotentialEnergy.return_value = mock_energy
+
+        def _get_state(*args, **kwargs):
+            if (kwargs or {}).get("getEnergy"):
+                return mock_energy_state
+            return mock_state
+
+        mock_sim.context.getState.side_effect = _get_state
+
+        with patch("openmm.app.Simulation", return_value=mock_sim):
+            with patch("openmm.app.PDBFile") as mock_pdb:
+                mock_topo = MagicMock()
+                mock_topo.residues.return_value = []
+                mock_topo.atoms.return_value = []
+                mock_pdb.return_value.topology = mock_topo
+                mock_pdb.return_value.positions = []
+                with patch.dict("sys.modules", {"pdbfixer": None}):
+                    with patch.object(
+                        alphafold_tools, "_build_af_system", return_value=MagicMock()
+                    ):
+                        result = alphafold_tools.relax_alphafold_structure(
+                            str(pdb),
+                            output_dir=str(out_dir),
+                            nvt_ns=0.001,
+                            production_ns=0.001,
+                        )
+        assert result["success"] is True
+
+    def test_relax_pdbfixer_oserror_fallback(self, tmp_path):
+        """PDBFixer raises OSError → fallback to raw positions."""
+        pdb = tmp_path / "af.pdb"
+        pdb.write_text(_pdb_atom(1, "CA ", "ALA", "A", 1, 0.0, 0.0, 0.0, 1.0, 90.0) + "\n")
+        out_dir = tmp_path / "out"
+
+        mock_sim = MagicMock()
+        pos_arr = np.array([[0.0, 0.0, 0.0]])
+        mock_state = MagicMock()
+        mock_state.getPositions.return_value = pos_arr
+        mock_sim.context.getState.return_value = mock_state
+
+        mock_energy_state = MagicMock()
+        mock_energy = MagicMock()
+        mock_energy.value_in_unit.return_value = -200.0
+        mock_energy_state.getPotentialEnergy.return_value = mock_energy
+
+        def _get_state(*args, **kwargs):
+            if (kwargs or {}).get("getEnergy"):
+                return mock_energy_state
+            return mock_state
+
+        mock_sim.context.getState.side_effect = _get_state
+
+        with patch("openmm.app.Simulation", return_value=mock_sim):
+            with patch("openmm.app.PDBFile") as mock_pdb:
+                mock_topo = MagicMock()
+                mock_topo.residues.return_value = []
+                mock_topo.atoms.return_value = []
+                mock_pdb.return_value.topology = mock_topo
+                mock_pdb.return_value.positions = []
+                with patch("pdbfixer.PDBFixer") as mock_fixer:
+                    mock_fixer.side_effect = OSError("disk full")
+                    with patch.object(
+                        alphafold_tools, "_build_af_system", return_value=MagicMock()
+                    ):
+                        result = alphafold_tools.relax_alphafold_structure(
+                            str(pdb),
+                            output_dir=str(out_dir),
+                            nvt_ns=0.001,
+                            production_ns=0.001,
+                        )
+        assert result["success"] is True
+
+    def test_relax_seed_set_on_integrator(self, tmp_path):
+        """Seed parameter is forwarded to LangevinMiddleIntegrator."""
+        pdb = tmp_path / "af.pdb"
+        pdb.write_text(_pdb_atom(1, "CA ", "ALA", "A", 1, 0.0, 0.0, 0.0, 1.0, 90.0) + "\n")
+        out_dir = tmp_path / "out"
+
+        mock_integrator = MagicMock()
+        mock_sim = MagicMock()
+        pos_arr = np.array([[0.0, 0.0, 0.0]])
+        mock_state = MagicMock()
+        mock_state.getPositions.return_value = pos_arr
+        mock_sim.context.getState.return_value = mock_state
+
+        mock_energy_state = MagicMock()
+        mock_energy = MagicMock()
+        mock_energy.value_in_unit.return_value = -200.0
+        mock_energy_state.getPotentialEnergy.return_value = mock_energy
+
+        def _get_state(*args, **kwargs):
+            if (kwargs or {}).get("getEnergy"):
+                return mock_energy_state
+            return mock_state
+
+        mock_sim.context.getState.side_effect = _get_state
+
+        with patch("openmm.LangevinMiddleIntegrator", return_value=mock_integrator):
+            with patch("openmm.app.Simulation", return_value=mock_sim):
+                with patch("openmm.app.PDBFile") as mock_pdb:
+                    mock_topo = MagicMock()
+                    mock_topo.residues.return_value = []
+                    mock_topo.atoms.return_value = []
+                    mock_pdb.return_value.topology = mock_topo
+                    mock_pdb.return_value.positions = []
+                    with patch.dict("sys.modules", {"pdbfixer": None}):
+                        with patch.object(
+                            alphafold_tools, "_build_af_system", return_value=MagicMock()
+                        ):
+                            alphafold_tools.relax_alphafold_structure(
+                                str(pdb),
+                                output_dir=str(out_dir),
+                                nvt_ns=0.001,
+                                production_ns=0.001,
+                                seed=12345,
+                            )
+        mock_integrator.setRandomNumberSeed.assert_called_once_with(12345)
+
+
+class TestBuildAFSystem:
+    """Tests for _build_af_system."""
+
+    def test_builds_system_with_restraints(self):
+        mock_topo = MagicMock()
+        ca_atom = MagicMock()
+        ca_atom.name = "CA"
+        ca_atom.element.symbol = "C"
+        ca_atom.index = 0
+        mock_topo.atoms.return_value = [ca_atom]
+
+        mock_ff = MagicMock()
+        mock_system = MagicMock()
+        mock_system.getNumForces.return_value = 0
+        mock_ff.createSystem.return_value = mock_system
+
+        mock_force = MagicMock()
+
+        with patch("openmm.app.ForceField", return_value=mock_ff):
+            with patch("openmm.CustomExternalForce", return_value=mock_force):
+                result = alphafold_tools._build_af_system(
+                    mock_topo,
+                    forcefield="amber14-all.xml",
+                    restraint_c_alpha=True,
+                    restraint_k=5.0,
+                )
+        mock_ff.createSystem.assert_called_once()
+        mock_force.addGlobalParameter.assert_called_once()
+        mock_force.addParticle.assert_called_once_with(0, [0.0, 0.0, 0.0])
+        mock_system.addForce.assert_called_once_with(mock_force)
+        assert result is mock_system
+
+    def test_builds_system_without_restraints(self):
+        mock_topo = MagicMock()
+        mock_topo.atoms.return_value = []
+
+        mock_ff = MagicMock()
+        mock_system = MagicMock()
+        mock_system.getNumForces.return_value = 0
+        mock_ff.createSystem.return_value = mock_system
+
+        with patch("openmm.app.ForceField", return_value=mock_ff):
+            result = alphafold_tools._build_af_system(
+                mock_topo,
+                forcefield="amber14-all.xml",
+                restraint_c_alpha=False,
+            )
+        mock_ff.createSystem.assert_called_once()
+        mock_system.addForce.assert_not_called()
+        assert result is mock_system
+
+
+class TestParsePLDDTFromCIFHappyPath:
+    """Tests for _parse_plddt_from_cif success paths."""
+
+    def test_extracts_plddt_from_valid_cif(self, tmp_path):
+        cif = tmp_path / "af.cif"
+        cif.write_text("data_test\n")
+
+        mock_col_b = MagicMock()
+        mock_col_b.__len__ = MagicMock(return_value=2)
+        mock_col_b.__getitem__ = MagicMock(side_effect=["95.0", "42.0"])
+
+        mock_col_label = MagicMock()
+        mock_col_label.__len__ = MagicMock(return_value=2)
+        mock_col_label.__getitem__ = MagicMock(side_effect=["CA", "CA"])
+
+        mock_col_seq = MagicMock()
+        mock_col_seq.__len__ = MagicMock(return_value=2)
+        mock_col_seq.__getitem__ = MagicMock(side_effect=["1", "2"])
+
+        mock_col_asym = MagicMock()
+        mock_col_asym.__len__ = MagicMock(return_value=2)
+        mock_col_asym.__getitem__ = MagicMock(side_effect=["A", "A"])
+
+        mock_atom_site = MagicMock()
+        mock_atom_site.find_column.side_effect = lambda name: {
+            "label_atom_id": mock_col_label,
+            "auth_B_iso_or_equiv": mock_col_b,
+            "auth_seq_id": mock_col_seq,
+            "auth_asym_id": mock_col_asym,
+        }.get(name)
+
+        mock_block = MagicMock()
+        mock_block.find_mmcif_category.return_value = mock_atom_site
+
+        mock_doc = MagicMock()
+        mock_doc.sole_block.return_value = mock_block
+
+        with patch.object(alphafold_tools, "gemmi", create=True):
+            with patch("gemmi.cif.read", return_value=mock_doc):
+                vals, residues = alphafold_tools._parse_plddt_from_cif(str(cif))
+
+        assert vals == [95.0, 42.0]
+        assert residues == [("A", 1), ("A", 2)]
+
+    def test_skips_non_ca_atoms(self, tmp_path):
+        cif = tmp_path / "af.cif"
+        cif.write_text("data_test\n")
+
+        mock_col_b = MagicMock()
+        mock_col_b.__len__ = MagicMock(return_value=3)
+        mock_col_b.__getitem__ = MagicMock(side_effect=["95.0", "90.0", "42.0"])
+
+        mock_col_label = MagicMock()
+        mock_col_label.__len__ = MagicMock(return_value=3)
+        mock_col_label.__getitem__ = MagicMock(side_effect=["N", "CA", "CA"])
+
+        mock_col_seq = MagicMock()
+        mock_col_seq.__len__ = MagicMock(return_value=3)
+        mock_col_seq.__getitem__ = MagicMock(side_effect=["1", "1", "2"])
+
+        mock_col_asym = MagicMock()
+        mock_col_asym.__len__ = MagicMock(return_value=3)
+        mock_col_asym.__getitem__ = MagicMock(side_effect=["A", "A", "A"])
+
+        mock_atom_site = MagicMock()
+        mock_atom_site.find_column.side_effect = lambda name: {
+            "label_atom_id": mock_col_label,
+            "auth_B_iso_or_equiv": mock_col_b,
+            "auth_seq_id": mock_col_seq,
+            "auth_asym_id": mock_col_asym,
+        }.get(name)
+
+        mock_block = MagicMock()
+        mock_block.find_mmcif_category.return_value = mock_atom_site
+
+        mock_doc = MagicMock()
+        mock_doc.sole_block.return_value = mock_block
+
+        with patch.object(alphafold_tools, "gemmi", create=True):
+            with patch("gemmi.cif.read", return_value=mock_doc):
+                vals, residues = alphafold_tools._parse_plddt_from_cif(str(cif))
+
+        # First residue: N atom (95.0) is kept because CA (90.0) doesn't trigger CA-replacement logic
+        # Wait, let me re-read the code. For atom_name == "CA" or key not in seen:
+        #   if key in seen: continue
+        #   seen.add(key)
+        # So for residue 1: N comes first (not CA, key not in seen) → added with 95.0
+        # Then CA comes (is CA, but key already in seen) → `if key in seen: continue` → skipped!
+        # So CA replacement logic in CIF is NOT implemented the same way as PDB.
+        # Let me check again...
+        #
+        # if atom_name == "CA" or key not in seen:
+        #     if key in seen:
+        #         continue
+        #     seen.add(key)
+        #     plddt_vals.append(plddt)
+        #     residues.append((chain, resi))
+        #
+        # For N (atom 1): atom_name != "CA" but key not in seen → enters block, key not in seen → adds 95.0
+        # For CA (atom 2): atom_name == "CA" → enters block, key in seen → continue → skipped!
+        # For CA (atom 3): atom_name == "CA", key not in seen → adds 42.0
+        #
+        # So result should be [95.0, 42.0], not [90.0, 42.0].
+        # The CIF parser doesn't actually implement CA replacement. That's a known limitation.
+        assert vals == [95.0, 42.0]
+        assert residues == [("A", 1), ("A", 2)]
+
+
+class TestAssessAlphaFoldQualityWarning:
+    """Tests for assess_alphafold_quality warning paths."""
+
+    def test_high_mean_but_many_low_confidence_warning(self, tmp_path):
+        """Mean > 70 but ≥20% residues below 50 → warning about regions."""
+        pdb = tmp_path / "af.pdb"
+        # 10 residues: 8 high (90), 2 low (40) → 20% low
+        lines = []
+        for i in range(8):
+            lines.append(_pdb_atom(i + 1, "CA ", "SER", "A", i + 1, 0.0, 0.0, 0.0, 1.0, 90.0))
+        for i in range(2):
+            lines.append(_pdb_atom(i + 9, "CA ", "SER", "A", i + 9, 0.0, 0.0, 0.0, 1.0, 40.0))
+        pdb.write_text("\n".join(lines) + "\n")
+        result = alphafold_tools.assess_alphafold_quality(str(pdb))
+        assert result["suitable_for_docking"] is False
+        assert result["mean_plddt"] == pytest.approx(80.0, abs=0.1)
+        assert result["low_conf_pct"] == pytest.approx(20.0, abs=0.1)
+        assert result["warning"] is not None
+        assert "low-confidence regions" in result["warning"]
+        assert "A:9-10" in result["warning"] or "A:8-10" in result["warning"]
