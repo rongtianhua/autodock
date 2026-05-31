@@ -42,7 +42,7 @@ def write_temp_file(content: str, suffix: str = ".tmp") -> str:
     try:
         with os.fdopen(fd, "w") as fh:
             fh.write(content)
-    except Exception:
+    except (OSError, TypeError, ValueError):
         with contextlib.suppress(OSError):
             os.close(fd)
         with contextlib.suppress(OSError):
@@ -648,7 +648,7 @@ def pdb_chain_to_smiles(pdb_path: str, chain_id: str) -> str | None:
             line = result.stdout.strip().split("\n")[0]
             smiles = line.split()[0] if line else None
             return smiles
-    except Exception as exc:
+    except (subprocess.SubprocessError, OSError, ValueError, IndexError) as exc:
         logger.warning(f"obabel SMILES conversion failed: {exc}")
     finally:
         if os.path.exists(chain_pdb):
@@ -673,7 +673,7 @@ def rmsd_matrix(poses: list[Any]) -> np.ndarray:
                 rms = AllChem.GetBestRMS(poses[i], poses[j])
                 mat[i, j] = rms
                 mat[j, i] = rms
-            except Exception:
+            except (RuntimeError, ValueError, TypeError):
                 mat[i, j] = 999.0
                 mat[j, i] = 999.0
     return mat
@@ -701,7 +701,7 @@ def download_pdb(pdb_id: str, output_dir: str = ".") -> str:
 
     try:
         urllib.request.urlretrieve(url, out_path)
-    except Exception as exc:
+    except (urllib.error.HTTPError, urllib.error.URLError, OSError) as exc:
         raise StructureFetchError(f"Failed to download {pdb_id}: {exc}")
 
     if os.path.getsize(out_path) < 100:
@@ -727,7 +727,7 @@ def download_ligand_sdf_from_pdb(ligand_code: str, output_dir: str = ".") -> str
 
     try:
         urllib.request.urlretrieve(url, out_path)
-    except Exception as exc:
+    except (urllib.error.HTTPError, urllib.error.URLError, OSError) as exc:
         raise StructureFetchError(f"Failed to download ligand {ligand_code}: {exc}")
 
     if os.path.getsize(out_path) < 50:
@@ -735,7 +735,7 @@ def download_ligand_sdf_from_pdb(ligand_code: str, output_dir: str = ".") -> str
         url = f"https://files.rcsb.org/ligands/download/{ligand_code}_model.sdf"
         try:
             urllib.request.urlretrieve(url, out_path)
-        except Exception as exc:
+        except (urllib.error.HTTPError, urllib.error.URLError, OSError) as exc:
             raise StructureFetchError(f"Failed to download ligand {ligand_code} (model): {exc}")
 
     logger.info(f"Downloaded ligand SDF: {out_path}")
