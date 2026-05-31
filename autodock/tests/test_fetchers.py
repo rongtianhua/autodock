@@ -139,7 +139,9 @@ class TestFetchPubChemSMILES:
 
     @patch("autodock.fetchers._http_get_json")
     def test_not_found(self, mock_json):
-        mock_json.side_effect = Exception("network error")
+        import urllib.error
+
+        mock_json.side_effect = urllib.error.URLError("network error")
         with pytest.raises(DataSourceError):
             fetchers.fetch_pubchem_smiles("notarealcompound12345")
 
@@ -185,8 +187,10 @@ class TestFetchZincSMILES:
     @patch("autodock.fetchers._http_get_json")
     @patch("autodock.fetchers._http_get_text")
     def test_all_fail(self, mock_text, mock_json):
-        mock_json.side_effect = Exception("fail")
-        mock_text.side_effect = Exception("fail")
+        import urllib.error
+
+        mock_json.side_effect = urllib.error.URLError("fail")
+        mock_text.side_effect = urllib.error.URLError("fail")
         assert fetchers.fetch_zinc_smiles("ZINC000000000001") is None
 
 

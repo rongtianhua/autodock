@@ -53,7 +53,7 @@ def _download_url(url: str, out_path: str, timeout: int = 60) -> None:
     """Download a URL to disk, raising on small/empty or HTML files."""
     try:
         urllib.request.urlretrieve(url, out_path)
-    except Exception as exc:
+    except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError, OSError) as exc:
         raise StructureFetchError(f"Download failed: {url} -> {exc}")
     if os.path.getsize(out_path) < 50:
         raise StructureFetchError(f"Downloaded file too small (< 50 B): {out_path}")
@@ -169,7 +169,12 @@ def search_pdb_by_name(
         )
         with urllib.request.urlopen(req, timeout=30) as resp:
             result = json.loads(resp.read().decode("utf-8"))
-    except Exception as exc:
+    except (
+        urllib.error.URLError,
+        urllib.error.HTTPError,
+        TimeoutError,
+        json.JSONDecodeError,
+    ) as exc:
         raise StructureFetchError(f"RCSB search query failed: {exc}")
 
     raw_ids = [e["identifier"] for e in result.get("result_set", []) if "identifier" in e]
@@ -206,7 +211,7 @@ def _rank_pdb_entries(pdb_ids: list[str]) -> list[str]:
             r_free = info.get("r_free", 99.0)
             year = info.get("deposit_year", 1900)
             scored.append((resolution, -year, pid, r_free, str(year)))
-        except Exception:
+        except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError, json.JSONDecodeError):
             continue
 
     if not scored:
@@ -231,7 +236,7 @@ def _fetch_entry_metadata(pdb_id: str) -> dict | None:
     try:
         with urllib.request.urlopen(req, timeout=8) as resp:
             data = json.loads(resp.read().decode())
-    except Exception:
+    except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError, json.JSONDecodeError):
         return None
 
     # Parse resolution
@@ -327,7 +332,7 @@ def _resolve_to_uniprot(query: str) -> str | None:
             accession = results[0].get("primaryAccession")
             if accession:
                 return accession
-    except Exception:
+    except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError, OSError):
         pass
 
     # Fallback: try without reviewed filter
@@ -339,7 +344,7 @@ def _resolve_to_uniprot(query: str) -> str | None:
             accession = results2[0].get("primaryAccession")
             if accession:
                 return accession
-    except Exception:
+    except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError, OSError):
         pass
 
     return None
@@ -420,7 +425,14 @@ def fetch_protein_structure(
                         f" — returning anyway (fallback_swissmodel=False)"
                     )
                     return af_path
-            except Exception:
+            except (
+                OSError,
+                ValueError,
+                TypeError,
+                json.JSONDecodeError,
+                AttributeError,
+                ZeroDivisionError,
+            ):
                 # Quality assessment failed — return AF structure anyway
                 return af_path
         except StructureFetchError:
@@ -561,7 +573,7 @@ def download_alphafold(
         if exc.code == 404:
             raise StructureFetchError(f"AlphaFold DB has no entry for UniProt ID: {uniprot_id}")
         raise StructureFetchError(f"AlphaFold API error: {exc}")
-    except Exception as exc:
+    except (urllib.error.URLError, TimeoutError, OSError) as exc:
         raise StructureFetchError(f"AlphaFold API request failed: {exc}")
 
     if not isinstance(data, list) or len(data) == 0:
@@ -705,7 +717,13 @@ def fetch_pubchem_smiles(query: str) -> str:
         if compounds:
             # canonical_smiles deprecated in pubchempy 1.0.5+
             return getattr(compounds[0], "connectivity_smiles", compounds[0].canonical_smiles)
-    except Exception:
+    except (
+        ImportError,
+        AttributeError,
+        urllib.error.URLError,
+        urllib.error.HTTPError,
+        TimeoutError,
+    ):
         pass
 
     # Fallback to raw PUG REST API
@@ -719,7 +737,13 @@ def fetch_pubchem_smiles(query: str) -> str:
         props = data["PropertyTable"]["Properties"]
         if props:
             return props[0]["CanonicalSMILES"]
-    except Exception as exc:
+    except (
+        urllib.error.URLError,
+        urllib.error.HTTPError,
+        TimeoutError,
+        json.JSONDecodeError,
+        KeyError,
+    ) as exc:
         raise DataSourceError(f"PubChem lookup failed for '{query}': {exc}")
 
     raise DataSourceError(f"PubChem has no record for '{query}'")
@@ -763,7 +787,13 @@ def fetch_compound_sdf_by_name(name: str, output_path: str) -> str:
         if compounds:
             cid = compounds[0].cid
             return fetch_pubchem_sdf(cid, output_path)
-    except Exception:
+    except (
+        ImportError,
+        AttributeError,
+        urllib.error.URLError,
+        urllib.error.HTTPError,
+        TimeoutError,
+    ):
         pass
 
     # Fallback: SMILES → 3D via gen3d (no SDF from PubChem name)
@@ -807,7 +837,12 @@ def fetch_chembl_smiles(chembl_id: str) -> str:
         smiles = data.get("molecule_structures", {}).get("canonical_smiles")
         if smiles:
             return smiles
-    except Exception as exc:
+    except (
+        urllib.error.URLError,
+        urllib.error.HTTPError,
+        TimeoutError,
+        json.JSONDecodeError,
+    ) as exc:
         raise DataSourceError(f"ChEMBL lookup failed for {chembl_id}: {exc}")
 
     raise DataSourceError(f"ChEMBL has no SMILES for {chembl_id}")
@@ -889,7 +924,7 @@ def fetch_chembl_by_target(
                 target_name = tgt.get("pref_name") or target_query
                 logger.info(f"ChEMBL: resolved '{target_query}' → {target_id} ({target_name})")
                 break
-        except Exception:
+        except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError, json.JSONDecodeError):
             continue
 
     if not target_id:
@@ -910,7 +945,12 @@ def fetch_chembl_by_target(
     try:
         data = _http_get_json(act_url, timeout=timeout)
         activities = data.get("activities", [])
-    except Exception as exc:
+    except (
+        urllib.error.URLError,
+        urllib.error.HTTPError,
+        TimeoutError,
+        json.JSONDecodeError,
+    ) as exc:
         raise DataSourceError(f"ChEMBL activity query failed: {exc}")
 
     if not activities:
@@ -952,7 +992,7 @@ def fetch_chembl_by_target(
                 entry["target_id"] = target_id
                 entry["target_name"] = target_name
                 results.append(entry)
-        except Exception:
+        except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError, json.JSONDecodeError):
             continue
 
     logger.info(
@@ -992,7 +1032,12 @@ def fetch_bindingdb_by_smiles(
     )
     try:
         return _http_get_json(url, timeout=timeout)
-    except Exception as exc:
+    except (
+        urllib.error.URLError,
+        urllib.error.HTTPError,
+        TimeoutError,
+        json.JSONDecodeError,
+    ) as exc:
         raise DataSourceError(f"BindingDB query failed: {exc}")
 
 
@@ -1027,7 +1072,7 @@ def fetch_zinc_smiles(zinc_id: str, timeout: int = 15) -> str | None:
             if smi:
                 logger.info(f"Resolved ZINC SMILES from {url}")
                 return smi
-        except Exception:
+        except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError, json.JSONDecodeError):
             continue
 
     # Attempt 2: CartBlanche text endpoint (experimental)
@@ -1043,7 +1088,7 @@ def fetch_zinc_smiles(zinc_id: str, timeout: int = 15) -> str | None:
             parts = line.strip().split()
             if len(parts) >= 2 and parts[0].upper() == zinc_id:
                 return parts[1]
-    except Exception:
+    except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError, ValueError):
         pass
 
     logger.warning(f"Could not resolve ZINC ID {zinc_id} to SMILES")
@@ -1133,7 +1178,13 @@ def search_zinc(
                 if _parsed:
                     logger.info(f"ZINC search (ZINC15): '{query}' → {len(_parsed)} results")
                     return _parsed
-    except Exception:
+    except (
+        urllib.error.URLError,
+        urllib.error.HTTPError,
+        TimeoutError,
+        json.JSONDecodeError,
+        OSError,
+    ):
         pass
 
     # Fallback: CartBlanche text endpoint
@@ -1147,7 +1198,13 @@ def search_zinc(
         if _parsed:
             logger.info(f"ZINC search (CartBlanche): '{query}' → {len(_parsed)} results")
             return _parsed
-    except Exception as exc:
+    except (
+        urllib.error.URLError,
+        urllib.error.HTTPError,
+        TimeoutError,
+        OSError,
+        ValueError,
+    ) as exc:
         logger.warning(f"ZINC search failed for '{query}': {exc}")
         logger.info("Tip: download ZINC catalog files from https://files.docking.org/")
 
@@ -1185,7 +1242,7 @@ def fetch_zinc_sdf(zinc_id: str, output_path: str, timeout: int = 30) -> str | N
             if os.path.isfile(output_path) and os.path.getsize(output_path) > 100:
                 logger.info(f"Downloaded ZINC SDF: {output_path} ({url})")
                 return output_path
-        except Exception:
+        except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError, OSError):
             continue
 
     logger.warning(f"Could not download ZINC SDF for {zinc_id}")
@@ -1251,7 +1308,7 @@ def read_sdf_library(path: str) -> dict[str, str]:
         try:
             smiles = Chem.MolToSmiles(mol)
             results[name] = smiles
-        except Exception:
+        except (RuntimeError, ValueError):
             continue
     return results
 
@@ -1278,7 +1335,7 @@ def read_sdf_3d_library(path: str) -> dict[str, tuple[str, Any]]:
         try:
             smiles = Chem.MolToSmiles(mol)
             results[name] = (smiles, mol)
-        except Exception:
+        except (RuntimeError, ValueError):
             continue
     return results
 
@@ -1322,7 +1379,7 @@ def read_mol_file(path: str) -> Any | None:
         if result.returncode == 0:
             smiles = result.stdout.strip().split()[0]
             return Chem.MolFromSmiles(smiles)
-    except Exception:
+    except (subprocess.SubprocessError, OSError, IndexError, ValueError):
         pass
     return None
 
