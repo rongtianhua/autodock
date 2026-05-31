@@ -65,7 +65,7 @@ def _parse_pdb_header(pdb_path: str) -> dict[str, Any]:
     try:
         with open(pdb_path) as fh:
             header = fh.read(10000)
-    except Exception:
+    except OSError:
         return result
 
     lines = header.splitlines()
@@ -154,7 +154,7 @@ def _find_disulfide_bonds(pdb_path: str) -> list[dict[str, Any]]:
                     )
                 except (ValueError, IndexError):
                     continue
-    except Exception:
+    except OSError:
         pass
     return bonds
 
@@ -405,7 +405,7 @@ def prepare_receptor(
             block = doc.sole_block()
             structure = gemmi.make_structure_from_block(block)
             pdb_content = structure.make_pdb_string()
-        except Exception as exc:
+        except (OSError, ValueError, ImportError) as exc:
             raise PreparationError(f"CIF parsing failed: {exc}")
     else:
         with open(pdb_file) as fh:
@@ -506,7 +506,7 @@ def prepare_receptor(
                         _af_assessment["relaxation_rmsd"] = _relax_result.get("final_rmsd")
                 else:
                     logger.warning("AlphaFold MD relaxation failed — using raw structure")
-            except Exception as exc:
+            except (OSError, ValueError, RuntimeError, TypeError) as exc:
                 logger.warning(f"AlphaFold handling failed ({exc}) — using raw structure")
 
     # Resolution / R-free warnings for experimental structures
@@ -585,6 +585,7 @@ def prepare_receptor(
     _tmp_fixer_in = write_temp_file(_pbfixer_pdb, suffix="_pdbfixer_in.pdb")
 
     try:
+        import openmm
         from openmm.app import PDBFile as _OMM_PDBFile
         from pdbfixer import PDBFixer
     except ImportError as exc:
@@ -628,7 +629,7 @@ def prepare_receptor(
         with open(tmp_fixed, "w") as fh:
             _OMM_PDBFile.writeFile(fixer.topology, fixer.positions, fh)
         logger.info(f"PDBFixer: missing residues filled, hydrogens added (pH {ph})")
-    except Exception as exc:
+    except (OSError, ValueError, RuntimeError, TypeError, ImportError, openmm.OpenMMException) as exc:
         logger.warning(f"PDBFixer failed ({exc}) — falling back to raw structure")
         tmp_fixed = tmp_raw  # use raw structure
     finally:
@@ -671,7 +672,7 @@ def prepare_receptor(
         if n_flips > 0:
             logger.info(f"Reduce: corrected {n_flips} ASN/GLN sidechain flip(s)")
         logger.info("Reduce: ASN/GLN flips processed, HIS tautomers assigned")
-    except Exception as exc:
+    except (OSError, ValueError, RuntimeError, TypeError) as exc:
         logger.warning(f"Reduce step skipped ({exc}) — using PDBFixer output")
         tmp_reduced = tmp_fixed
 
@@ -769,12 +770,13 @@ def prepare_receptor(
                 logger.info("PROPKA: all titratable residues within normal pKa ranges")
         except ImportError:
             logger.debug("propka not installed — skipping pKa prediction")
-        except Exception as exc:
+        except (OSError, ValueError, RuntimeError, TypeError) as exc:
             logger.warning(f"PROPKA pKa prediction failed ({exc}) — skipping")
 
     # ── Step 5: OpenMM pocket-restrained energy minimisation ─────────────
     tmp_min = write_temp_file("", suffix="_minimized.pdb")
     try:
+        import openmm
         from openmm import CustomExternalForce, LangevinIntegrator
         from openmm import unit as _omm_unit
         from openmm.app import ForceField, PDBFile, Simulation
@@ -857,7 +859,7 @@ def prepare_receptor(
         with open(tmp_min, "w") as fh:
             PDBFile.writeFile(_top, min_positions, fh)
         logger.info("OpenMM: receptor energy minimised (200 steps L-BFGS)")
-    except Exception as exc:
+    except (OSError, ValueError, RuntimeError, TypeError, ImportError, openmm.OpenMMException) as exc:
         logger.warning(f"OpenMM minimisation skipped ({exc}) — using PDBFixer output")
         tmp_min = tmp_fixed
 
@@ -1005,14 +1007,14 @@ def prepare_receptor(
 
     try:
         polymer = Polymer.from_pdb_string(pdb_content, templates, mk_prep, default_altloc="A")
-    except Exception:
+    except (OSError, ValueError, RuntimeError, TypeError, ImportError):
         # Retry with allow_bad_res=True: removes unknown residues and continues
         logger.warning("Some residues failed template matching — retrying with allow_bad_res=True")
         try:
             polymer = Polymer.from_pdb_string(
                 pdb_content, templates, mk_prep, allow_bad_res=True, default_altloc="A"
             )
-        except Exception as exc2:
+        except (OSError, ValueError, RuntimeError, TypeError, ImportError) as exc2:
             logger.error(
                 f"Meeko preparation failed even with allow_bad_res: {exc2} — "
                 f"falling back to Open Babel"
@@ -1021,7 +1023,7 @@ def prepare_receptor(
 
     try:
         rigid_pdbqt, _ = PDBQTWriterLegacy.write_from_polymer(polymer)
-    except Exception as exc:
+    except (OSError, ValueError, RuntimeError, TypeError, ImportError) as exc:
         logger.error(f"PDBQT writing failed: {exc} — falling back to Open Babel")
         return _prepare_receptor_with_obabel(pdb_file, output_pdbqt, pdb_string=pdb_content)
 
@@ -1376,7 +1378,7 @@ def prepare_ligand(
             except ImportError:
                 logger.debug("molscrub not installed — skipping state enumeration")
                 molscrub_states = False
-            except Exception as exc:
+            except (OSError, ValueError, RuntimeError, TypeError, ImportError) as exc:
                 logger.warning(f"molscrub failed ({exc}) — falling back to single-state")
 
     # ── Single-state fallback (no molscrub, may still have stereoisomers) ──
@@ -1410,7 +1412,7 @@ def prepare_ligand(
                 best_mol = cand_mol
                 best_energy = energy
                 best_label = label
-        except Exception:
+        except (OSError, ValueError, RuntimeError, TypeError):
             continue
 
     if best_mol is None:
@@ -1425,7 +1427,7 @@ def prepare_ligand(
     params_mk = MoleculePreparation(charge_model="gasteiger")
     try:
         mol_setup = params_mk.prepare(best_mol)
-    except Exception as exc:
+    except (OSError, ValueError, RuntimeError, TypeError, ImportError) as exc:
         err_str = str(exc)
         if "non finite charge" in err_str or "charge" in err_str.lower():
             logger.warning(f"Meeko charge failure ({exc}) — falling back to Open Babel")
@@ -1562,7 +1564,7 @@ def prepare_ligand_from_sdf(
     params_mk = MoleculePreparation(charge_model="gasteiger")
     try:
         mol_setup = params_mk.prepare(mol)
-    except Exception as exc:
+    except (OSError, ValueError, RuntimeError, TypeError, ImportError) as exc:
         err_str = str(exc)
         if "non finite charge" in err_str or "charge" in err_str.lower():
             logger.warning(f"Meeko charge failure ({exc}) — falling back to Open Babel")
@@ -1623,7 +1625,7 @@ def prepare_ligand_conformers(
         try:
             prepare_ligand(smiles, out_path, name=name, seed=seed_start + i, ph=ph)
             paths.append(out_path)
-        except Exception as exc:
+        except (OSError, ValueError, RuntimeError, TypeError, ImportError) as exc:
             logger.warning(f"Conformer {i} preparation failed: {exc} — skipping")
     if not paths:
         raise PreparationError(f"All {n_conformers} conformer preparations failed for {smiles}")
@@ -1835,7 +1837,7 @@ def prepare_ligand_multi(
         params_mk = MoleculePreparation(charge_model="gasteiger")
         try:
             mol_setup = params_mk.prepare(mol_single)
-        except Exception as exc:
+        except (OSError, ValueError, RuntimeError, TypeError, ImportError) as exc:
             logger.warning(f"Rep {idx}: Meeko failed ({exc}) — Open Babel fallback")
             ob_path = os.path.join(output_dir, f"conformer_{idx}.pdbqt")
             _prepare_ligand_with_obabel(smiles, ob_path, name=name)
@@ -2337,7 +2339,7 @@ def _compute_pocket_shape_descriptors(
         desc["surface_area"] = round(float(hull.area), 1)
     except ImportError:
         pass
-    except Exception:
+    except (OSError, ValueError, RuntimeError, TypeError):
         pass
 
     return desc
@@ -2669,7 +2671,7 @@ def _run_fpocket_detect(
         logger.info(f"fpocket: {len(pockets)} pocket(s) detected")
         return pockets
 
-    except Exception as exc:
+    except (OSError, ValueError, RuntimeError, TypeError) as exc:
         logger.warning(f"fpocket detection failed: {exc}")
         return None
     finally:
@@ -2713,7 +2715,7 @@ def _run_dogsite3_predict(
             resp = requests.post(f"{base_url}/dogsite3/", files=files, data=data, timeout=60)
         resp.raise_for_status()
         job_id = resp.json()["job_id"]
-    except Exception as exc:
+    except (OSError, ValueError, RuntimeError, TypeError) as exc:
         logger.warning(f"DoGSite3 submission failed: {exc}")
         return None
 
@@ -2731,7 +2733,7 @@ def _run_dogsite3_predict(
             elif status == "failed":
                 logger.warning(f"DoGSite3 job {job_id} failed")
                 return None
-        except Exception as exc:
+        except (OSError, ValueError, RuntimeError, TypeError) as exc:
             logger.warning(f"DoGSite3 poll error: {exc}")
             return None
         time.sleep(5)
@@ -2746,7 +2748,7 @@ def _run_dogsite3_predict(
     try:
         dl_resp = requests.get(f"{base_url}/dogsite3/{job_id}/download/", timeout=60)
         dl_resp.raise_for_status()
-    except Exception as exc:
+    except (OSError, ValueError, RuntimeError, TypeError) as exc:
         logger.warning(f"DoGSite3 download failed: {exc}")
         return None
 
@@ -2811,7 +2813,7 @@ def _run_dogsite3_predict(
                         pockets.append(pocket)
                     except (ValueError, IndexError):
                         continue
-    except Exception as exc:
+    except (OSError, ValueError, RuntimeError, TypeError) as exc:
         logger.warning(f"DoGSite3 parse failed: {exc}")
         return None
 
@@ -2916,7 +2918,7 @@ def find_top_pockets(
                         "distance_to_active": None,
                     }
                 ]
-        except Exception as exc:
+        except (OSError, ValueError, RuntimeError, TypeError) as exc:
             logger.warning(
                 f"Ligand-centered pocket detection failed: {exc}. "
                 "Falling back to computational detection."
@@ -3049,7 +3051,7 @@ def find_top_pockets(
                 from autodock.alphafold_tools import assess_alphafold_quality
 
                 af_data = assess_alphafold_quality(receptor_pdb)
-            except Exception:
+            except (OSError, ValueError, RuntimeError, TypeError, ImportError):
                 pass
 
         # Step 5: Build enriched result list ─────────────────────────────────────
