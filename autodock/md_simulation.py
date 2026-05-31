@@ -211,7 +211,7 @@ def run_md_stability(
                     forcefield_xmls = list(forcefield_xmls) + [gaff.forcefield]
                     _have_gaff = True
                     logger.info("Ligand parameterized with GAFF via openmmforcefields")
-            except Exception as exc:
+            except (RuntimeError, ValueError, TypeError, ImportError) as exc:
                 logger.warning(f"GAFF parameterization failed: {exc}")
 
         system_generator = SystemGenerator(
@@ -278,7 +278,7 @@ def run_md_stability(
                 platform = openmm.Platform.getPlatformByName(p_name)
                 logger.info(f"Using OpenMM platform: {p_name}")
                 break
-            except Exception:
+            except openmm.OpenMMException:
                 continue
         else:
             logger.info("Using OpenMM platform: CPU")

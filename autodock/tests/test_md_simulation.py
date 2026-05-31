@@ -137,7 +137,7 @@ def _setup_openmm_mocks(gaff_fail: bool = False):
     mock_generators.SystemGenerator.return_value = mock_system_generator
 
     if gaff_fail:
-        mock_generators.GAFFTemplateGenerator.side_effect = Exception("GAFF failed")
+        mock_generators.GAFFTemplateGenerator.side_effect = RuntimeError("GAFF failed")
     else:
         mock_gaff = MagicMock()
         mock_gaff.forcefield = "gaff_xml"
