@@ -18,7 +18,7 @@ from typing import Any
 
 import numpy as np
 
-from autodock.core import REDocking_RMSD_THRESHOLD, ValidationError, logger
+from autodock.core import REDocking_RMSD_THRESHOLD, StructureFetchError, ValidationError, logger
 from autodock.utils import safe_pdb_slice
 from autodock.validation import run_redocking_validation
 
@@ -177,7 +177,7 @@ def run_redocking_benchmark(
                 idx = futures[future]
                 try:
                     raw_results[idx] = future.result()
-                except Exception as exc:
+                except (TimeoutError, RuntimeError, TypeError, OSError) as exc:
                     target = work_items[idx]["target"]
                     logger.error(f"Benchmark worker crashed for {target['pdb_id']}: {exc}")
                     raw_results[idx] = {
@@ -307,7 +307,7 @@ def run_redocking_benchmark(
         csv_path = os.path.join(output_dir, "benchmark_results.csv")
         df.to_csv(csv_path, index=False, float_format="%.4f")
         summary["csv_path"] = csv_path
-    except Exception as exc:
+    except (OSError, TypeError) as exc:
         logger.warning(f"Failed to write benchmark CSV: {exc}")
         summary["csv_path"] = None
 
@@ -505,7 +505,7 @@ def _run_single_benchmark(item: dict[str, Any]) -> dict[str, Any]:
             # If mmCIF was returned, use that path for downstream
             if isinstance(downloaded, str) and downloaded.endswith(".cif"):
                 holo_pdb = downloaded
-        except Exception as exc:
+        except StructureFetchError as exc:
             logger.error(f"[{pdb_id}] Download failed: {exc}")
             return {
                 "pdb_id": pdb_id,
@@ -588,7 +588,7 @@ def _run_single_benchmark(item: dict[str, Any]) -> dict[str, Any]:
             "rmsd_raw": None,
             "error": str(exc),
         }
-    except Exception as exc:
+    except (RuntimeError, OSError, ValueError, TypeError, IndexError, AttributeError) as exc:
         logger.error(f"[{pdb_id}] Unexpected error: {exc}")
         return {
             "pdb_id": pdb_id,
@@ -678,7 +678,15 @@ def run_repeat_docking(
             }
             try:
                 result = _run_single_benchmark(work_item)
-            except Exception as exc:
+            except (
+                ImportError,
+                RuntimeError,
+                OSError,
+                ValueError,
+                TypeError,
+                IndexError,
+                AttributeError,
+            ) as exc:
                 errors.append(f"seed={seed}: {exc}")
                 continue
 

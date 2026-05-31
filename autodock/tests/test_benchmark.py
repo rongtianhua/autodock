@@ -41,7 +41,7 @@ class TestRunRedockingBenchmark:
     @patch("autodock.benchmark.run_redocking_validation")
     def test_all_targets_fail_gracefully(self, mock_redock, mock_download, tmp_path):
         mock_download.return_value = "dummy.pdb"
-        mock_redock.side_effect = Exception("redock failed")
+        mock_redock.side_effect = RuntimeError("redock failed")
 
         targets = [
             {"pdb_id": "1ABC", "ligand_resname": "LIG", "family": "kinase"},
