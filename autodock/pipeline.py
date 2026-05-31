@@ -122,7 +122,7 @@ def post_process_docking(
             interactions = detect_interactions(receptor_pdb, result.best_pose_pdbqt, method="plip")
             result.interactions = interactions
             logger.info(f"Detected {len(interactions)} interactions for {compound}")
-        except Exception as exc:
+        except (RuntimeError, OSError, ValueError, TypeError, ImportError) as exc:
             logger.warning(f"Interaction detection failed: {exc}")
 
     # Save interaction table
@@ -138,7 +138,7 @@ def post_process_docking(
                     w.writerows(interactions)
             logger.info(f"Interactions saved: {intx_path}")
             outputs["interactions_csv"] = intx_path
-        except Exception as exc:
+        except (OSError, TypeError, ValueError) as exc:
             logger.warning(f"Interaction CSV failed: {exc}")
 
         # Summary text
@@ -187,9 +187,9 @@ def post_process_docking(
                 try:
                     render_scene_pymol(**kw)
                     fig_paths.append(png_path)
-                except Exception as exc:
+                except (RuntimeError, OSError, ValueError, TypeError, ImportError) as exc:
                     logger.warning(f"3D render '{scene_name}' skipped: {exc}")
-        except Exception as exc:
+        except (RuntimeError, OSError, ValueError, TypeError, ImportError) as exc:
             logger.warning(f"3D rendering unavailable: {exc}")
 
         # 2D interaction diagram
@@ -208,7 +208,7 @@ def post_process_docking(
             fig_paths.append(png_2d)
             outputs["fig_2d_png"] = png_2d
             outputs["fig_2d_pdf"] = pdf_2d
-        except Exception as exc:
+        except (RuntimeError, OSError, ValueError, TypeError, ImportError) as exc:
             logger.warning(f"2D rendering skipped: {exc}")
 
         # Composite figure
@@ -225,7 +225,7 @@ def post_process_docking(
                     figure_title=f"Docking: {compound}",
                 )
                 outputs["composite_png"] = composite_png
-            except Exception as exc:
+            except (OSError, ValueError, TypeError, ImportError) as exc:
                 logger.warning(f"Composite figure skipped: {exc}")
 
         outputs["figures"] = fig_paths
@@ -240,7 +240,7 @@ def post_process_docking(
             with open(json_path, "w") as fh:
                 json.dump(result.to_dict(), fh, indent=2, default=str)
             outputs["json"] = json_path
-        except Exception as exc:
+        except (TypeError, OSError) as exc:
             logger.warning(f"JSON report failed: {exc}")
 
         # CSV report
@@ -250,7 +250,7 @@ def post_process_docking(
 
             generate_csv_report([result], csv_path)
             outputs["csv"] = csv_path
-        except Exception as exc:
+        except (OSError, TypeError, ValueError) as exc:
             logger.warning(f"CSV report failed: {exc}")
 
         # PDF report
@@ -261,7 +261,7 @@ def post_process_docking(
             figs_for_pdf = outputs.get("figures", [])
             generate_pdf_report(result, pdf_path, figure_paths=figs_for_pdf)
             outputs["pdf"] = pdf_path
-        except Exception as exc:
+        except (OSError, TypeError, ValueError, ImportError) as exc:
             logger.warning(f"PDF report failed: {exc}")
 
     # ── 5. Summary text ────────────────────────────────────────────────────
@@ -282,7 +282,7 @@ def post_process_docking(
             fh.write(f"Pose clusters: {result.n_clusters or 0}\n")
             fh.write(f"Output:      {pair_root}\n")
         outputs["summary_txt"] = summary_txt
-    except Exception as exc:
+    except OSError as exc:
         logger.warning(f"Summary text failed: {exc}")
 
     logger.info(f"Post-processing complete: {pair_root}")
@@ -320,6 +320,6 @@ def read_docking_results(result_dir: str) -> list[DockingResult]:
                         data = json.load(fh)
                     if "compound_name" in data:
                         results.append(DockingResult(**data))
-                except Exception as exc:
+                except (TypeError, ValueError, KeyError) as exc:
                     logger.warning(f"Skipping {path}: {exc}")
     return results
