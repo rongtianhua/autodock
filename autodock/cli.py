@@ -267,7 +267,7 @@ def cmd_dock(args: argparse.Namespace) -> int:
         print(f"📊  Full report: {outputs.get('pdf', 'N/A')}")
         print(f"🖼️   Figures:    {outputs['dirs']['figures']}")
         print(f"📁  Output tree: {pair_root}")
-    except Exception as exc:
+    except (OSError, RuntimeError, ValueError, TypeError, ImportError) as exc:
         logger.warning(f"Post-processing skipped: {exc}")
         print("  (Install PLIP + PyMOL for full figures and reports)")
 
@@ -364,7 +364,7 @@ def cmd_report(args: argparse.Namespace) -> int:
 
             generate_excel_report(results, xlsx_path)
             print(f"  Merged Excel: {xlsx_path}")
-        except Exception as exc:
+        except (OSError, TypeError, ValueError, ImportError) as exc:
             logger.warning(f"Merged Excel failed: {exc}")
 
     # Individual per-result post-processing (PDF + figures)
@@ -380,7 +380,7 @@ def cmd_report(args: argparse.Namespace) -> int:
                 copy_structures=False,
             )
             print(f"  [{i + 1}/{len(results)}] {result.compound_name}: {outputs.get('pdf', 'N/A')}")
-        except Exception as exc:
+        except (OSError, RuntimeError, ValueError, TypeError, ImportError) as exc:
             logger.warning(f"Report generation failed for {result.compound_name}: {exc}")
 
     print(f"✅  Reports generated: {out_root}")
@@ -555,7 +555,7 @@ def cmd_batch_dock(args: argparse.Namespace) -> int:
                 )
                 processed_count += 1
                 print(f"  ✓ {rec_name} × {lig_name}")
-            except Exception as exc:
+            except (OSError, RuntimeError, ValueError, TypeError, ImportError) as exc:
                 logger.warning(f"Post-processing failed for {rec_name}×{lig_name}: {exc}")
                 print(f"  ⚠ {rec_name} × {lig_name}: {exc}")
 
@@ -577,7 +577,7 @@ def cmd_batch_dock(args: argparse.Namespace) -> int:
             )
             print(f"  PNG: {heatmap_out['png']}")
             print(f"  PDF: {heatmap_out['pdf']}")
-        except Exception as exc:
+        except (OSError, RuntimeError, ValueError, TypeError, ImportError) as exc:
             logger.warning(f"Heatmap generation failed: {exc}")
             print(f"  ⚠ Heatmap skipped: {exc}")
 
@@ -589,7 +589,7 @@ def cmd_batch_dock(args: argparse.Namespace) -> int:
 
             generate_csv_report(all_results_flat, csv_path)
             print(f"  Merged CSV: {csv_path}")
-        except Exception as exc:
+        except (OSError, TypeError, ValueError) as exc:
             logger.warning(f"Merged CSV failed: {exc}")
 
     print(f"{'=' * 55}")
@@ -812,13 +812,19 @@ def cmd_run(args: argparse.Namespace) -> int:
 
         compounds = pcp.get_compounds(ligand_name, "name")
         if compounds:
-            smiles = compounds[0].canonical_smiles
+            compound = compounds[0]
+            try:
+                smiles = compound.connectivity_smiles
+            except AttributeError:
+                smiles = compound.canonical_smiles
             print(f"  Ligand SMILES (PubChem): {smiles}")
         else:
             # Fallback: treat as raw SMILES
             smiles = ligand_name
             print(f"  Treating ligand as raw SMILES: {smiles}")
-    except Exception:
+    except Exception:  # noqa: BLE001
+        # PubChemPy raises many exception types (NotFoundError, ServerError,
+        # ResponseParseError, HTTPError, etc.) — blanket catch for fallback.
         smiles = ligand_name
         print(f"  Treating ligand as raw SMILES: {smiles}")
 
@@ -888,7 +894,7 @@ def cmd_run(args: argparse.Namespace) -> int:
             figure_title=f"Docking: {ligand_name} ↔ {receptor_name}",
         )
         print(f"  Figures saved to {outdir}")
-    except Exception as exc:
+    except (RuntimeError, OSError, ValueError, TypeError, ImportError) as exc:
         logger.warning(f"Rendering failed: {exc}")
 
     print("\n" + "=" * 55)
@@ -901,7 +907,7 @@ def cmd_run(args: argparse.Namespace) -> int:
         figs = [f for f in figs if os.path.exists(f)]
         generate_pdf_report(result, pdf_path, figure_paths=figs)
         print(f"  PDF report: {pdf_path}")
-    except Exception as exc:
+    except (OSError, TypeError, ValueError, ImportError) as exc:
         logger.warning(f"PDF report failed: {exc}")
 
     csv_path = os.path.join(outdir, "report.csv")
@@ -1199,7 +1205,8 @@ def main(argv: list[str] | None = None) -> int:
     except KeyboardInterrupt:
         print("\n⚠️  Interrupted by user")
         return 130
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001
+        # CLI top-level safety net — show friendly error and exit
         logger.error(f"Command failed: {exc}")
         if args.verbose:
             import traceback
