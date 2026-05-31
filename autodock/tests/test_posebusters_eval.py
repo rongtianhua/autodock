@@ -340,7 +340,10 @@ class TestRunPosebustersEvaluation:
         assert summary["success_rate"] == 1.0
         assert summary["posebusters_pass_rate"] == 0.5
         assert summary["posebusters_pass_count"] == 1
-        mock_executor_cls.assert_called_once_with(max_workers=2)
+        # mp_context is added for macOS fork-safety; accept either form
+        assert mock_executor_cls.call_count == 1
+        call_kwargs = mock_executor_cls.call_args[1]
+        assert call_kwargs.get("max_workers") == 2
         assert mock_executor.submit.call_count == 2
 
     @patch("autodock.posebusters_eval._run_single_posebuster")
