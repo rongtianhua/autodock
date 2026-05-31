@@ -73,6 +73,7 @@ def run_md_stability(
     save_interval: int = 5_000,
     platform_name: str | None = None,
     solvent_model: str = "implicit",
+    seed: int | None = None,
 ) -> dict[str, Any]:
     """
     Run MD simulation on a receptor-ligand complex to assess stability.
@@ -100,6 +101,9 @@ def run_md_stability(
         save_interval: Save trajectory frame every N steps.
         platform_name: OpenMM platform. None = auto-select best.
         solvent_model: "implicit" (GBn2, fast) or "explicit" (TIP3P, more accurate).
+        seed: Random seed for the Langevin integrator.  If *None*, OpenMM
+            uses a non-deterministic seed (platform-dependent).  Set to an
+            integer for reproducible MD trajectories.
 
     Returns:
         Dict with trajectory path, analysis results, and RMSD values.
@@ -267,6 +271,8 @@ def run_md_stability(
         friction_coeff / unit.picosecond,
         dt_fs * unit.femtoseconds,
     )
+    if seed is not None:
+        integrator.setRandomNumberSeed(seed)
 
     # 7. Platform selection
     if platform_name:

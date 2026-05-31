@@ -186,8 +186,8 @@ def minimize_docked_pose(
 
 
 def _minimize_ligand_only(
-    offmol,
-    ligand_positions,
+    offmol: Any,
+    ligand_positions: list[Any],
     output_pdb: str,
     max_iterations: int,
     restraint_k: float,
@@ -250,8 +250,8 @@ def _minimize_ligand_only(
 
 
 def _minimize_complex(
-    offmol,
-    ligand_positions,
+    offmol: Any,
+    ligand_positions: list[Any],
     receptor_pdb: str,
     output_pdb: str,
     max_iterations: int,

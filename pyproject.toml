@@ -78,10 +78,10 @@ all = [
 autodock = "autodock.cli:main"
 
 [project.urls]
-Homepage = "https://github.com/yourorg/autodock"
-Documentation = "https://autodock.readthedocs.io"
-Repository = "https://github.com/yourorg/autodock"
-Issues = "https://github.com/yourorg/autodock/issues"
+Homepage = "https://github.com/tianhuarong/autodock"
+Documentation = "https://github.com/tianhuarong/autodock#readme"
+Repository = "https://github.com/tianhuarong/autodock"
+Issues = "https://github.com/tianhuarong/autodock/issues"
 
 [tool.setuptools.packages.find]
 where = ["."]

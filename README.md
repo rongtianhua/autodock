@@ -1,7 +1,7 @@
 # Autodock — Publication-Grade Molecular Docking Pipeline
 
-[![CI](https://github.com/yourorg/autodock/actions/workflows/ci.yml/badge.svg)](https://github.com/yourorg/autodock/actions)
-[![Coverage](https://codecov.io/gh/yourorg/autodock/branch/main/graph/badge.svg)](https://codecov.io/gh/yourorg/autodock)
+[![CI](https://github.com/tianhuarong/autodock/actions/workflows/ci.yml/badge.svg)](https://github.com/tianhuarong/autodock/actions)
+[![Coverage](https://codecov.io/gh/tianhuarong/autodock/branch/main/graph/badge.svg)](https://codecov.io/gh/tianhuarong/autodock)
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
