@@ -14,7 +14,7 @@ from typing import Any
 import numpy as np
 
 from autodock.benchmark import auto_detect_ligand_resname
-from autodock.core import ValidationError, logger
+from autodock.core import StructureFetchError, ValidationError, logger
 from autodock.validation import run_redocking_validation, validate_pose_with_posebusters
 
 
@@ -101,7 +101,7 @@ def run_posebusters_evaluation(
                 idx = futures[future]
                 try:
                     raw_results[idx] = future.result()
-                except Exception as exc:
+                except (TimeoutError, RuntimeError, TypeError, OSError) as exc:
                     target = work_items[idx]
                     logger.error(f"[{target['pdb_id']}] Worker crashed: {exc}")
                     raw_results[idx] = {
@@ -160,7 +160,7 @@ def _run_single_posebuster(item: dict[str, Any]) -> dict[str, Any]:
             downloaded = download_pdb(pdb_id, outdir)
             if isinstance(downloaded, str) and downloaded.endswith(".cif"):
                 holo_pdb = downloaded
-        except Exception as exc:
+        except (StructureFetchError, OSError, RuntimeError) as exc:
             logger.error(f"[{pdb_id}] Download failed: {exc}")
             return {"pdb_id": pdb_id, "success": False, "error": f"download: {exc}"}
     elif os.path.exists(holo_cif) and not os.path.exists(holo_pdb):
@@ -185,7 +185,7 @@ def _run_single_posebuster(item: dict[str, Any]) -> dict[str, Any]:
     except ValidationError as exc:
         logger.warning(f"[{pdb_id}] Redocking failed: {exc}")
         return {"pdb_id": pdb_id, "success": False, "error": str(exc)}
-    except Exception as exc:
+    except (RuntimeError, OSError, ValueError, TypeError, IndexError, AttributeError) as exc:
         logger.error(f"[{pdb_id}] Unexpected error: {exc}")
         return {"pdb_id": pdb_id, "success": False, "error": str(exc)}
 
@@ -195,7 +195,7 @@ def _run_single_posebuster(item: dict[str, Any]) -> dict[str, Any]:
     if best_pose and os.path.isfile(best_pose):
         try:
             pb_result = validate_pose_with_posebusters(best_pose, holo_pdb)
-        except Exception as exc:
+        except (RuntimeError, OSError, ValueError, TypeError) as exc:
             logger.warning(f"[{pdb_id}] PoseBusters validation failed: {exc}")
 
     return {
