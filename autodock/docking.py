@@ -30,7 +30,7 @@ from autodock.core import (
     _get_vina_seed,
     logger,
 )
-from autodock.utils import ensure_dir, strip_model_headers
+from autodock.utils import ensure_dir, strip_model_headers, write_temp_file
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Low-level Vina wrappers
@@ -559,13 +559,49 @@ def dock_ligand(
             cluster["representative_path"] = rep_path
 
     # Consensus scoring (optional — skip for speed in bulk benchmarks)
-    if skip_consensus:
-        all_scores = {"vina": best_affinity}
-        consensus = None
-    else:
+    all_scores = {"vina": best_affinity}
+    consensus = None
+    if not skip_consensus:
+        # Score best pose with all available scoring functions
         all_scores, consensus = _consensus_score(
             receptor_pdbqt, best_pose_path, center, box_size, best_affinity, seed
         )
+
+        # Multi-pose Vinardo scoring: detect scoring-rank disagreement
+        # between Vina and Vinardo across all poses.
+        if len(poses) > 1:
+            vinardo_scores: list[tuple[float, int]] = []  # (score, pose_idx)
+            for _pidx, _pose in enumerate(poses):
+                _tmp_path = write_temp_file(strip_model_headers(_pose), suffix="_pose.pdbqt")
+                try:
+                    _vs = _score_pose_with_sf(
+                        receptor_pdbqt, _tmp_path, center, box_size, "vinardo", seed
+                    )
+                    if _vs is not None:
+                        vinardo_scores.append((_vs, _pidx))
+                finally:
+                    with contextlib.suppress(OSError):
+                        os.unlink(_tmp_path)
+
+            if vinardo_scores:
+                vinardo_scores.sort(key=lambda x: x[0])  # best (lowest) first
+                best_vinardo_score, best_vinardo_idx = vinardo_scores[0]
+                vina_best_idx = 0  # Vina already sorts pose 0 = best
+                if best_vinardo_idx != vina_best_idx:
+                    logger.warning(
+                        f"Scoring bias detected: Vinardo prefers pose #{best_vinardo_idx + 1} "
+                        f"({best_vinardo_score:.3f} kcal/mol) over Vina's top pose #1 "
+                        f"({best_affinity:.3f} kcal/mol). "
+                        "Consensus considers all scores; inspect affinity-vs-RMSD plot."
+                    )
+                else:
+                    logger.debug(
+                        f"Vinardo all-poses check: best pose #{best_vinardo_idx + 1} "
+                        f"matches Vina ranking."
+                    )
+                # Store all Vinardo scores in DockingResult metadata
+                all_scores["vinardo_all_poses"] = best_vinardo_score
+                all_scores["vinardo_best_pose_idx"] = float(best_vinardo_idx)
 
     # Receptor source detection
     receptor_source = None

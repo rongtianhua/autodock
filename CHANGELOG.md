@@ -23,6 +23,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   improving Meeko Polymer parse reliability.  Runs only when
   `fix_protonation=True` and `obabel` is available.
 - `tmp_pdb2pqr` tracked in temp-file cleanup list for leak safety.
+- Multi-pose Vinardo consensus scoring in `dock_ligand()`: all 20 poses
+  are re-scored with Vinardo; if Vinardo ranks a pose different from
+  Vina's #1, a scoring-bias warning is logged with the specific
+  pose index and score delta.
 
 ### Changed
 - P2Rank pocket filter strategy: **removed hard probability cutoff**.
