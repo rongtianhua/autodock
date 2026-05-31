@@ -408,6 +408,9 @@ def _build_ligand(
 
         H = docked_c.T @ matched_c
         U, S, Vt = np.linalg.svd(H)
+        # NOTE: H = docked_c.T @ matched_c  (not the more common Q.T @ P).
+        # For this convention the optimal rotation that sends matched_c →
+        # docked_c is R = Vt.T @ U.T.
         R = Vt.T @ U.T
         if np.linalg.det(R) < 0:
             Vt[-1, :] *= -1
