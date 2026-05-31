@@ -220,7 +220,7 @@ def _parse_plddt_from_cif(cif_path: str) -> tuple[list[float], list[tuple[str, i
     block = doc.sole_block()
     try:
         atom_site = block.find_mmcif_category("_atom_site")
-    except Exception:
+    except (ValueError, TypeError, RuntimeError, AttributeError):
         return [], []
 
     col_label = atom_site.find_column("label_atom_id")
@@ -387,7 +387,7 @@ def relax_alphafold_structure(
         finally:
             with contextlib.suppress(OSError):
                 os.unlink(tmp_pdb)
-    except Exception:
+    except (ImportError, OSError, ValueError, TypeError, RuntimeError):
         logger.warning("PDBFixer unavailable or failed — using raw AlphaFold positions")
         topology = pdb.topology
         positions = pdb.positions
