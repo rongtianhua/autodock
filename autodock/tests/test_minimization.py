@@ -210,7 +210,7 @@ class TestBuildLigand:
                 mock_chem.MolFromSmiles.return_value.GetConformer.return_value = MagicMock()
                 mock_chem.MolFromSmiles.return_value.GetNumAtoms.return_value = 1
                 mock_chem.MolFromSmiles.return_value.GetAtoms.return_value = []
-                with patch.object(minimization, "OpenFFMolecule") as mock_off:
+                with patch.object(minimization, "OpenFFMolecule", create=True) as mock_off:
                     mock_off.from_smiles.return_value = mock_mol
                     result = minimization._build_ligand(
                         ligand_pdbqt=str(pdbqt),
@@ -272,7 +272,7 @@ class TestBuildLigandKabsch:
                 mock_chem.RemoveHs.side_effect = [docked_no_h, template_no_h]
                 mock_chem.SDMolSupplier.return_value = iter([template_mol])
                 mock_chem.RWMol.return_value = aligned_rw_mol
-                with patch.object(minimization, "OpenFFMolecule") as mock_off:
+                with patch.object(minimization, "OpenFFMolecule", create=True) as mock_off:
                     mock_off.from_file.return_value = mock_offmol
                     offmol, positions = minimization._build_ligand(
                         ligand_pdbqt=str(pdbqt),

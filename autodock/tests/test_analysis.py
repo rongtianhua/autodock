@@ -111,6 +111,7 @@ class TestAnalyzeScoringBias:
         crystal.write_text("ATOM 1 C\n")
 
         # Pre-import matplotlib.pyplot so patch() can find it
+        import matplotlib.pyplot  # noqa: F401
 
         with patch.object(analysis, "compute_rmsd_to_crystal", return_value=1.5):
             with patch("matplotlib.pyplot") as mock_plt:

@@ -136,7 +136,8 @@ def run_redocking_benchmark(
         - per_target_results
         - output_paths (JSON, CSV)
     """
-    targets = targets or DEFAULT_BENCHMARK_TARGETS
+    if targets is None:
+        targets = DEFAULT_BENCHMARK_TARGETS
     os.makedirs(output_dir, exist_ok=True)
 
     logger.info(f"Starting redocking benchmark: {len(targets)} targets, seed={seed}")
