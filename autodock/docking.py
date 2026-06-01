@@ -493,6 +493,7 @@ def dock_ligand(
                 compound_name=name,
                 scoring_function=scoring_function,
                 min_rmsd=min_rmsd,
+                skip_consensus=skip_consensus,
             )
             return result
         finally:
@@ -853,12 +854,7 @@ def dock_ligand_multi_conformer(
     ensure_dir(out_dir)
     best_pose_path = os.path.join(out_dir, "best_pose.pdbqt")
     # Strip MODEL/ENDMDL/model-number so Vina can reload it for re-scoring
-    best_lines = best_pose.splitlines()
-    if best_lines and best_lines[0].startswith("MODEL"):
-        best_lines = best_lines[2:]  # skip "MODEL N" and the number line
-    if best_lines and best_lines[-1].startswith("ENDMDL"):
-        best_lines = best_lines[:-1]
-    best_clean = "\n".join(best_lines)
+    best_clean = strip_model_headers(best_pose)
     with open(best_pose_path, "w") as fh:
         fh.write(best_clean)
 
