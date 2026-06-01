@@ -300,6 +300,7 @@ def prepare_receptor(
     keep_waters_near_metal: bool = True,
     output_report_json: str | None = None,
     detect_af_structure: bool = True,
+    output_pdb: str | None = None,
 ) -> str:
     """
     Prepare a protein structure for docking (PDB/mmCIF → PDBQT).
@@ -383,9 +384,16 @@ def prepare_receptor(
             predicted structures and run pLDDT quality assessment.
             Warns if mean pLDDT < 70 (unsuitable for docking) or
             suggests MD relaxation if pLDDT 70-90.
+        output_pdb: Optional path to save the filtered/minimised PDB file.
+            This is the final structure after PDBFixer + reduce + (
+            optionally PDB2PQR) + filter — suitable for downstream use
+            in PLIP interaction detection, PyMOL rendering, and
+            PoseBusters validation without needing CIF→PDB conversion.
+            Default: None (PDB file not saved).
 
     Returns:
         Absolute path to the prepared PDBQT file.
+        The PDB file path (if requested via ``output_pdb``) is logged.
 
     Raises:
         PreparationError: If input file missing or preparation fails.
@@ -1196,6 +1204,15 @@ def prepare_receptor(
         with contextlib.suppress(OSError):
             if os.path.exists(_t) and _t != tmp_raw:
                 os.remove(_t)
+
+    # Save PDB file if requested (for downstream PLIP/PyMOL/PoseBusters)
+    if output_pdb:
+        try:
+            with open(output_pdb, "w") as _pdb_fh:
+                _pdb_fh.write(pdb_content)
+            logger.info(f"Receptor PDB saved: {os.path.abspath(output_pdb)}")
+        except OSError as _pdb_exc:
+            logger.warning(f"Receptor PDB save failed ({_pdb_exc})")
 
     logger.info(f"Receptor prepared: {output_pdbqt}")
     return os.path.abspath(output_pdbqt)
