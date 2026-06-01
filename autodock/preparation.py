@@ -6,6 +6,7 @@ autodock.preparation — Receptor / ligand preparation and binding-site detectio
 from __future__ import annotations
 
 import contextlib
+import json
 import math
 import os
 import re
@@ -494,14 +495,21 @@ def prepare_receptor(
                         f"(high confidence, suitable for docking)."
                     )
                 # Auto-relax all detected AlphaFold structures
-                logger.info("Running AlphaFold MD relaxation ...")
-                _relax_result = relax_alphafold_structure(
-                    tmp_raw,
-                    output_dir=os.path.join(os.path.dirname(output_pdbqt), "af_relaxed"),
-                    production_ns=1.0,
-                    ph=ph,
-                    forcefield=forcefield,
-                )
+                _relax_result = {}
+                try:
+                    logger.info("Running AlphaFold MD relaxation ...")
+                    _relax_result = relax_alphafold_structure(
+                        tmp_raw,
+                        output_dir=os.path.join(os.path.dirname(output_pdbqt), "af_relaxed"),
+                        production_ns=1.0,
+                        ph=ph,
+                        forcefield=forcefield,
+                    )
+                except (ImportError, OSError, ValueError, RuntimeError, TypeError) as exc:
+                    logger.warning(
+                        f"AlphaFold MD relaxation failed to start ({exc}) — using raw structure"
+                    )
+                    _relax_result = {"success": False}
                 if _relax_result.get("success"):
                     _relaxed_path = _relax_result["output_pdb"]
                     if os.path.isfile(_relaxed_path):
@@ -2990,6 +2998,24 @@ def find_top_pockets(
         flexibility, induced_fit_likely, af_suitable, af_mean_plddt,
         af_min_plddt, pocket_type, distance_to_active.
     """
+
+    # -- Disk-based cache -------------------------------------------------
+    _cache_dir = os.path.expanduser("~/.cache/autodock/pockets")
+    _receptor_key = None
+    try:
+        import hashlib
+
+        with open(receptor_pdb, "rb") as _fh:
+            _receptor_key = hashlib.md5(_fh.read(1048576)).hexdigest()
+        _cache_path = os.path.join(_cache_dir, "pockets_" + _receptor_key + ".json")
+        if os.path.isfile(_cache_path):
+            with open(_cache_path) as _cfh:
+                _cached = json.load(_cfh)
+            logger.info("Pocket cache hit: " + _cache_path + " (" + str(len(_cached)) + " pockets)")
+            return _cached
+    except (OSError, ValueError, TypeError, ImportError):
+        _receptor_key = None
+
     # ── Gold standard: ligand-centered ──────────────────────────────────────
     if ligand_pdb and os.path.isfile(ligand_pdb):
         try:
@@ -3271,6 +3297,15 @@ def find_top_pockets(
                 f"center={pk['center']}, box={pk['box_size']} ({p_str}, "
                 f"druggability={pk['druggability']:.3f} ({pk['druggability_level']}))"
             )
+
+        # Disk cache: save pockets for next call
+        if _receptor_key is not None:
+            try:
+                os.makedirs(_cache_dir, exist_ok=True)
+                with open(_cache_path, "w") as _cfh:
+                    json.dump(result, _cfh, indent=2, default=str)
+            except (OSError, ValueError, TypeError):
+                pass
 
         return result
     finally:

@@ -12,7 +12,7 @@ import json
 import os
 from typing import Any
 
-from autodock.core import DockingResult, VisualizationError, logger
+from autodock.core import DockingResult, logger
 from autodock.utils import ensure_dir
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -56,6 +56,10 @@ def post_process_docking(
     """Run full post-processing on a DockingResult and write all outputs
     into the standardized pair directory.
 
+    .. note::
+        Not idempotent — each call re-generates all outputs.  Callers
+        should guard against duplicate calls at the call site.
+
     Args:
         result: Completed DockingResult from dock_ligand().
         pair_root: Root directory for this pair (will be created).
@@ -68,6 +72,10 @@ def post_process_docking(
     Returns:
         Dict with all output paths produced.
     """
+    # NOTE: idempotency is NOT implemented here because tests share output
+    # directories and any skip-if-exists logic causes cross-test interference.
+    # Callers that want to avoid re-processing should check for their own
+    # completeness markers (e.g. 04_reports/result.json) before calling.
     dirs = build_pair_dir(pair_root)
     outputs: dict[str, Any] = {
         "pair_root": pair_root,

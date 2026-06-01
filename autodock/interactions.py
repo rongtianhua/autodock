@@ -13,7 +13,7 @@ import tempfile
 from typing import Any
 
 from autodock.core import _HAVE_MDANALYSIS, _HAVE_PLIP, _HAVE_PROLIF, VisualizationError, logger
-from autodock.utils import _AD4_ELEMENT_MAP, safe_pdb_slice
+from autodock.utils import _AD4_ELEMENT_MAP, safe_pdb_slice, write_temp_file
 
 # ─────────────────────────────────────────────────────────────────────────────
 # PLIP-based interaction detection (primary / authoritative)
@@ -146,6 +146,18 @@ def detect_interactions_plip(
         raise VisualizationError("PLIP not available. Install: conda install -c conda-forge plip")
 
     from plip.structure.preparation import PDBComplex
+
+    # Auto-convert CIF → PDB if needed (PLIP only accepts PDB format)
+    _cif_input = receptor_pdb.lower().endswith((".cif", ".pdbx"))
+    if _cif_input:
+        try:
+            import gemmi
+
+            _doc = gemmi.cif.read(receptor_pdb)
+            _struct = gemmi.make_structure_from_block(_doc.sole_block())
+            receptor_pdb = write_temp_file(_struct.make_pdb_string(), suffix="_from_cif.pdb")
+        except (ImportError, OSError, ValueError, RuntimeError, TypeError) as exc:
+            raise VisualizationError(f"CIF→PDB conversion failed for PLIP: {exc}") from exc
 
     _own_tmp = output_dir is None
     tmp_dir = output_dir or tempfile.mkdtemp(prefix="plip_")
