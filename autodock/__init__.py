@@ -50,7 +50,12 @@ from autodock.preparation import (
     prepare_ligand_multi,
     prepare_receptor,
 )
-from autodock.rendering import composite_summary, render_interactions_2d, render_scene_pymol
+from autodock.rendering import (
+    composite_summary,
+    render_interactions_2d,
+    render_interactions_ligplot,
+    render_scene_pymol,
+)
 from autodock.reporting import generate_csv_report, generate_excel_report, generate_pdf_report
 from autodock.utils import (
     StructureCache,
@@ -131,6 +136,7 @@ __all__ = [
     "read_pdb_atoms",
     "relax_alphafold_structure",
     "render_interactions_2d",
+    "render_interactions_ligplot",
     "render_scene_pymol",
     "rmsd_matrix",
     "run_redocking_validation",

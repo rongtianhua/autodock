@@ -9,6 +9,7 @@ from __future__ import annotations
 import contextlib
 import math
 import os
+import shutil
 import tempfile
 from typing import Any
 
@@ -17,11 +18,12 @@ from autodock.core import (
     DEFAULT_RAY_HEIGHT,
     DEFAULT_RAY_WIDTH,
     VisualizationError,
+    find_conda_tool,
     find_pymol,
     logger,
     safe_subprocess,
 )
-from autodock.utils import ensure_dir
+from autodock.utils import ensure_dir, write_temp_file
 
 # ─────────────────────────────────────────────────────────────────────────────
 # PyMOL 3D Rendering (CLI-based)
@@ -984,6 +986,115 @@ def render_interactions_2d(
             logger.warning(f"2D PDF output skipped: {exc}")
 
     return output_png
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# LigPlot+ 2D interaction diagram (external binary)
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+def render_interactions_ligplot(
+    receptor_pdb: str,
+    ligand_pdbqt: str,
+    output_ps: str = "ligplot.ps",
+    output_png: str | None = None,
+    timeout: int = 60,
+) -> str:
+    """
+    Generate a LigPlot+ 2D interaction diagram from a docked pose.
+
+    LigPlot+ (Laskowski & Swindells 2011, J. Chem. Inf. Model.) identifies
+    all non-covalent contacts between the ligand (largest HETATM group)
+    and the receptor and produces a schematic 2D diagram in PostScript.
+    This serves as cross-validation against the RDKit Cairo route.
+
+    Args:
+        receptor_pdb: Receptor PDB file (must contain the protein).
+        ligand_pdbqt: Ligand PDBQT file (docked pose).
+        output_ps: Output PostScript file path.
+        output_png: Optional PNG output (converted via PIL).
+        timeout: Wall-clock timeout for LigPlot+.
+
+    Returns:
+        Path to output PostScript file (or PNG if conversion succeeded).
+
+    Raises:
+        VisualizationError: If LigPlot+ binary not found or execution fails.
+    """
+
+    from PIL import Image
+
+    # Build a combined PDB: receptor + ligand as HETATM
+    # LigPlot+ expects the ligand as the largest HETATM group
+    ligplot_pdb = write_temp_file("", suffix="_ligplot.pdb")
+    try:
+        with open(receptor_pdb) as fh:
+            rec_lines = [line for line in fh if line.startswith(("ATOM  ", "HETATM", "TER", "END"))]
+        with open(ligand_pdbqt) as fh:
+            lig_lines = []
+            for line in fh:
+                if line.startswith(("ATOM  ", "HETATM")):
+                    lig_lines.append(line)
+        # Combine
+        with open(ligplot_pdb, "w") as fh:
+            fh.writelines(rec_lines)
+            fh.write("TER\n")
+            fh.writelines(lig_lines)
+            fh.write("END\n")
+
+        # Find LigPlot+ binary
+        ligplot_bin = find_conda_tool("ligplot")
+        if not ligplot_bin:
+            raise VisualizationError(
+                "LigPlot+ not found. Install: conda install -c conda-forge ligplus"
+            )
+
+        # Run LigPlot+
+        success, stdout, stderr = safe_subprocess(
+            [ligplot_bin, "-pdb", ligplot_pdb],
+            timeout=timeout,
+        )
+        if not success:
+            raise VisualizationError(f"LigPlot+ failed: {stderr[:500]}")
+
+        # LigPlot+ writes "ligplot.ps" in the current working directory
+        default_ps = os.path.join(os.getcwd(), "ligplot.ps")
+        ps_source = default_ps if os.path.exists(default_ps) else None
+        if not ps_source:
+            # Try the output file name directly
+            ps_source = output_ps
+
+        if not os.path.exists(ps_source):
+            raise VisualizationError("LigPlot+ produced no output file")
+
+        # Copy to desired output path
+        ensure_dir(os.path.dirname(output_ps) or ".")
+        shutil.copy2(ps_source, output_ps)
+
+        # Optional PNG conversion
+        if output_png:
+            ensure_dir(os.path.dirname(output_png) or ".")
+            try:
+                with Image.open(ps_source) as img:
+                    # Ghostscript-based conversion via PIL
+                    img.save(output_png, dpi=(300, 300))
+                logger.info(f"LigPlot+ converted to PNG: {output_png}")
+            except (OSError, ValueError, TypeError) as exc:
+                logger.warning(f"LigPlot+ PS→PNG conversion failed ({exc})")
+                # Fall back: PS output is still a valid result
+                output_png = None
+
+        # Cleanup default output
+        if os.path.exists(default_ps) and default_ps != output_ps:
+            with contextlib.suppress(OSError):
+                os.remove(default_ps)
+
+        logger.info(f"LigPlot+ diagram: {output_ps}")
+        return output_png or output_ps
+
+    finally:
+        with contextlib.suppress(OSError):
+            os.remove(ligplot_pdb)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
