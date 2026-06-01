@@ -80,6 +80,7 @@ from autodock.validation import (
     run_redocking_validation,
     validate_pose_with_posebusters,
 )
+from autodock.workflow import DockingWorkflowResult, run_docking_workflow
 
 __version__ = "1.0.0"
 __all__ = [
@@ -107,8 +108,10 @@ __all__ = [
     "detect_interactions",
     "detect_interactions_plip",
     "detect_interactions_prolif",
+    "DockingWorkflowResult",
     "dock_ligand",
     "dock_ligand_multi_conformer",
+    "run_docking_workflow",
     "download_ligand_sdf_from_pdb",
     "download_pdb",
     "ensure_dir",
