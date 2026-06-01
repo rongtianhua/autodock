@@ -9,6 +9,9 @@ from __future__ import annotations
 import contextlib
 import math
 import os
+import re
+import shutil
+import subprocess
 import tempfile
 from typing import Any
 
@@ -991,6 +994,128 @@ def render_interactions_2d(
 # ─────────────────────────────────────────────────────────────────────────────
 
 
+def _find_ligplot() -> tuple[str, str] | None:
+    """Locate the LigPlot+ binary and its resource directory.
+
+    Returns (ligplot_exe_path, ligplus_dir) or None if not found.
+    """
+    # 1. Check CONDA_PREFIX
+    conda_prefix = os.environ.get("CONDA_PREFIX")
+    if conda_prefix:
+        exe = os.path.join(conda_prefix, "bin", "ligplot")
+        ligplus_dir = os.path.join(conda_prefix, "opt", "ligplus")
+        if os.path.isfile(exe) and os.path.isfile(os.path.join(ligplus_dir, "ligplot.prm")):
+            return exe, ligplus_dir
+
+    # 2. Try PATH
+    for path_dir in os.environ.get("PATH", "").split(os.pathsep):
+        exe = os.path.join(path_dir, "ligplot")
+        if os.path.isfile(exe):
+            # Follow symlinks to find ligplus dir
+            real_exe = os.path.realpath(exe)
+            # Typical layout: .../ligplus/lib/exe_mac64/ligplot
+            ligplus_dir = os.path.dirname(os.path.dirname(real_exe))
+            if os.path.isfile(os.path.join(ligplus_dir, "ligplot.prm")):
+                return exe, ligplus_dir
+            # Alternative: exe is directly in ligplus dir
+            ligplus_dir = os.path.dirname(real_exe)
+            if os.path.isfile(os.path.join(ligplus_dir, "ligplot.prm")):
+                return exe, ligplus_dir
+
+    # 3. Fallback to Homebrew miniforge common path
+    fallback = "/opt/homebrew/Caskroom/miniforge/base/envs/autodock/opt/ligplus"
+    if os.path.isfile(os.path.join(fallback, "lib", "exe_mac64", "ligplot")):
+        exe = os.path.join(fallback, "lib", "exe_mac64", "ligplot")
+        return exe, fallback
+
+    return None
+
+
+def _pdbqt_to_pdb(ligand_pdbqt: str, output_pdb: str, chain: str = "Z") -> None:
+    """Convert a PDBQT ligand file to standard PDB format for LigPlot+.
+
+    Strips charges / atom-types, converts ATOM -> HETATM, assigns chain.
+    """
+    with open(ligand_pdbqt) as fh:
+        lines = fh.readlines()
+
+    out_lines: list[str] = []
+    for line in lines:
+        if line.startswith("ATOM") or line.startswith("HETATM"):
+            # Standard PDB is 80 columns; PDBQT appends charge + atom type.
+            # Truncate to 78 chars and overwrite chain (col 22).
+            new_line = line[:21] + chain + line[22:78] + "\n"
+            if new_line.startswith("ATOM"):
+                new_line = "HETATM" + new_line[6:]
+            out_lines.append(new_line)
+        elif line.startswith("CONECT"):
+            out_lines.append(line)
+
+    if out_lines and not out_lines[-1].endswith("END\n"):
+        out_lines.append("END\n")
+
+    with open(output_pdb, "w") as fh:
+        fh.writelines(out_lines)
+
+
+def _merge_complex_pdb(receptor_pdb: str, ligand_pdb: str, output_pdb: str) -> None:
+    """Merge receptor PDB and ligand PDB into a single complex PDB."""
+    with open(receptor_pdb) as fh:
+        rec_lines = fh.readlines()
+    with open(ligand_pdb) as fh:
+        lig_lines = fh.readlines()
+
+    # Remove END/ENDMDL from receptor
+    filtered_rec = [ln for ln in rec_lines if not ln.strip().startswith("END")]
+
+    with open(output_pdb, "w") as fh:
+        fh.writelines(filtered_rec)
+        fh.writelines(lig_lines)
+
+
+def _extract_ligand_info(ligand_pdb: str) -> tuple[str, int, int, str]:
+    """Extract ligand residue name, number range, and chain from a ligand PDB.
+
+    Returns (resname, first_resnum, last_resnum, chain).
+    Raises VisualizationError if no HETATM records are found.
+    """
+    residues: list[tuple[str, int, str]] = []
+    with open(ligand_pdb) as fh:
+        for line in fh:
+            if not (line.startswith("ATOM") or line.startswith("HETATM")):
+                continue
+            if len(line) < 26:
+                continue
+            resname = line[17:20].strip()
+            chain = line[21] if len(line) > 21 else ""
+            try:
+                resnum = int(line[22:26].strip())
+            except ValueError:
+                continue
+            key = (resname, resnum, chain)
+            if key not in residues:
+                residues.append(key)
+
+    if not residues:
+        raise VisualizationError("No ATOM/HETATM records found in ligand PDB")
+
+    # Sort by chain then resnum
+    residues.sort(key=lambda x: (x[2], x[1]))
+    first = residues[0]
+    last = residues[-1]
+    return first[0], first[1], last[1], first[2]
+
+
+def _ligplot_res_arg(resname: str) -> str:
+    """Format a residue name for the LigPlot+ CLI.
+
+    If the name starts with a digit, prefix with -n (e.g. 02J -> -n02J).
+    """
+    if resname and resname[0].isdigit():
+        return f"-n{resname}"
+    return resname
+
+
 def render_interactions_ligplot(
     receptor_pdb: str,
     ligand_pdbqt: str,
@@ -999,304 +1124,118 @@ def render_interactions_ligplot(
     timeout: int = 60,
     title: str | None = None,
 ) -> str | None:
-    """LigPlot+ v4.0 compatible 2D interaction diagram (Laskowski & Swindells 2011).
+    """Generate a 2D interaction diagram via the external LigPlot+ binary.
 
-    Pure Python reimplementation matching the official LigPlot+ output:
-      - Ligand: full 2D chemical structure, purple bonds, coloured atoms
-      - H-bonds: green dotted lines with distance labels
-      - Hydrophobic: brick-red spoked arcs at residue markers
-      - Layout: energy-minimized (1000-iter simplex, prm-compatible)
-      - Output: Encapsulated PostScript (EPSF-3.0), resolution-independent
-      - PNG: via Ghostscript at 300 DPI (when available)
+    Wraps the official LigPlot+ (v5.5) command-line tool from the conda
+    ``autodock`` environment.  The function:
+      1. Converts the PDBQT ligand to a standard PDB HETATM block.
+      2. Merges it with the receptor PDB.
+      3. Invokes ``ligplot`` with the correct residue range and chain.
+      4. Copies the generated ``ligplot.ps`` to *output_ps*.
+      5. Optionally rasterises to PNG via Ghostscript.
 
-    Returns: path to PS file, or None on failure.
+    Returns:
+        Path to the generated PS file, or ``None`` if LigPlot+ is not
+        installed or the run fails.
     """
-    import math as _m
-    import random as _rnd
+    # 1. Locate LigPlot+ binary and resource directory
+    found = _find_ligplot()
+    if found is None:
+        logger.warning("LigPlot+ binary not found — skipping")
+        return None
+    ligplot_exe, ligplus_dir = found
 
-    from autodock.interactions import detect_interactions
-    from autodock.utils import _sanitize_pdbqt_for_rdkit
-
-    # 1. Detect interactions via PLIP
+    # 2. Prepare temporary working directory inside ligplus_dir
+    #    (ligplot writes ligplot.ps there by default)
+    work_dir = tempfile.mkdtemp(prefix="ligplot_run_", dir=ligplus_dir)
     try:
-        interactions = detect_interactions(receptor_pdb, ligand_pdbqt, method="plip")
-    except (RuntimeError, OSError, ValueError, TypeError, ImportError) as exc:
-        raise VisualizationError(f"Interaction detection failed: {exc}") from exc
-    if not interactions:
-        logger.warning("No interactions -- skipping LigPlot+")
-        return None
+        complex_pdb = os.path.join(work_dir, "complex.pdb")
+        ligand_pdb = os.path.join(work_dir, "ligand.pdb")
 
-    hbonds = [i for i in interactions if i.get("type") == "H-bond"]
-    hydrophobic = [i for i in interactions if i.get("type") == "Hydrophobic"]
+        # Convert PDBQT -> PDB and merge with receptor
+        _pdbqt_to_pdb(ligand_pdbqt, ligand_pdb, chain="Z")
+        _merge_complex_pdb(receptor_pdb, ligand_pdb, complex_pdb)
 
-    # 2. Ligand 2D coordinates via RDKit
-    from rdkit import Chem
-    from rdkit.Chem import rdDepictor
+        # Extract ligand residue info
+        resname, first_num, last_num, chain = _extract_ligand_info(ligand_pdb)
 
-    pdb_block = _sanitize_pdbqt_for_rdkit(ligand_pdbqt)
-    lig_mol = Chem.MolFromPDBBlock(pdb_block, removeHs=True)
-    if lig_mol is None:
-        raise VisualizationError("Could not parse ligand")
-    rdDepictor.Compute2DCoords(lig_mol)
-    conf = lig_mol.GetConformer()
-    xs = [conf.GetAtomPosition(i).x for i in range(lig_mol.GetNumAtoms())]
-    ys = [conf.GetAtomPosition(i).y for i in range(lig_mol.GetNumAtoms())]
-    cx_rd = (min(xs) + max(xs)) / 2 if xs else 0
-    cy_rd = (min(ys) + max(ys)) / 2 if xs else 0
+        # Build command
+        cmd = [
+            ligplot_exe,
+            complex_pdb,
+            _ligplot_res_arg(resname),
+            str(first_num),
+            _ligplot_res_arg(resname) if first_num == last_num else _ligplot_res_arg(resname),
+            str(last_num),
+            chain,
+        ]
+        if first_num == last_num:
+            # Single-residue ligand: duplicate resname/resnum
+            cmd = [
+                ligplot_exe,
+                complex_pdb,
+                _ligplot_res_arg(resname),
+                str(first_num),
+                _ligplot_res_arg(resname),
+                str(last_num),
+                chain,
+            ]
 
-    # 3. Collect interacting residues
-    hb_res = []
-    for hb in hbonds:
-        lbl = f"{hb.get('residue','?')}{hb.get('residue_number','')}"
-        if not any(r["label"] == lbl for r in hb_res):
-            hb_res.append(
-                {
-                    "label": lbl,
-                    "res": hb.get("residue", "?"),
-                    "num": hb.get("residue_number", ""),
-                    "dist": hb.get("distance", ""),
-                }
+        logger.info(f"Running LigPlot+: {' '.join(cmd)}")
+        success, stdout, stderr = safe_subprocess(cmd, timeout=timeout, cwd=ligplus_dir)
+
+        combined = stdout + stderr
+        if "No ligand residues found" in combined:
+            logger.warning("LigPlot+: No ligand residues found in PDB")
+            return None
+        if "Nothing to plot" in combined:
+            logger.warning("LigPlot+: Nothing to plot")
+            return None
+        if not success:
+            # Log the output for debugging
+            logger.warning(f"LigPlot+ stdout: {stdout[:500]}")
+            logger.warning(f"LigPlot+ stderr: {stderr[:500]}")
+            return None
+
+        # Check for the expected output file
+        ligplot_ps = os.path.join(ligplus_dir, "ligplot.ps")
+        if not os.path.isfile(ligplot_ps):
+            logger.warning("LigPlot+ did not produce ligplot.ps")
+            return None
+
+        # Copy to destination
+        ensure_dir(os.path.dirname(output_ps) or ".")
+        shutil.copy2(ligplot_ps, output_ps)
+        logger.info(f"LigPlot+ PostScript: {output_ps}")
+
+        # Optional PNG conversion via Ghostscript
+        if output_png:
+            ensure_dir(os.path.dirname(output_png) or ".")
+            gs_result = subprocess.run(
+                [
+                    "gs",
+                    "-dSAFER",
+                    "-dBATCH",
+                    "-dNOPAUSE",
+                    "-dEPSCrop",
+                    "-sDEVICE=png16m",
+                    "-r300",
+                    f"-sOutputFile={output_png}",
+                    output_ps,
+                ],
+                capture_output=True,
+                text=True,
+                timeout=60,
             )
-    hy_res = []
-    for hp in hydrophobic:
-        lbl = f"{hp.get('residue','?')}{hp.get('residue_number','')}"
-        if not any(r["label"] == lbl for r in hy_res):
-            hy_res.append(
-                {"label": lbl, "res": hp.get("residue", "?"), "num": hp.get("residue_number", "")}
-            )
+            if gs_result.returncode == 0:
+                logger.info(f"LigPlot+ PNG: {output_png}")
+            else:
+                logger.warning(f"GS->PNG failed: {gs_result.stderr[:200]}")
 
-    all_res = hb_res + hy_res
-    if not all_res:
-        return None
-
-    # 4. PS layout constants (US Letter)
-    _M, _PW, _PH = 72, 612, 792
-    _CX, _CY = _M + (_PW - 2 * _M) // 2, _M + (_PH - 2 * _M) // 2 + 20
-    _S = 75.0  # RDKit -> PS scale
-
-    # LigPlot+ colour scheme (from prm)
-    _C = {
-        "bg": (1, 1, 1),
-        "bond": (0.5, 0, 1),
-        "hbond": (0, 1, 0),  # green, not olive
-        "hydro": (0.8, 0, 0),
-        "lig_c": (0, 0, 0),
-        "lig_n": (0, 0, 1),
-        "lig_o": (1, 0, 0),
-        "lig_s": (1, 1, 0),
-        "lig_p": (0.5, 0, 1),
-        "lbl_hb": (0, 0, 1),
-        "lbl_hy": (0.8, 0, 0),
-    }
-
-    def _col(n):
-        r, g, b = _C.get(n, (0, 0, 0))
-        return f"{r:.3f} {g:.3f} {b:.3f} setrgbcolor"
-
-    def rd2ps(x, y):
-        return (_CX + (x - cx_rd) * _S, _CY + (y - cy_rd) * _S)
-
-    # 5. Layout: energy-minimized residue positions
-    # Initial positions: radial around ligand center
-    _RAD, _BA = 170.0, -_m.pi / 2
-    _rnd.seed(42)  # reproducible
-    positions = []
-    for i, _r in enumerate(all_res):
-        a = _BA + 2 * _m.pi * i / len(all_res)
-        px = _CX + _RAD * _m.cos(a) + _rnd.uniform(-10, 10)
-        py = _CY + _RAD * _m.sin(a) + _rnd.uniform(-10, 10)
-        positions.append([px, py])
-
-    # Energy minimisation (prm-compatible parameters)
-    _N_LOOPS = 1000
-    _CLASH = 10.0  # atom-atom clash parameter
-    _ANCHOR = 200.0  # anchor-position energy weight
-    _BOUNDARY = 5.0  # boundary energy weight
-    _BOUNDARY_DIST = 15.0  # min distance to boundary
-    _HBOND_WEIGHT = 2.5  # H-bond ideal position
-    _MAX_MOVE = 15.0  # furthest move distance per step
-    _STEP = 0.98  # temperature decay
-
-    anchor_pos = [(p[0], p[1]) for p in positions]
-    # H-bond ideal positions: along line from ligand center
-    hb_ideal = {}
-    for i, r in enumerate(all_res):
-        if r in hb_res:
-            a = _m.atan2(positions[i][1] - _CY, positions[i][0] - _CX)
-            hb_ideal[i] = (_CX + 155 * _m.cos(a), _CY + 155 * _m.sin(a))
-
-    for step in range(_N_LOOPS):
-        energy = 0.0
-        # Calculate forces on each residue
-        forces = [[0.0, 0.0] for _ in positions]
-        for i in range(len(positions)):
-            # Anchor force
-            dx = anchor_pos[i][0] - positions[i][0]
-            dy = anchor_pos[i][1] - positions[i][1]
-            forces[i][0] += _ANCHOR * dx
-            forces[i][1] += _ANCHOR * dy
-            energy += _ANCHOR * (dx * dx + dy * dy)
-
-            # H-bond ideal force
-            if i in hb_ideal:
-                dx = hb_ideal[i][0] - positions[i][0]
-                dy = hb_ideal[i][1] - positions[i][1]
-                forces[i][0] += _HBOND_WEIGHT * dx
-                forces[i][1] += _HBOND_WEIGHT * dy
-                energy += _HBOND_WEIGHT * (dx * dx + dy * dy)
-
-            # Boundary force
-            bx = max(0, _M + _BOUNDARY_DIST - positions[i][0]) - max(
-                0, positions[i][0] - (_PW - _M - _BOUNDARY_DIST)
-            )
-            by = max(0, _M + _BOUNDARY_DIST - positions[i][1]) - max(
-                0, positions[i][1] - (_PH - _M - _BOUNDARY_DIST)
-            )
-            forces[i][0] += _BOUNDARY * bx
-            forces[i][1] += _BOUNDARY * by
-            energy += _BOUNDARY * (bx * bx + by * by)
-
-            # Clash force (pairwise repulsion)
-            for j in range(i + 1, len(positions)):
-                dx = positions[i][0] - positions[j][0]
-                dy = positions[i][1] - positions[j][1]
-                dist = _m.hypot(dx, dy)
-                if dist < 40:  # clash threshold (~2 residue widths)
-                    rep = _CLASH * (40 - dist) / max(dist, 1)
-                    fx = rep * dx / max(dist, 1)
-                    fy = rep * dy / max(dist, 1)
-                    forces[i][0] += fx
-                    forces[i][1] += fy
-                    forces[j][0] -= fx
-                    forces[j][1] -= fy
-                    energy += _CLASH * (40 - dist) ** 2
-
-        # Apply forces with step size decay
-        step_size = _MAX_MOVE * (_STEP ** (step / 100))
-        for i in range(len(positions)):
-            # Normalize force
-            f_len = _m.hypot(forces[i][0], forces[i][1])
-            if f_len > 0:
-                move = min(step_size, f_len * 0.001)
-                positions[i][0] += move * forces[i][0] / f_len
-                positions[i][1] += move * forces[i][1] / f_len
-
-    # 6. Generate PostScript
-    L = []
-
-    def ps(s):
-        L.append(s)
-
-    ps("%!PS-Adobe-3.0 EPSF-3.0")
-    ps("%%BoundingBox: 0 0 612 792")
-    # Derive title from input files if not provided
-    if title is None:
-        _rec_base = os.path.splitext(os.path.basename(receptor_pdb))[0][:20]
-        _lig_base = os.path.splitext(os.path.basename(ligand_pdbqt))[0][:20]
-        _title_str = f"{_lig_base} / {_rec_base}"
-    else:
-        _title_str = title
-    ps("/Helvetica-Bold findfont 14 scalefont setfont")
-    ps(f"newpath {_M} {_PH-_M-10} moveto ({_title_str}) show")
-    ps("")
-
-    # Render ligand bonds (purple)
-    ps(f"{_col('bond')} 2 setlinewidth")
-    for bd in lig_mol.GetBonds():
-        i, j = bd.GetBeginAtomIdx(), bd.GetEndAtomIdx()
-        x1, y1 = rd2ps(xs[i], ys[i])
-        x2, y2 = rd2ps(xs[j], ys[j])
-        ps(f"newpath {x1:.1f} {y1:.1f} moveto {x2:.1f} {y2:.1f} lineto stroke")
-
-    # Render ligand atoms (element-coloured circles)
-    for i in range(lig_mol.GetNumAtoms()):
-        el = lig_mol.GetAtomWithIdx(i).GetSymbol()
-        c = {"N": "lig_n", "O": "lig_o", "S": "lig_s", "P": "lig_p"}.get(el, "lig_c")
-        x, y = rd2ps(xs[i], ys[i])
-        ps(f"{_col(c)} newpath {x:.1f} {y:.1f} 4 0 360 arc closepath fill")
-        ps("0 setgray /Helvetica findfont 6 scalefont setfont")
-        ps(f"newpath {x:.1f} {y+7:.1f} moveto ({el}) show")
-
-    # Render interactions
-    for _idx, (r, pos) in enumerate(zip(all_res, positions, strict=False)):
-        rx, ry = pos
-        is_hb = r in hb_res
-        # Connect to ligand center
-        if is_hb:
-            # H-bond: green dotted line
-            ps(f"{_col('hbond')} [3 3] 0 setdash 1.5 setlinewidth")
-            ps(f"newpath {_CX:.1f} {_CY:.1f} moveto {rx:.1f} {ry:.1f} lineto stroke")
-            ps("[] 0 setdash")
-            # Distance label
-            if r.get("dist"):
-                mx, my = (_CX + rx) / 2, (_CY + ry) / 2
-                ps(f"/Helvetica findfont 7 scalefont setfont {_col('hbond')}")
-                ps(f"newpath {mx:.1f} {my:.1f} moveto ({r['dist']}) show")
-        else:
-            # Hydrophobic: brick-red spoked arc
-            # Draw 3 radiating spokes from residue position
-            ps(f"{_col('hydro')} 1 setlinewidth")
-            for spoke_angle in [0, 1.047, 2.094]:  # 0, 60, 120 degrees
-                sa = _m.atan2(ry - _CY, rx - _CX) + spoke_angle
-                sl = 12  # spoke length
-                ps(
-                    f"newpath {rx:.1f} {ry:.1f} moveto "
-                    f"{rx+sl*_m.cos(sa):.1f} {ry+sl*_m.sin(sa):.1f} lineto stroke"
-                )
-            # Thin connection line to ligand center
-            ps(f"{_col('hydro')} [2 4] 0 setdash 0.5 setlinewidth")
-            ps(f"newpath {_CX:.1f} {_CY:.1f} moveto {rx:.1f} {ry:.1f} lineto stroke")
-            ps("[] 0 setdash")
-
-        # Residue label
-        txt = f"{r['res']}{r['num']}"
-        ps(f"{_col('lbl_hb' if is_hb else 'lbl_hy')}")
-        ps("/Helvetica findfont 10 scalefont setfont")
-        ps(f"newpath {rx:.1f} {ry:.1f} moveto")
-        ps(f"({txt}) dup stringwidth pop 2 div neg 0 rmoveto show")
-        # Marker dot
-        ps(f"0 setgray newpath {rx:.1f} {ry:.1f} 3 0 360 arc closepath fill")
-
-    # Legend
-    ps("/Helvetica findfont 9 scalefont setfont 0 setgray")
-    ps("newpath 10 25 moveto (Key:) show")
-    ps(f"{_col('hbond')} newpath 10 12 moveto (..... Hydrogen bond) show")
-    ps(f"{_col('hydro')} newpath 10 0 moveto (spoked-arc Hydrophobic) show")
-
-    ps("showpage")
-
-    ps_content = "\n".join(L)
-    ensure_dir(os.path.dirname(output_ps) or ".")
-    with open(output_ps, "w") as f:
-        f.write(ps_content)
-    logger.info(f"LigPlot+ PostScript: {output_ps}")
-
-    # PNG via Ghostscript
-    if output_png:
-        import subprocess as _sp
-
-        ensure_dir(os.path.dirname(output_png) or ".")
-        r = _sp.run(
-            [
-                "gs",
-                "-dSAFER",
-                "-dBATCH",
-                "-dNOPAUSE",
-                "-dEPSCrop",
-                "-sDEVICE=png16m",
-                "-r300",
-                f"-sOutputFile={output_png}",
-                output_ps,
-            ],
-            capture_output=True,
-            text=True,
-            timeout=60,
-        )
-        if r.returncode == 0:
-            logger.info(f"LigPlot+ PNG: {output_png}")
-        else:
-            logger.warning(f"GS->PNG failed: {r.stderr[:200]}")
-    return output_ps
+        return output_ps
+    finally:
+        # Clean up temporary work directory
+        shutil.rmtree(work_dir, ignore_errors=True)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
