@@ -997,6 +997,7 @@ def render_interactions_ligplot(
     output_ps: str = "ligplot.ps",
     output_png: str | None = None,
     timeout: int = 60,
+    title: str | None = None,
 ) -> str | None:
     """LigPlot+ v4.0 compatible 2D interaction diagram (Laskowski & Swindells 2011).
 
@@ -1145,8 +1146,12 @@ def render_interactions_ligplot(
                 energy += _HBOND_WEIGHT * (dx * dx + dy * dy)
 
             # Boundary force
-            bx = max(0, _M + 30 - positions[i][0]) - max(0, positions[i][0] - (_PW - _M - 30))
-            by = max(0, _M + 30 - positions[i][1]) - max(0, positions[i][1] - (_PH - _M - 30))
+            bx = max(0, _M + _BOUNDARY_DIST - positions[i][0]) - max(
+                0, positions[i][0] - (_PW - _M - _BOUNDARY_DIST)
+            )
+            by = max(0, _M + _BOUNDARY_DIST - positions[i][1]) - max(
+                0, positions[i][1] - (_PH - _M - _BOUNDARY_DIST)
+            )
             forces[i][0] += _BOUNDARY * bx
             forces[i][1] += _BOUNDARY * by
             energy += _BOUNDARY * (bx * bx + by * by)
@@ -1184,8 +1189,15 @@ def render_interactions_ligplot(
 
     ps("%!PS-Adobe-3.0 EPSF-3.0")
     ps("%%BoundingBox: 0 0 612 792")
+    # Derive title from input files if not provided
+    if title is None:
+        _rec_base = os.path.splitext(os.path.basename(receptor_pdb))[0][:20]
+        _lig_base = os.path.splitext(os.path.basename(ligand_pdbqt))[0][:20]
+        _title_str = f"{_lig_base} / {_rec_base}"
+    else:
+        _title_str = title
     ps("/Helvetica-Bold findfont 14 scalefont setfont")
-    ps(f"newpath {_M} {_PH-_M-10} moveto (Idebenone / METTL8) show")
+    ps(f"newpath {_M} {_PH-_M-10} moveto ({_title_str}) show")
     ps("")
 
     # Render ligand bonds (purple)

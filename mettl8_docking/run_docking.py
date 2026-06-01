@@ -8,15 +8,22 @@ Receptor: METTL8 iso2 (UniProt Q9H825-2, AlphaFold AF-Q9H825-2-F1)
 Ligand:   Idebenone (PubChem CID 3686, C19H30O5)
 """
 
-import os, sys, json
+import json
+import os
+import sys
+
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from autodock import (
-    prepare_receptor, prepare_ligand, find_top_pockets,
-    dock_ligand, detect_interactions, validate_pose_with_posebusters,
-    compute_clash_score, compute_rmsd_to_crystal,
-    post_process_docking, print_environment_status,
-    generate_pdf_report, generate_csv_report,
+    compute_clash_score,
+    detect_interactions,
+    dock_ligand,
+    find_top_pockets,
+    post_process_docking,
+    prepare_ligand,
+    prepare_receptor,
+    print_environment_status,
+    validate_pose_with_posebusters,
 )
 
 OUTDIR = os.path.dirname(os.path.abspath(__file__))
@@ -35,6 +42,7 @@ RECEPTOR_PDBQT = os.path.join(OUTDIR, "METTL8_af_iso2.pdbqt")
 
 if not os.path.exists(ALPHAFOLD_CIF):
     from autodock.fetchers import download_alphafold
+
     download_alphafold("Q9H825-2", OUTDIR, format="cif")
 
 print("=" * 60)
@@ -47,12 +55,12 @@ receptor_pdbqt = prepare_receptor(
     ALPHAFOLD_CIF,
     RECEPTOR_PDBQT,
     ph=7.4,
-    remove_water=False,       # AlphaFold has no waters
+    remove_water=False,  # AlphaFold has no waters
     remove_hetatms=True,
     retain_metal_ions=True,
-    predict_pka=True,          # report anomalous pKa
-    fix_protonation=False,     # set True if pdb2pqr available
-    force=True,                # overwrite existing
+    predict_pka=True,  # report anomalous pKa
+    fix_protonation=False,  # set True if pdb2pqr available
+    force=True,  # overwrite existing
     detect_af_structure=True,  # auto pLDDT check
     output_pdb=RECEPTOR_PDB,  # save PDB for PLIP/PyMOL/PoseBusters
 )
@@ -77,11 +85,18 @@ pockets = find_top_pockets(
 print(f"  Found {len(pockets)} pocket(s):")
 for i, p in enumerate(pockets):
     drugg_score = p.get("druggability")
-    drugg_str = f"{drugg_score:.3f} ({p.get('druggability_level', 'N/A')})" if drugg_score is not None else p.get('druggability_level', 'N/A')
-    print(f"    #{i+1}: center={p['center']}, box={p['box_size']}, "
-          f"druggability={drugg_str}, "
-          f"P2Rank={p.get('p2rank_prob', 'N/A'):.3f}" if p.get('p2rank_prob') else f"P2Rank=N/A, "
-          f"method={p.get('method', 'N/A')}")
+    drugg_str = (
+        f"{drugg_score:.3f} ({p.get('druggability_level', 'N/A')})"
+        if drugg_score is not None
+        else str(p.get("druggability_level", "N/A"))
+    )
+    p2rank_val = p.get("p2rank_prob")
+    p2rank_str = f"P2Rank={p2rank_val:.3f}" if p2rank_val is not None else "P2Rank=N/A"
+    print(
+        f"    #{i+1}: center={p['center']}, box={p['box_size']}, "
+        f"druggability={drugg_str}, {p2rank_str}, "
+        f"method={p.get('method', 'N/A')}"
+    )
 print()
 
 # =========================================================================
@@ -126,8 +141,8 @@ prepare_ligand(
     enumerate_stereo=False,
 )
 print(f"  Single-conformer PDBQT: {LIGAND_PDBQT}")
-print(f"  Multi-conformer: 10 conformers via ETKDG (enabled in dock_ligand)")
-print(f"  Strategy: dock each conformer independently, select globally best")
+print("  Multi-conformer: 10 conformers via ETKDG (enabled in dock_ligand)")
+print("  Strategy: dock each conformer independently, select globally best")
 print()
 
 # =========================================================================
@@ -141,18 +156,18 @@ all_results = []
 for i, pocket in enumerate(pockets):
     print(f"\n  ── Pocket #{i+1} ──")
     pocket_dir = os.path.join(OUTDIR, f"pocket_{i+1}")
-    
+
     result = dock_ligand(
         receptor_pdbqt,
-        LIGAND_PDBQT,            # single-conf PDBQT for API compat
+        LIGAND_PDBQT,  # single-conf PDBQT for API compat
         center=pocket["center"],
         box_size=pocket["box_size"],
-        exhaustiveness=32,       # publication standard
+        exhaustiveness=32,  # publication standard
         n_poses=20,
-        seed=42,                 # deterministic
+        seed=42,  # deterministic
         output_dir=pocket_dir,
         compound_name=f"IDE_pocket{i+1}",
-        skip_consensus=False,    # include Vinardo consensus
+        skip_consensus=False,  # include Vinardo consensus
         min_rmsd=1.0,
         auto_exhaustiveness=False,
         # NOTE: multi_conformer=True generates 10 conformers and docks each in
@@ -160,17 +175,19 @@ for i, pocket in enumerate(pockets):
         # 10 parallel Vina processes may cause OOM kills.  Default is single
         # conformer (robust); re-enable multi_conformer for higher thoroughness
         # on well-resourced machines.
-        multi_conformer=False,   # set True for 10-conformer exhaustive search
+        multi_conformer=False,  # set True for 10-conformer exhaustive search
         # ligand_smiles=IDEBENONE_SMILES,  # uncomment when multi_conformer=True
     )
-    
+
     print(f"    Best affinity: {result.best_affinity:.2f} kcal/mol")
     if result.consensus_affinity:
         print(f"    Consensus (Vina+Vinardo): {result.consensus_affinity:.2f} kcal/mol")
     print(f"    N clusters: {result.n_clusters}")
-    print(f"    Consensus conflict detection: "
-          f"{'⚠️ bias detected' if result.all_scores.get('vinardo_best_pose_idx', 0) > 0 else '✅ Vina/Vinardo agree'}")
-    
+    print(
+        f"    Consensus conflict detection: "
+        f"{'⚠️ bias detected' if result.all_scores.get('vinardo_best_pose_idx', 0) > 0 else '✅ Vina/Vinardo agree'}"
+    )
+
     all_results.append(result)
 
 # =========================================================================
@@ -190,17 +207,25 @@ for rank, (r, idx) in enumerate(ranked, 1):
     drugg_str = f"{drugg:.3f}" if drugg is not None else "N/A"
     p2rank = p.get("p2rank_prob")
     p2rank_str = f"{p2rank:.3f}" if p2rank is not None else "N/A"
-    print(f"  #{rank}: Pocket #{idx+1} — {r.best_affinity:.2f} kcal/mol "
-          f"(consensus: {r.consensus_affinity or 'N/A'}) "
-          f"[P2Rank={p2rank_str}, drugg={drugg_str}]")
+    print(
+        f"  #{rank}: Pocket #{idx+1} — {r.best_affinity:.2f} kcal/mol "
+        f"(consensus: {r.consensus_affinity or 'N/A'}) "
+        f"[P2Rank={p2rank_str}, drugg={drugg_str}]"
+    )
 
 if ranked:
     best = ranked[0]
     best_p = pockets[best[1]]
     best_drugg = best_p.get("druggability")
-    best_drugg_str = f"{best_drugg:.3f} ({best_p.get('druggability_level', 'N/A')})" if best_drugg is not None else best_p.get('druggability_level', 'N/A')
-    print(f"\n  🏆 Best pocket: #{best[1]+1} ({best[0].best_affinity:.2f} kcal/mol, "
-          f"druggability={best_drugg_str})")
+    best_drugg_str = (
+        f"{best_drugg:.3f} ({best_p.get('druggability_level', 'N/A')})"
+        if best_drugg is not None
+        else best_p.get("druggability_level", "N/A")
+    )
+    print(
+        f"\n  🏆 Best pocket: #{best[1]+1} ({best[0].best_affinity:.2f} kcal/mol, "
+        f"druggability={best_drugg_str})"
+    )
     print()
 
 # =========================================================================
@@ -210,43 +235,49 @@ if ranked:
     best_result, best_idx = ranked[0]
     best_pocket_dir = os.path.join(OUTDIR, f"pocket_{best_idx+1}")
     best_pose_path = best_result.best_pose_pdbqt
-    
+
     print("=" * 60)
     print("Step 6: Post-processing (best pose)")
     print("=" * 60)
-    
+
     # Interaction detection (PLIP)
     try:
         interactions = detect_interactions(
-            receptor_pdb, best_pose_path, method="plip",
+            receptor_pdb,
+            best_pose_path,
+            method="plip",
         )
         best_result.interactions = interactions
         print(f"  PLIP interactions detected: {len(interactions)}")
         # Summary
         from collections import Counter
+
         type_counts = Counter(i.get("type", "Unknown") for i in interactions)
         for itype, cnt in sorted(type_counts.items()):
             print(f"    {itype}: {cnt}")
     except Exception as e:
         print(f"  Interaction detection skipped: {e}")
-    
+
     # Clash detection
     try:
-        from autodock.utils import read_pdb_atoms
         clash = compute_clash_score(best_pose_path, receptor_pdb)
-        print(f"  Clash score: {clash.get('clash_score', 'N/A')} Å "
-              f"(acceptable: {clash.get('is_acceptable', 'N/A')})")
+        print(
+            f"  Clash score: {clash.get('clash_score', 'N/A')} Å "
+            f"(acceptable: {clash.get('is_acceptable', 'N/A')})"
+        )
     except Exception as e:
         print(f"  Clash detection skipped: {e}")
-    
+
     # PoseBusters validation
     try:
         pb = validate_pose_with_posebusters(best_pose_path, receptor_pdb)
-        print(f"  PoseBusters: {'PASS' if pb.get('pass') else 'FAIL'} "
-              f"(available: {pb.get('available', False)})")
+        print(
+            f"  PoseBusters: {'PASS' if pb.get('pass') else 'FAIL'} "
+            f"(available: {pb.get('available', False)})"
+        )
     except Exception as e:
         print(f"  PoseBusters skipped: {e}")
-    
+
     # Full pipeline post-processing
     print("\n  Generating publication-ready output...")
     outputs = post_process_docking(
@@ -257,7 +288,7 @@ if ranked:
         do_rendering=True,
         do_report=True,
     )
-    
+
     print(f"\n  📄 Report: {outputs.get('pdf', 'N/A')}")
     print(f"  📊 CSV:    {outputs.get('csv', 'N/A')}")
     print(f"  🖼️  Figures: {outputs.get('figures', [])}")
