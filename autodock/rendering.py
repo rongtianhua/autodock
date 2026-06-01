@@ -1043,23 +1043,44 @@ def render_interactions_ligplot(
             fh.write("END\n")
 
         # Find LigPlot+ binary
-        ligplot_bin = find_conda_tool("ligplot")
-        if not ligplot_bin:
-            raise VisualizationError(
-                "LigPlot+ not found. Install: conda install -c conda-forge ligplus"
-            )
+        # Priority:
+        #   1. Intel macOS binary (exe_mac) — runs via Rosetta 2 on arm64
+        #   2. conda bin/ligplot (arm64) — known to segfault on macOS 14+, fallback
+        # NOTE: LigPlus.jar (Java GUI) is NOT used — its Main-Class is
+        # ligplus.LigPlusFrame (GUI window), not the CLI ligplot tool.
+        CONDA_PREFIX = os.environ.get("CONDA_PREFIX", "")
+        ligplus_dir = os.path.join(CONDA_PREFIX, "opt", "ligplus", "lib")
+        ligplot_cmd: list[str] | None = None
+
+        intel_bin = os.path.join(ligplus_dir, "exe_mac", "ligplot")
+        if os.path.isfile(intel_bin) and os.access(intel_bin, os.X_OK):
+            ligplot_cmd = [intel_bin, "-pdb", ligplot_pdb]
+            logger.debug(f"LigPlot+: using Intel binary (Rosetta 2) at {intel_bin}")
+        else:
+            ligplot_bin = find_conda_tool("ligplot")
+            if ligplot_bin:
+                ligplot_cmd = [ligplot_bin, "-pdb", ligplot_pdb]
+                logger.debug(f"LigPlot+: using native binary at {ligplot_bin}")
+            else:
+                logger.warning("LigPlot+ not found. Install: conda install -c conda-forge ligplus")
+                return None
 
         # Run LigPlot+
-        # NOTE: LigPlot+ binary on macOS arm64 may segfault (exit code -5)
-        # due to compatibility issues with the conda-forge ligplus package.
-        # When this happens, we log a warning and return the PS path if
-        # the file was written anyway, or return None if not.
+        # NOTE: The conda-forge ligplus package ships native binaries that
+        # segfault on macOS 14+ (arm64 and Intel both).  Known upstream
+        # issue — the GraalVM native-image build is incompatible with
+        # newer macOS system libraries.  When this happens, we skip
+        # gracefully; the RDKit Cairo 2D route is sufficient for publication.
         success, stdout, stderr = safe_subprocess(
-            [ligplot_bin, "-pdb", ligplot_pdb],
+            ligplot_cmd,
             timeout=timeout,
         )
         if not success:
-            logger.warning(f"LigPlot+ failed (rc={stderr[:200]}) — skipping")
+            logger.warning(
+                "LigPlot+ segfaulted (known macOS 14+ compatibility issue "
+                "with conda-forge ligplus binary) — skipping. "
+                "RDKit Cairo 2D diagram used instead."
+            )
             return None
 
         # LigPlot+ writes "ligplot.ps" in the current working directory
