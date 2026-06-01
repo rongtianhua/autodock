@@ -228,7 +228,6 @@ def post_process_docking(
             ValueError,
             TypeError,
             ImportError,
-            VisualizationError,
         ) as exc:
             logger.warning(f"2D LigPlot+ rendering skipped: {exc}")
 

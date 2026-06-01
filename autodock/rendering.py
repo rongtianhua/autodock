@@ -9,7 +9,6 @@ from __future__ import annotations
 import contextlib
 import math
 import os
-import shutil
 import tempfile
 from typing import Any
 
@@ -18,12 +17,11 @@ from autodock.core import (
     DEFAULT_RAY_HEIGHT,
     DEFAULT_RAY_WIDTH,
     VisualizationError,
-    find_conda_tool,
     find_pymol,
     logger,
     safe_subprocess,
 )
-from autodock.utils import ensure_dir, write_temp_file
+from autodock.utils import ensure_dir
 
 # ─────────────────────────────────────────────────────────────────────────────
 # PyMOL 3D Rendering (CLI-based)
@@ -994,134 +992,33 @@ def render_interactions_2d(
 
 
 def render_interactions_ligplot(
-    receptor_pdb: str,
-    ligand_pdbqt: str,
+    receptor_pdb: str = "",
+    ligand_pdbqt: str = "",
     output_ps: str = "ligplot.ps",
     output_png: str | None = None,
     timeout: int = 60,
-) -> str:
+) -> None:
     """
-    Generate a LigPlot+ 2D interaction diagram from a docked pose.
+    LigPlot+ 2D interaction diagram -- **unavailable on macOS 26.5**.
 
-    LigPlot+ (Laskowski & Swindells 2011, J. Chem. Inf. Model.) identifies
-    all non-covalent contacts between the ligand (largest HETATM group)
-    and the receptor and produces a schematic 2D diagram in PostScript.
-    This serves as cross-validation against the RDKit Cairo route.
+    The conda-forge ``ligplus`` GraalVM native-image binaries (both
+    exe_mac and exe_mac64) crash with SIGTRAP on macOS 26.5.
+    ``LigPlus.jar`` is GUI-only (Main-Class: ``ligplus.LigPlusFrame``).
 
-    Args:
-        receptor_pdb: Receptor PDB file (must contain the protein).
-        ligand_pdbqt: Ligand PDBQT file (docked pose).
-        output_ps: Output PostScript file path.
-        output_png: Optional PNG output (converted via PIL).
-        timeout: Wall-clock timeout for LigPlot+.
+    **Output**: Use ``render_interactions_2d()`` -- it produces
+    publication-quality 2D interaction diagrams (PNG + PDF, 300 DPI,
+    LigPlot+ style dashed H-bonds + spoked-arc hydrophobics) via
+    the RDKit Cairo route.  No external binary required.
 
     Returns:
-        Path to output PostScript file (or PNG if conversion succeeded).
-
-    Raises:
-        VisualizationError: If LigPlot+ binary not found or execution fails.
+        Always None.
     """
-
-    from PIL import Image
-
-    # Build a combined PDB: receptor + ligand as HETATM
-    # LigPlot+ expects the ligand as the largest HETATM group
-    ligplot_pdb = write_temp_file("", suffix="_ligplot.pdb")
-    try:
-        with open(receptor_pdb) as fh:
-            rec_lines = [line for line in fh if line.startswith(("ATOM  ", "HETATM", "TER", "END"))]
-        with open(ligand_pdbqt) as fh:
-            lig_lines = []
-            for line in fh:
-                if line.startswith(("ATOM  ", "HETATM")):
-                    lig_lines.append(line)
-        # Combine
-        with open(ligplot_pdb, "w") as fh:
-            fh.writelines(rec_lines)
-            fh.write("TER\n")
-            fh.writelines(lig_lines)
-            fh.write("END\n")
-
-        # Find LigPlot+ binary
-        # Priority:
-        #   1. Intel macOS binary (exe_mac) — runs via Rosetta 2 on arm64
-        #   2. conda bin/ligplot (arm64) — known to segfault on macOS 14+, fallback
-        # NOTE: LigPlus.jar (Java GUI) is NOT used — its Main-Class is
-        # ligplus.LigPlusFrame (GUI window), not the CLI ligplot tool.
-        CONDA_PREFIX = os.environ.get("CONDA_PREFIX", "")
-        ligplus_dir = os.path.join(CONDA_PREFIX, "opt", "ligplus", "lib")
-        ligplot_cmd: list[str] | None = None
-
-        intel_bin = os.path.join(ligplus_dir, "exe_mac", "ligplot")
-        if os.path.isfile(intel_bin) and os.access(intel_bin, os.X_OK):
-            ligplot_cmd = [intel_bin, "-pdb", ligplot_pdb]
-            logger.debug(f"LigPlot+: using Intel binary (Rosetta 2) at {intel_bin}")
-        else:
-            ligplot_bin = find_conda_tool("ligplot")
-            if ligplot_bin:
-                ligplot_cmd = [ligplot_bin, "-pdb", ligplot_pdb]
-                logger.debug(f"LigPlot+: using native binary at {ligplot_bin}")
-            else:
-                logger.warning("LigPlot+ not found. Install: conda install -c conda-forge ligplus")
-                return None
-
-        # Run LigPlot+
-        # NOTE: The conda-forge ligplus package ships native binaries that
-        # segfault on macOS 14+ (arm64 and Intel both).  Known upstream
-        # issue — the GraalVM native-image build is incompatible with
-        # newer macOS system libraries.  When this happens, we skip
-        # gracefully; the RDKit Cairo 2D route is sufficient for publication.
-        success, stdout, stderr = safe_subprocess(
-            ligplot_cmd,
-            timeout=timeout,
-        )
-        if not success:
-            logger.warning(
-                "LigPlot+ segfaulted (known macOS 14+ compatibility issue "
-                "with conda-forge ligplus binary) — skipping. "
-                "RDKit Cairo 2D diagram used instead."
-            )
-            return None
-
-        # LigPlot+ writes "ligplot.ps" in the current working directory
-        default_ps = os.path.join(os.getcwd(), "ligplot.ps")
-        ps_source = default_ps if os.path.exists(default_ps) else None
-        if not ps_source:
-            # Try the output file name directly
-            ps_source = output_ps
-
-        if not os.path.exists(ps_source):
-            logger.warning("LigPlot+ produced no output file")
-            return None
-
-        # Copy to desired output path
-        ensure_dir(os.path.dirname(output_ps) or ".")
-        shutil.copy2(ps_source, output_ps)
-
-        # Optional PNG conversion
-        if output_png:
-            ensure_dir(os.path.dirname(output_png) or ".")
-            try:
-                with Image.open(ps_source) as img:
-                    # Ghostscript-based conversion via PIL
-                    img.save(output_png, dpi=(300, 300))
-                logger.info(f"LigPlot+ converted to PNG: {output_png}")
-            except (OSError, ValueError, TypeError) as exc:
-                logger.warning(f"LigPlot+ PS→PNG conversion failed ({exc})")
-                # Fall back: PS output is still a valid result
-                output_png = None
-
-        # Cleanup default output
-        if os.path.exists(default_ps) and default_ps != output_ps:
-            with contextlib.suppress(OSError):
-                os.remove(default_ps)
-
-        logger.info(f"LigPlot+ diagram: {output_ps}")
-        return output_png or output_ps
-
-    finally:
-        with contextlib.suppress(OSError):
-            os.remove(ligplot_pdb)
+    logger.info(
+        "LigPlot+ CLI unavailable on macOS 26.5 "
+        "(conda-forge ligplus GraalVM builds incompatible). "
+        "RDKit Cairo 2D output at 300 DPI -- see 03_figures/2d_interactions.png/.pdf"
+    )
+    return None
 
 
 # ─────────────────────────────────────────────────────────────────────────────
