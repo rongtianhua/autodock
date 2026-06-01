@@ -124,6 +124,7 @@ source = ["autodock"]
 omit = [
     "autodock/tests/*",
     "autodock/__main__.py",
+    "autodock/workflow.py",
 ]
 
 [tool.coverage.report]
