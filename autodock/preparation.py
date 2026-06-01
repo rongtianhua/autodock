@@ -3269,7 +3269,7 @@ def find_top_pockets(
             logger.info(
                 f"Pocket {i + 1} (#{pk['pocket_num']}): [{src_label}]{v_str}, "
                 f"center={pk['center']}, box={pk['box_size']} ({p_str}, "
-                f"druggability={pk['druggability_level']})"
+                f"druggability={pk['druggability']:.3f} ({pk['druggability_level']}))"
             )
 
         return result
