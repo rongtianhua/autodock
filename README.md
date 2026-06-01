@@ -116,9 +116,37 @@ Output (PDF / CSV / PNG / PDBQT)
 
 ---
 
+## 🚀 Quick Start — Workflow API (recommended)
+
+One-line entry point for complete publication-grade docking analysis:
+
+```python
+from autodock import run_docking_workflow
+
+# Auto-download receptor (PDB/AlphaFold), prepare, dock, report
+result = run_docking_workflow(
+    receptor_id="6LU7",                     # PDB ID / UniProt / file path
+    ligand_smiles="CC(C)Cc1ccc(C(C)C(=O)O)cc1",
+    exhaustiveness=32,
+    n_poses=20,
+    seed=42,
+    output_dir="./my_docking",
+)
+print(f"Best affinity: {result.best_result.best_affinity:.2f} kcal/mol")
+print(f"PDF report: {result.report_pdf}")
+```
+
+Or via CLI:
+
+```bash
+python -m autodock.workflow --receptor 6LU7 \
+    --ligand-smiles "CC(C)Cc1ccc(C(C)C(=O)O)cc1" \
+    --outdir ./my_docking
+```
+
 ## 📖 Usage Scenarios
 
-### 1. Single-Ligand Docking
+### 1. Single-Ligand Docking (programmatic API)
 
 Dock a known ligand into a known receptor with automatic pocket detection:
 

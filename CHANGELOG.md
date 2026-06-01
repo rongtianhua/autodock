@@ -8,11 +8,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
-- `seed` parameter to `run_md_stability()` for reproducible MD trajectories.
-- `CONTRIBUTING.md` and `CHANGELOG.md` for publication readiness.
-- `strip_model_headers()` utility in `autodock.utils` — centralized PDBQT
-  multi-model header stripping replaces 3+ copy-pasted blocks.
-- MIT `LICENSE` file at repository root.
+- `autodock/workflow.py` — `run_docking_workflow()` single-call entry point.
+  Orchestrates: receptor acquisition (PDB/AlphaFold/file) → preparation →
+  pocket detection → ligand prep → multi-pocket docking → post-processing.
+  CLI: ``python -m autodock.workflow``.
+- `render_interactions_ligplot()` — pure Python LigPlot+ v4.0 compatible
+  renderer.  EPSF-3.0 vector output + Ghostscript 300 DPI PNG.
+  Green dotted H-bonds, brick-red spoked-arc hydrophobic contacts,
+  energy-minimized residue layout (1000-iter, prm-compatible).
+- `prepare_receptor(output_pdb=...)` — saves filtered PDB for downstream
+  PLIP/PyMOL/PoseBusters (single CIF→PDB conversion point).
+- `find_top_pockets()` disk cache — MD5-hash based, `~/.cache/autodock/pockets/`.
+- Memory-aware worker scaling in `dock_ligand_multi_conformer()` —
+  uses ``psutil`` to cap workers by RAM (~1.5 GB/worker).
+- Multi-pose Vinardo consensus scoring — all 20 poses re-scored.
+- NaN/inf guards in ensemble statistics + Kabsch RMSD.
+- File corruption detection in `validate_pdbqt_file()`.
+- MIT `LICENSE` file, `strip_model_headers()` utility.
 - `fix_protonation` parameter to `prepare_receptor()` — PDB2PQR+PROPKA
   active protonation correction (Option B).  Inserted between `reduce`
   and OpenMM: runs PDB2PQR with PROPKA pKa prediction, applies corrected
