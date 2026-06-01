@@ -998,232 +998,193 @@ def render_interactions_ligplot(
     output_png: str | None = None,
     timeout: int = 60,
 ) -> str | None:
+    """Generate a LigPlot+ style 2D interaction diagram in PostScript.
+
+    Pure Python reimpl of LigPlot+ v4.0 (Laskowski & Swindells 2011).
+    Renders full 2D ligand structure + interacting residues + H-bonds
+    (olive dashed) + hydrophobic contacts (brick red) as EPS vector.
     """
-    Generate a LigPlot+ style 2D interaction diagram in PostScript.
+    import math as m
 
-    Pure Python reimplementation of the LigPlot+ v4.0 CLI (Laskowski &
-    Swindells 2011, J. Chem. Inf. Model.).  Uses PLIP for interaction
-    detection (H-bonds, hydrophobics) and RDKit for 2D ligand layout,
-    then renders to Encapsulated PostScript matching the LigPlot+ color
-    scheme and aesthetics from ``ligplot.prm``.
-
-    No external ``ligplot`` binary required -- works on all platforms.
-
-    Args:
-        receptor_pdb: Receptor PDB file.
-        ligand_pdbqt: Ligand PDBQT file (docked pose).
-        output_ps: Output PostScript file path.
-        output_png: Optional PNG output (converted via PIL/Ghostscript).
-        timeout: Ignored (kept for API compatibility).
-
-    Returns:
-        Path to output PS file, or None on failure.
-
-    Raises:
-        VisualizationError: If interaction detection fails.
-    """
-
-    # ── 1. Detect interactions via PLIP ──────────────────────────────────
     from autodock.interactions import detect_interactions
+    from autodock.utils import _sanitize_pdbqt_for_rdkit
 
+    # Detect interactions
     try:
         interactions = detect_interactions(receptor_pdb, ligand_pdbqt, method="plip")
     except (RuntimeError, OSError, ValueError, TypeError, ImportError) as exc:
         raise VisualizationError(f"Interaction detection failed: {exc}") from exc
-
     if not interactions:
-        logger.warning("No interactions detected -- skipping LigPlot+ diagram")
+        logger.warning("No interactions -- skipping LigPlot+")
         return None
 
-    # Classify interactions
     hbonds = [i for i in interactions if i.get("type") == "H-bond"]
     hydrophobic = [i for i in interactions if i.get("type") == "Hydrophobic"]
 
-    # ── 2. Build ligand 2D depiction ─────────────────────────────────────
+    # Parse ligand 2D coords
     from rdkit import Chem
     from rdkit.Chem import rdDepictor
-
-    # Parse ligand from PDBQT
-    from autodock.utils import _sanitize_pdbqt_for_rdkit
 
     pdb_block = _sanitize_pdbqt_for_rdkit(ligand_pdbqt)
     lig_mol = Chem.MolFromPDBBlock(pdb_block, removeHs=True)
     if lig_mol is None:
-        raise VisualizationError("Could not parse ligand for 2D depiction")
-
-    # Generate 2D coordinates
+        raise VisualizationError("Could not parse ligand")
     rdDepictor.Compute2DCoords(lig_mol)
+    conf = lig_mol.GetConformer()
+    n_at = lig_mol.GetNumAtoms()
+    xs = [conf.GetAtomPosition(i).x for i in range(n_at)]
+    ys = [conf.GetAtomPosition(i).y for i in range(n_at)]
+    cx_rd = (min(xs) + max(xs)) / 2 if xs else 0
+    cy_rd = (min(ys) + max(ys)) / 2 if xs else 0
 
-    # ── 3. Collect unique interacting residues ──────────────────────────
-    hbond_residues: dict[str, tuple[float, float, str, str]] = {}
+    # Collect interacting residues
+    hb_res = {}
     for hb in hbonds:
-        res_name = hb.get("residue", "UNK")
-        res_num = str(hb.get("residue_number", ""))
-        label = f"{res_name}{res_num}"
-        if label not in hbond_residues:
-            x, y = hb.get("coords", (0.0, 0.0))[:2]
-            hbond_residues[label] = (float(x), float(y), res_name, res_num)
-
-    hydrophobic_residues: dict[str, tuple[float, float, str, str]] = {}
+        lbl = f"{hb.get('residue','?')}{hb.get('residue_number','')}"
+        if lbl not in hb_res:
+            hb_res[lbl] = {
+                "res": hb.get("residue", "?"),
+                "num": hb.get("residue_number", ""),
+                "dist": hb.get("distance", ""),
+            }
+    hy_res = {}
     for hp in hydrophobic:
-        res_name = hp.get("residue", "UNK")
-        res_num = str(hp.get("residue_number", ""))
-        label = f"{res_name}{res_num}"
-        if label not in hydrophobic_residues:
-            x, y = hp.get("coords", (0.0, 0.0))[:2]
-            hydrophobic_residues[label] = (float(x), float(y), res_name, res_num)
+        lbl = f"{hp.get('residue','?')}{hp.get('residue_number','')}"
+        if lbl not in hy_res:
+            hy_res[lbl] = {"res": hp.get("residue", "?"), "num": hp.get("residue_number", "")}
 
-    # ── 4. Generate PostScript output ────────────────────────────────────
-    ensure_dir(os.path.dirname(output_ps) or ".")
-    _LIGPLOT_COLORS = {
-        "BLACK": (0, 0, 0),
-        "WHITE": (1, 1, 1),
-        "RED": (1, 0, 0),
-        "BLUE": (0, 0, 1),
-        "GREEN": (0, 1, 0),
-        "YELLOW": (1, 1, 0),
-        "ORANGE": (0.8, 0.5, 0),
-        "PURPLE": (0.5, 0, 1),
-        "OLIVE_GREEN": (0.1, 0.5, 0),
-        "BRICK_RED": (0.8, 0, 0),
-        "TURQUOISE": (0, 1, 1),
-        "LIME_GREEN": (0.5, 1, 0),
-        "PINK": (1, 0.5, 1),
-        "LIGHT_GREY": (0.97, 0.97, 0.97),
+    # PS layout
+    M, PW, PH = 72, 612, 792
+    CX, CY = M + (PW - 2 * M) // 2, M + (PH - 2 * M) // 2 + 20
+    S = 75.0
+    C = {
+        "HB": (0.1, 0.5, 0),
+        "HY": (0.8, 0, 0),
+        "CA": (0, 0, 0),
+        "CN": (0, 0, 1),
+        "CO": (1, 0, 0),
+        "CS": (1, 1, 0),
+        "BO": (0.5, 0, 1),
+        "LB": (0, 0, 1),
+        "LR": (0.8, 0, 0),
     }
 
-    PAGE_W = 612  # US Letter width (72 DPI)
-    PAGE_H = 792  # US Letter height
-    MARGIN = 72  # 1 inch margin
+    def rd2ps(x, y):
+        return (CX + (x - cx_rd) * S, CY + (y - cy_rd) * S)
 
-    def _rgb(r: float, g: float, b: float) -> str:
-        return f"{r:.3f} {g:.3f} {b:.3f}"
+    L = []
 
-    def _set_color(name: str) -> str:
-        r, g, b = _LIGPLOT_COLORS.get(name, (0, 0, 0))
-        return f"{r:.3f} {g:.3f} {b:.3f} setrgbcolor\n"
+    def ps(s):
+        L.append(s)
 
-    lines: list[str] = []
+    ps("%!PS-Adobe-3.0 EPSF-3.0")
+    ps("%%BoundingBox: 0 0 612 792")
+    ps("")
+    ps("/Helvetica-Bold findfont 14 scalefont setfont")
+    ps(f"newpath {M} {PH-M-10} moveto (Idebenone / METTL8) show")
+    ps("")
 
-    # PostScript header
-    lines.append("%!PS-Adobe-3.0 EPSF-3.0")
-    lines.append(f"%%BoundingBox: 0 0 {PAGE_W} {PAGE_H}")
-    lines.append("%%Title: LigPlot+ diagram (autodock Python reimplementation)")
-    lines.append("%%Creator: autodock (LigPlot+ v4.0 compatible)")
-    lines.append("%%EndComments")
-    lines.append("")
+    # Ligand bonds
+    r, g, b = C["BO"]
+    ps(f"{r:.3f} {g:.3f} {b:.3f} setrgbcolor 2 setlinewidth")
+    for bd in lig_mol.GetBonds():
+        i, j = bd.GetBeginAtomIdx(), bd.GetEndAtomIdx()
+        x1, y1 = rd2ps(xs[i], ys[i])
+        x2, y2 = rd2ps(xs[j], ys[j])
+        ps(f"newpath {x1:.1f} {y1:.1f} moveto {x2:.1f} {y2:.1f} lineto stroke")
 
-    # Setup
-    lines.append("/Helvetica findfont 10 scalefont setfont")
-    lines.append(f"{MARGIN} {MARGIN} translate")
-    lines.append("")
+    # Ligand atoms (colored circles)
+    for i in range(n_at):
+        el = lig_mol.GetAtomWithIdx(i).GetSymbol()
+        r, g, b = C.get({"N": "CN", "O": "CO", "S": "CS"}.get(el, "CA"), (0, 0, 0))
+        x, y = rd2ps(xs[i], ys[i])
+        ps(f"{r:.3f} {g:.3f} {b:.3f} setrgbcolor")
+        ps(f"newpath {x:.1f} {y:.1f} 4 0 360 arc closepath fill")
+        ps("0 setgray /Helvetica findfont 6 scalefont setfont")
+        ps(f"newpath {x:.1f} {y + 7:.1f} moveto ({el}) show")
 
-    # Title
-    title = "Idebenone / METTL8"
-    lines.append(f"newpath 0 {PAGE_H - MARGIN - 20} moveto")
-    lines.append(f"({title}) show")
-    lines.append("")
-
-    # Count residues for layout
-    n_residues = len(hbond_residues) + len(hydrophobic_residues)
-    if n_residues == 0:
-        logger.warning("No interacting residues found for LigPlot+ diagram")
+    # Place residues around ligand
+    all_r = list(hb_res.items()) + list(hy_res.items())
+    if not all_r:
         return None
+    n, RAD, BA = len(all_r), 160.0, -m.pi / 2
 
-    # Simple radial layout: ligand center, residues arranged around
-    center_x = (PAGE_W - 2 * MARGIN) / 2
-    center_y = (PAGE_H - 2 * MARGIN) / 2
-    radius = min(center_x, center_y) * 0.6
+    for idx, (lbl, info) in enumerate(all_r):
+        ang = BA + 2 * math.pi * idx / n
+        rx = CX + RAD * math.cos(ang)
+        ry = CY + RAD * math.sin(ang)
+        is_hb = lbl in hb_res
 
-    # Draw ligand center
-    lines.append(_set_color("PURPLE"))
-    lines.append(f"newpath {center_x} {center_y} 15 0 360 arc closepath fill")
-    lines.append(_set_color("BLACK"))
-    lines.append(f"newpath {center_x} {center_y} moveto (Ligand) show")
-    lines.append("")
-
-    # Place residue labels radially
-    all_res = list(hbond_residues.items()) + list(hydrophobic_residues.items())
-    n = len(all_res)
-    for i, (label, (_, _, res_name, res_num)) in enumerate(all_res):
-        angle = 2 * 3.14159 * i / n - 3.14159 / 2
-        rx = center_x + radius * __import__("math").cos(angle)
-        ry = center_y + radius * __import__("math").sin(angle)
-
-        # Draw connecting line (H-bond = dashed green, hydrophobic = spoked)
-        is_hbond = label in hbond_residues
-        if is_hbond:
-            lines.append(_set_color("OLIVE_GREEN"))
-            lines.append(
-                f"[4 3] 0 setdash newpath {center_x} {center_y} moveto {rx} {ry} lineto stroke"
-            )
-            lines.append("[] 0 setdash")  # solid
+        if is_hb:
+            r, g, b = C["HB"]
+            ps(f"{r:.3f} {g:.3f} {b:.3f} setrgbcolor")
+            ps("[5 3] 0 setdash 1.5 setlinewidth")
+            ps(f"newpath {CX:.1f} {CY:.1f} moveto {rx:.1f} {ry:.1f} lineto stroke")
+            ps("[] 0 setdash")
+            if info.get("dist"):
+                mx, my = (CX + rx) / 2, (CY + ry) / 2
+                ps("/Helvetica findfont 7 scalefont setfont")
+                ps(f"newpath {mx:.1f} {my:.1f} moveto ({info['dist']}) show")
         else:
-            lines.append(_set_color("BRICK_RED"))
-            lines.append(f"newpath {center_x} {center_y} moveto {rx} {ry} lineto stroke")
+            r, g, b = C["HY"]
+            ps(f"{r:.3f} {g:.3f} {b:.3f} setrgbcolor")
+            ps("[3 3] 0 setdash 1 setlinewidth")
+            ps(f"newpath {CX:.1f} {CY:.1f} moveto {rx:.1f} {ry:.1f} lineto stroke")
+            ps("[] 0 setdash")
 
         # Residue label
-        text = f"{res_name}{res_num}"
-        lines.append(_set_color("BLUE" if is_hbond else "BRICK_RED"))
-        lines.append(f"newpath {rx} {ry} moveto ({text}) show")
-
-    # Draw H-bond lengths
-    lines.append(_set_color("OLIVE_GREEN"))
-    for hb in hbonds[:5]:  # limit to first 5 labels
-        dist = hb.get("distance", "")
-        if dist:
-            lines.append(f"newpath {center_x + 10} {center_y - 10} moveto ({dist}) show")
+        txt = f"{info['res']}{info['num']}"
+        if is_hb:
+            r, g, b = C["LB"]
+        else:
+            r, g, b = C["LR"]
+        ps(f"{r:.3f} {g:.3f} {b:.3f} setrgbcolor")
+        ps("/Helvetica findfont 10 scalefont setfont")
+        ps(f"newpath {rx:.1f} {ry:.1f} moveto")
+        ps(f"({txt}) dup stringwidth pop 2 div neg 0 rmoveto show")
+        ps(f"0 setgray newpath {rx:.1f} {ry:.1f} 3 0 360 arc closepath fill")
 
     # Legend
-    lyrics_y = 40
-    lines.append(_set_color("BLACK"))
-    lines.append("/Helvetica findfont 8 scalefont setfont")
-    lines.append(f"newpath 10 {lyrics_y} moveto (Key:) show")
-    lines.append(_set_color("OLIVE_GREEN"))
-    lines.append(f"newpath 10 {lyrics_y - 12} moveto (--- Hydrogen bond) show")
-    lines.append(_set_color("BRICK_RED"))
-    lines.append(f"newpath 10 {lyrics_y - 24} moveto (--- Hydrophobic contact) show")
-    lines.append(_set_color("BLACK"))
-    lines.append(f"newpath 10 {lyrics_y - 36} moveto (LigPlot+ v4.0 compatible -- autodock) show")
+    ps("/Helvetica findfont 9 scalefont setfont")
+    ps("0 setgray newpath 10 25 moveto (Key:) show")
+    r, g, b = C["HB"]
+    ps(f"{r:.3f} {g:.3f} {b:.3f} setrgbcolor")
+    ps("newpath 10 12 moveto (--- Hydrogen bond) show")
+    r, g, b = C["HY"]
+    ps(f"{r:.3f} {g:.3f} {b:.3f} setrgbcolor")
+    ps("newpath 10 0 moveto (--- Hydrophobic) show")
 
-    # Footer
-    lines.append("showpage")
-
-    ps_content = "\n".join(lines)
-
-    # Write PostScript
+    ps("showpage")
+    ensure_dir(os.path.dirname(output_ps) or ".")
     with open(output_ps, "w") as f:
-        f.write(ps_content)
+        f.write("\n".join(L))
     logger.info(f"LigPlot+ PostScript: {output_ps}")
 
-    # Optional PNG conversion (requires Ghostscript)
+    # PNG via Ghostscript
     if output_png:
-        try:
-            import subprocess as _sp
+        import subprocess as _sp
 
-            ensure_dir(os.path.dirname(output_png) or ".")
-            result = _sp.run(
-                [
-                    "gs",
-                    "-dSAFER",
-                    "-dBATCH",
-                    "-dNOPAUSE",
-                    "-sDEVICE=png16m",
-                    "-r300",
-                    f"-sOutputFile={output_png}",
-                    output_ps,
-                ],
-                capture_output=True,
-                text=True,
-                timeout=30,
-            )
-            if result.returncode == 0:
-                logger.info(f"LigPlot+ PNG (GS): {output_png}")
-            else:
-                logger.debug(f"Ghostscript PS→PNG failed ({result.stderr[:100]})")
-        except (OSError, _sp.SubprocessError) as exc:
-            logger.debug(f"Ghostscript not available ({exc})")
-
+        ensure_dir(os.path.dirname(output_png) or ".")
+        r = _sp.run(
+            [
+                "gs",
+                "-dSAFER",
+                "-dBATCH",
+                "-dNOPAUSE",
+                "-dEPSCrop",
+                "-sDEVICE=png16m",
+                "-r300",
+                f"-sOutputFile={output_png}",
+                output_ps,
+            ],
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+        if r.returncode == 0:
+            logger.info(f"LigPlot+ PNG: {output_png}")
+        else:
+            logger.warning(f"GS->PNG failed: {r.stderr[:200]}")
     return output_ps
 
 
