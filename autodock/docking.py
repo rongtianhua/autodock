@@ -720,6 +720,8 @@ def dock_ligand_multi_conformer(
     timeout: int = VINA_DEFAULT_TIMEOUT,
     output_dir: str | None = None,
     compound_name: str | None = None,
+    scoring_function: str = "vina",
+    min_rmsd: float = 1.0,
     skip_consensus: bool = False,
     max_workers: int = -1,
     auto_exhaustiveness: bool = True,
@@ -768,8 +770,8 @@ def dock_ligand_multi_conformer(
             base_seed + i if seed is not None else None,
             timeout,
             auto_exhaustiveness,
-            "vina",  # default scoring_function for conformer docking
-            1.0,  # default min_rmsd for conformer docking
+            scoring_function,
+            min_rmsd,
         )
         for i, conf_path in enumerate(conformer_pdbqts)
     ]
@@ -817,8 +819,8 @@ def dock_ligand_multi_conformer(
                 item[7],
                 item[8],
                 auto_exhaustiveness=item[9] if len(item) > 9 else True,
-                scoring_function=item[10] if len(item) > 10 else "vina",
-                min_rmsd=item[11] if len(item) > 11 else 1.0,
+                scoring_function=item[10] if len(item) > 10 else scoring_function,
+                min_rmsd=item[11] if len(item) > 11 else min_rmsd,
             )
             all_poses_pool.extend(pool)
             n_success += ok
