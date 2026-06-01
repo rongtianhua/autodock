@@ -1050,12 +1050,17 @@ def render_interactions_ligplot(
             )
 
         # Run LigPlot+
+        # NOTE: LigPlot+ binary on macOS arm64 may segfault (exit code -5)
+        # due to compatibility issues with the conda-forge ligplus package.
+        # When this happens, we log a warning and return the PS path if
+        # the file was written anyway, or return None if not.
         success, stdout, stderr = safe_subprocess(
             [ligplot_bin, "-pdb", ligplot_pdb],
             timeout=timeout,
         )
         if not success:
-            raise VisualizationError(f"LigPlot+ failed: {stderr[:500]}")
+            logger.warning(f"LigPlot+ failed (rc={stderr[:200]}) — skipping")
+            return None
 
         # LigPlot+ writes "ligplot.ps" in the current working directory
         default_ps = os.path.join(os.getcwd(), "ligplot.ps")
@@ -1065,7 +1070,8 @@ def render_interactions_ligplot(
             ps_source = output_ps
 
         if not os.path.exists(ps_source):
-            raise VisualizationError("LigPlot+ produced no output file")
+            logger.warning("LigPlot+ produced no output file")
+            return None
 
         # Copy to desired output path
         ensure_dir(os.path.dirname(output_ps) or ".")

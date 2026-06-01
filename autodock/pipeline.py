@@ -12,7 +12,7 @@ import json
 import os
 from typing import Any
 
-from autodock.core import DockingResult, logger
+from autodock.core import DockingResult, VisualizationError, logger
 from autodock.utils import ensure_dir
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -222,7 +222,7 @@ def post_process_docking(
             fig_paths.append(png_2d_lp)
             outputs["fig_2d_ligplot_ps"] = ps_2d
             outputs["fig_2d_ligplot_png"] = png_2d_lp
-        except (RuntimeError, OSError, ValueError, TypeError, ImportError) as exc:
+        except (RuntimeError, OSError, ValueError, TypeError, ImportError, VisualizationError) as exc:
             logger.warning(f"2D LigPlot+ rendering skipped: {exc}")
 
         # Composite figure
