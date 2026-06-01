@@ -1363,9 +1363,18 @@ def dock_ensemble(
         [r.consensus_affinity for r in valid_repeats if r.consensus_affinity is not None]
     )
 
-    energy_mean = float(np.mean(affinities))
-    energy_std = float(np.std(affinities, ddof=1))
-    energy_cv = abs(energy_std / energy_mean) if energy_mean != 0 else 0.0
+    # NaN/inf guard: a single NaN poisons all statistics
+    affinities = affinities[np.isfinite(affinities)]
+    if consensus_affinities.size > 0:
+        consensus_affinities = consensus_affinities[np.isfinite(consensus_affinities)]
+
+    if affinities.size == 0:
+        logger.warning("Ensemble summary: no finite affinity values — all repeats failed")
+        energy_mean = energy_std = energy_cv = None
+    else:
+        energy_mean = float(np.mean(affinities))
+        energy_std = float(np.std(affinities, ddof=1))
+        energy_cv = abs(energy_std / energy_mean) if energy_mean != 0 else 0.0
 
     # ── Pose stability: RMSD between best poses of each repeat ──────
     best_pose_paths = []

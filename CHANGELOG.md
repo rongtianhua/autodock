@@ -23,6 +23,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   improving Meeko Polymer parse reliability.  Runs only when
   `fix_protonation=True` and `obabel` is available.
 - `tmp_pdb2pqr` tracked in temp-file cleanup list for leak safety.
+- NaN/inf guard in ensemble statistics (`dock_ligand()` repeat summary): now
+  filters with `np.isfinite` before computing mean/std/CV.
+- NaN/inf guard in Kabsch RMSD (`validation.py`): raises `ValueError` instead
+  of silently propagating NaN.
+- File corruption detection in `validate_pdbqt_file()`: checks minimum file
+  size (50 B) and missing `END`/`ENDMDL` records with warning.
+- `_pdb2pqr_protonate()` helper in `minimization.py` for future
+  protonation-consistent minimisation.
 - Multi-pose Vinardo consensus scoring in `dock_ligand()`: all 20 poses
   are re-scored with Vinardo; if Vinardo ranks a pose different from
   Vina's #1, a scoring-bias warning is logged with the specific

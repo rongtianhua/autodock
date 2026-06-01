@@ -314,6 +314,11 @@ def compute_rmsd(
 
 def _kabsch_rmsd(P: np.ndarray, Q: np.ndarray) -> float:
     """Kabsch algorithm for optimal RMSD between two Nx3 point sets."""
+    # NaN/inf guard: validate inputs before computation
+    if not np.all(np.isfinite(P)) or not np.all(np.isfinite(Q)):
+        raise ValueError("Input coordinates contain NaN or inf values")
+    if P.shape != Q.shape or P.shape[0] < 2:
+        raise ValueError(f"Insufficient atoms for Kabsch RMSD: {P.shape}")
     P_mean = P.mean(axis=0)
     Q_mean = Q.mean(axis=0)
     Pc = P - P_mean

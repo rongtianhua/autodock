@@ -68,6 +68,34 @@ except ImportError:
 # ── Public API ────────────────────────────────────────────────────────────
 
 
+def _pdb2pqr_protonate(pdb_path: str, output_pdb: str, ph: float = 7.4) -> bool:
+    """Run PDB2PQR to protonate a PDB file with PROPKA-corrected states."""
+    from autodock.core import find_conda_tool, safe_subprocess
+
+    pdb2pqr_bin = find_conda_tool("pdb2pqr")
+    if not pdb2pqr_bin:
+        return False
+    try:
+        success, _, stderr = safe_subprocess(
+            [
+                pdb2pqr_bin,
+                "--ff=AMBER",
+                f"--with-ph={ph}",
+                "--pdb-output",
+                output_pdb,
+                "--titration-state-method=propka",
+                "--noopt",
+                "--keep-chain",
+                pdb_path,
+                os.devnull,
+            ],
+            timeout=300,
+        )
+        return success and os.path.getsize(output_pdb) > 100
+    except (OSError, ValueError, RuntimeError, TypeError):
+        return False
+
+
 def minimize_docked_pose(
     receptor_pdb: str,
     ligand_pdbqt: str,

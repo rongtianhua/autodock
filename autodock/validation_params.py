@@ -8,6 +8,7 @@ low-level errors and guarantees publication-grade reproducibility.
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 from typing import Any
 
@@ -21,6 +22,7 @@ from autodock.core import (
     ConfigurationError,
     DockingCalculationError,
     PreparationError,
+    logger,
 )
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -39,13 +41,29 @@ def validate_file_exists(path: str | Path, label: str = "file") -> str:
 
 
 def validate_pdbqt_file(path: str | Path, label: str = "PDBQT") -> str:
-    """Validate file exists and contains at least one ATOM/HETATM record."""
+    """Validate file exists and contains at least one ATOM/HETATM record.
+
+    Also checks for truncation (missing END/ENDMDL) and minimum file size
+    (a single water molecule ≈ 250 B; anything smaller is almost certainly
+    corrupted or empty).
+    """
     path = validate_file_exists(path, label)
+    file_size = os.path.getsize(path)
+    if file_size < 50:
+        raise PreparationError(f"{label} file too small ({file_size} B) — likely corrupted: {path}")
+    has_coord = False
+    has_terminus = False
     with open(path) as fh:
         for line in fh:
             if line.startswith("ATOM") or line.startswith("HETATM"):
-                return path
-    raise PreparationError(f"{label} file contains no ATOM/HETATM records: {path}")
+                has_coord = True
+            if line.strip().startswith(("END", "ENDMDL")):
+                has_terminus = True
+    if not has_coord:
+        raise PreparationError(f"{label} file contains no ATOM/HETATM records: {path}")
+    if not has_terminus:
+        logger.warning(f"{label} file missing END/ENDMDL record — may be truncated: {path}")
+    return path
 
 
 def validate_smiles(smiles: str) -> str:
