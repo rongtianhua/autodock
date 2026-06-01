@@ -472,7 +472,6 @@ def dock_ligand(
                 n_conformers=10,
                 name=name[:3] if name else "LIG",
                 molscrub_states=True,
-                enumerate_stereo=True,
             )
             logger.info(
                 f"Multi-conformer: {len(conf_pdbqts)} conformers generated, docking each one..."
