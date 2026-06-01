@@ -735,7 +735,11 @@ def dock_ligand_multi_conformer(
     Args:
         conformer_pdbqts: List of prepared ligand conformer PDBQT files.
         skip_consensus: If True, skip the extra Vinardo consensus scoring step.
-        max_workers: Parallel workers for conformer docking (-1 = all CPUs).
+        max_workers: Parallel workers for conformer docking (-1 = auto: CPU
+            count capped by available memory, ~1.5 GB/worker).  When
+            ``psutil`` is installed, the estimate is accurate; without it,
+            falls back to CPU count only (may OOM on memory-constrained
+            machines).
         ... (other args same as dock_ligand)
 
     Returns:
@@ -750,10 +754,45 @@ def dock_ligand_multi_conformer(
     # Parallelize conformer docking using direct subprocesses.
     # Each conformer runs in its own top-level subprocess; _run_vina_dock
     # detects it's already in a child and runs Vina directly (no nesting).
+    #
+    # Memory-aware worker count: each spawn'd Vina process uses ~1.5 GB RAM
+    # (Vina grid map + Python imports + RDKit/OpenMM libraries).  On machines
+    # with <8 GB total RAM, force single-worker to avoid OOM kills.
+    _ESTIMATED_GB_PER_WORKER = 1.5
     if max_workers == -1:
         max_workers = min(multiprocessing.cpu_count(), len(conformer_pdbqts))
+        try:
+            import psutil
+
+            avail_gb = psutil.virtual_memory().available / 1e9
+            mem_workers = max(1, int(avail_gb / _ESTIMATED_GB_PER_WORKER))
+            if mem_workers < max_workers:
+                logger.info(
+                    f"Memory-aware worker limit: {max_workers} → {mem_workers} "
+                    f"({avail_gb:.1f} GB available, ~{_ESTIMATED_GB_PER_WORKER:.0f} GB/worker)"
+                )
+                max_workers = mem_workers
+        except ImportError:
+            logger.debug("psutil not available — skipping memory-aware worker limit")
     else:
         max_workers = min(max_workers, len(conformer_pdbqts))
+        try:
+            import psutil
+
+            avail_gb = psutil.virtual_memory().available / 1e9
+            mem_limit = max(1, int(avail_gb / _ESTIMATED_GB_PER_WORKER))
+            if max_workers > mem_limit:
+                logger.warning(
+                    f"Requested {max_workers} workers but only {avail_gb:.1f} GB available "
+                    f"(~{_ESTIMATED_GB_PER_WORKER:.0f} GB/worker). "
+                    f"Clamping to {mem_limit} to avoid OOM."
+                )
+                max_workers = mem_limit
+        except ImportError:
+            pass
+
+    if max_workers < 1:
+        max_workers = 1
 
     # Derive a unique seed per conformer so that parallel searches are
     # statistically independent while remaining fully reproducible.

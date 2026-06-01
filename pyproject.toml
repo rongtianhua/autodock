@@ -47,6 +47,7 @@ docking = [
     "vina>=1.2.0",
     "rdkit>=2023.03",
     "meeko>=0.6.0",
+    "psutil>=5.9",  # memory-aware worker scaling for multi-conformer docking
 ]
 analysis = [
     "plip>=2.3.0",
