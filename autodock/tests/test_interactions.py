@@ -340,90 +340,70 @@ class TestDetectInteractionsPlip:
 
 
 class TestDetectInteractionsProlif:
-    @patch.dict(
-        sys.modules,
-        {
-            "MDAnalysis": MagicMock(),
-            "prolif": MagicMock(),
-        },
-    )
-    @patch("autodock.interactions._HAVE_MDANALYSIS", True)
-    @patch("autodock.interactions._HAVE_PROLIF", True)
-    def test_prolif_success(self, tmp_path):
-        mock_universe = sys.modules["MDAnalysis"].Universe
-        mock_fp_cls = sys.modules["prolif"].Fingerprint
+    def test_prolif_integration(self):
+        """End-to-end test with real PDB + PDBQT data."""
+        rec_pdb = "mettl8_docking/METTL8_af_iso2.pdb"
+        lig_pdbqt = "mettl8_docking/idebenone.pdbqt"
 
-        rec = tmp_path / "rec.pdb"
-        rec.write_text("ATOM      1  N   SER A   1      0.000   0.000   0.000\nEND\n")
+        result = intx.detect_interactions_prolif(rec_pdb, lig_pdbqt)
+        assert isinstance(result, list)
+        assert len(result) > 0
+
+        # Verify output schema matches PLIP format
+        for r in result:
+            assert "type" in r
+            assert "color" in r
+            assert "resn" in r
+            assert "resi" in r
+            assert "chain" in r
+            assert "distance" in r
+            assert "description" in r
+            assert "ligand_atoms" in r
+            for atom in r["ligand_atoms"]:
+                assert "coords" in atom
+                assert len(atom["coords"]) == 3
+
+    def test_parse_smiles_from_pdbqt(self, tmp_path):
+        lig = tmp_path / "lig.pdbqt"
+        lig.write_text("REMARK SMILES CCO\nATOM      1  C   LIG A   1      1.000   2.000   3.000\n")
+        smiles = intx._parse_smiles_from_pdbqt(str(lig))
+        assert smiles == "CCO"
+
+    def test_parse_smiles_missing_returns_none(self, tmp_path):
         lig = tmp_path / "lig.pdbqt"
         lig.write_text("ATOM      1  C   LIG A   1      1.000   2.000   3.000\n")
+        smiles = intx._parse_smiles_from_pdbqt(str(lig))
+        assert smiles is None
 
-        mock_u = MagicMock()
-        mock_prot_atoms = MagicMock()
-        mock_u.select_atoms.return_value = mock_prot_atoms
+    def test_build_ligand_mol_fallback_no_smiles(self, tmp_path):
+        """PDBQT without SMILES should fall back to direct PDBQT read."""
+        lig = tmp_path / "lig.pdbqt"
+        lig.write_text(
+            "ATOM      1  C   UNL     1       0.000   0.000   0.000  0.00  0.00    +0.000 C \n"
+            "ATOM      2  O   UNL     1       1.200   0.000   0.000  0.00  0.00    +0.000 OA\n"
+        )
+        mol = intx._build_ligand_mol_for_prolif(str(lig))
+        assert mol.GetNumAtoms() >= 2
 
-        mock_lig_u = MagicMock()
-        mock_lig_atoms = MagicMock()
-        mock_lig_u.atoms = mock_lig_atoms
-
-        def universe_side_effect(path, *args, **kwargs):
-            if str(path) == str(rec):
-                return mock_u
-            return mock_lig_u
-
-        mock_universe.side_effect = universe_side_effect
-
-        mock_fp = MagicMock()
-        mock_fp_cls.return_value = mock_fp
-
-        df = _FakeDataFrame({("HBond", "LIG", "SER:1:A"): [1, 0]})
-        mock_fp.to_dataframe.return_value = df
-
-        result = intx.detect_interactions_prolif(str(rec), str(lig))
-        assert len(result) == 1
-        assert result[0]["type"] == "Hbond"
-        assert result[0]["resn"] == "SER"
-
-    @patch("autodock.interactions._HAVE_MDANALYSIS", False)
+    @patch("autodock.interactions._HAVE_RDKIT", False)
     @patch("autodock.interactions._HAVE_PROLIF", True)
-    def test_prolif_missing_mda_raises(self):
-        with pytest.raises(VisualizationError, match="ProLIF requires MDAnalysis"):
+    def test_prolif_missing_rdkit_raises(self):
+        with pytest.raises(VisualizationError, match="ProLIF requires rdkit"):
             intx.detect_interactions_prolif("rec.pdb", "lig.pdbqt")
 
-    @patch("autodock.interactions._HAVE_MDANALYSIS", True)
+    @patch("autodock.interactions._HAVE_RDKIT", True)
     @patch("autodock.interactions._HAVE_PROLIF", False)
     def test_prolif_missing_prolif_raises(self):
-        with pytest.raises(VisualizationError, match="ProLIF requires MDAnalysis"):
+        with pytest.raises(VisualizationError, match="ProLIF requires rdkit"):
             intx.detect_interactions_prolif("rec.pdb", "lig.pdbqt")
 
-    @patch.dict(
-        sys.modules,
-        {
-            "MDAnalysis": MagicMock(),
-            "prolif": MagicMock(),
-        },
-    )
-    @patch("autodock.interactions._HAVE_MDANALYSIS", True)
-    @patch("autodock.interactions._HAVE_PROLIF", True)
-    def test_prolif_empty_dataframe_returns_empty(self, tmp_path):
-        mock_universe = sys.modules["MDAnalysis"].Universe
-        mock_fp_cls = sys.modules["prolif"].Fingerprint
-
-        rec = tmp_path / "rec.pdb"
-        rec.write_text("ATOM      1  N   SER A   1      0.000   0.000   0.000\nEND\n")
+    def test_prolif_invalid_receptor_raises(self, tmp_path):
+        rec = tmp_path / "empty.pdb"
+        rec.write_text("")
         lig = tmp_path / "lig.pdbqt"
         lig.write_text("ATOM      1  C   LIG A   1      1.000   2.000   3.000\n")
-
-        mock_u = MagicMock()
-        mock_u.select_atoms.return_value = MagicMock()
-        mock_universe.return_value = mock_u
-
-        mock_fp = MagicMock()
-        mock_fp_cls.return_value = mock_fp
-        mock_fp.to_dataframe.return_value = _FakeDataFrame({})
-
-        result = intx.detect_interactions_prolif(str(rec), str(lig))
-        assert result == []
+        with pytest.raises(VisualizationError):
+            intx.detect_interactions_prolif(str(rec), str(lig))
 
 
 # ── Unified detect_interactions ──────────────────────────────────────────────

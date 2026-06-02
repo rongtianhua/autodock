@@ -138,7 +138,6 @@ def run_docking_workflow(
     # ── Figure rendering ─────────────────────────────────────────────────
     do_3d_figures: bool = True,
     do_2d_figures: bool = True,
-    do_ligplot: bool = True,
     do_report: bool = True,
 ) -> DockingWorkflowResult:
     """
@@ -183,7 +182,6 @@ def run_docking_workflow(
         log_level: Logging level (``"INFO"``, ``"DEBUG"``, ``"WARNING"``).
         do_3d_figures: Render PyMOL 3D figures (complex/pocket/interaction).
         do_2d_figures: Render RDKit Cairo 2D interaction diagram.
-        do_ligplot: Render LigPlot+ style 2D diagram (PS + optional PNG).
         do_report: Generate PDF + CSV reports.
 
     Returns:

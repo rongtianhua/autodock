@@ -215,30 +215,6 @@ def post_process_docking(
         except (RuntimeError, OSError, ValueError, TypeError, ImportError) as exc:
             logger.warning(f"2D RDKit rendering skipped: {exc}")
 
-        # 2D interaction diagram — LigPlot+ route (secondary, cross-validation)
-        try:
-            from autodock.rendering import render_interactions_ligplot
-
-            ps_2d = os.path.join(fig_dir, "2d_ligplot.ps")
-            png_2d_lp = os.path.join(fig_dir, "2d_ligplot.png")
-            render_interactions_ligplot(
-                receptor_pdb,
-                result.best_pose_pdbqt,
-                output_ps=ps_2d,
-                output_png=png_2d_lp,
-            )
-            fig_paths.append(png_2d_lp)
-            outputs["fig_2d_ligplot_ps"] = ps_2d
-            outputs["fig_2d_ligplot_png"] = png_2d_lp
-        except (
-            RuntimeError,
-            OSError,
-            ValueError,
-            TypeError,
-            ImportError,
-        ) as exc:
-            logger.warning(f"2D LigPlot+ rendering skipped: {exc}")
-
         # Composite figure
         if len(fig_paths) >= 2:
             try:

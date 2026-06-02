@@ -414,7 +414,14 @@ def _draw_rounded_label(
     x2 = x + tw + padding
     y2 = y + th + padding
 
-    # Rounded rectangle
+    # Subtle drop-shadow for depth
+    shadow_offset = 2
+    draw.rounded_rectangle(
+        [(x1 + shadow_offset, y1 + shadow_offset), (x2 + shadow_offset, y2 + shadow_offset)],
+        radius=radius,
+        fill=(200, 200, 200, 80),
+    )
+    # Main rounded rectangle
     draw.rounded_rectangle(
         [(x1, y1), (x2, y2)],
         radius=radius,
@@ -496,8 +503,8 @@ def _compute_label_positions(
 
         # Try angles with nudging for collision avoidance
         best_pos = None
-        for nudge in range(0, 31):
-            angle = sector_angle + (nudge * 0.06 if nudge % 2 == 1 else -nudge * 0.06)
+        for nudge in range(0, 51):
+            angle = sector_angle + (nudge * 0.05 if nudge % 2 == 1 else -nudge * 0.05)
             # Position relative to ligand centre
             lx = int(cx + base_dist * math.cos(angle)) - est_tw // 2
             ly = int(cy + base_dist * math.sin(angle)) - est_th // 2
@@ -670,8 +677,9 @@ def render_interactions_2d(
     canvas_w = int(width * dpi / 100)
     canvas_h = int(height * dpi / 100)
     drawer = Draw.MolDraw2DCairo(canvas_w, canvas_h)
-    drawer.drawOptions().highlightRadius = 0.25
+    drawer.drawOptions().highlightRadius = 0.30
     drawer.drawOptions().clearBackground = True
+    drawer.drawOptions().bondLineWidth = 3  # Thicker bonds for publication quality
 
     if highlight_atoms:
         drawer.DrawMolecule(
@@ -921,6 +929,17 @@ def render_interactions_2d(
         # Draw rounded label box (LigPlot+ style: prominent border)
         _draw_rounded_label(draw, lx, ly, label, font, border_color=rgb_int, radius=10, padding=5)
 
+    # ── Title (top-center) ────────────────────────────────────────────────────
+    title_text = "Ligand Interaction Diagram"
+    title_bbox = draw.textbbox((0, 0), title_text, font=font_legend)
+    title_w = title_bbox[2] - title_bbox[0]
+    title_h = title_bbox[3] - title_bbox[1]
+    title_x = (canvas_w - title_w) // 2
+    title_y = 10
+    # Subtle shadow for readability over any background
+    draw.text((title_x + 1, title_y + 1), title_text, fill=(180, 180, 180), font=font_legend)
+    draw.text((title_x, title_y), title_text, fill=(0, 0, 0), font=font_legend)
+
     # ── Legend box (compact, top-right) ───────────────────────────────────────
     type_counts: dict[str, int] = {}
     for g in group_list:
@@ -992,250 +1011,6 @@ def render_interactions_2d(
 # ─────────────────────────────────────────────────────────────────────────────
 # LigPlot+ 2D interaction diagram (external binary)
 # ─────────────────────────────────────────────────────────────────────────────
-
-
-def _find_ligplot() -> tuple[str, str] | None:
-    """Locate the LigPlot+ binary and its resource directory.
-
-    Returns (ligplot_exe_path, ligplus_dir) or None if not found.
-    """
-    # 1. Check CONDA_PREFIX
-    conda_prefix = os.environ.get("CONDA_PREFIX")
-    if conda_prefix:
-        exe = os.path.join(conda_prefix, "bin", "ligplot")
-        ligplus_dir = os.path.join(conda_prefix, "opt", "ligplus")
-        if os.path.isfile(exe) and os.path.isfile(os.path.join(ligplus_dir, "ligplot.prm")):
-            return exe, ligplus_dir
-
-    # 2. Try PATH
-    for path_dir in os.environ.get("PATH", "").split(os.pathsep):
-        exe = os.path.join(path_dir, "ligplot")
-        if os.path.isfile(exe):
-            # Follow symlinks to find ligplus dir
-            real_exe = os.path.realpath(exe)
-            # Typical layout: .../ligplus/lib/exe_mac64/ligplot
-            ligplus_dir = os.path.dirname(os.path.dirname(real_exe))
-            if os.path.isfile(os.path.join(ligplus_dir, "ligplot.prm")):
-                return exe, ligplus_dir
-            # Alternative: exe is directly in ligplus dir
-            ligplus_dir = os.path.dirname(real_exe)
-            if os.path.isfile(os.path.join(ligplus_dir, "ligplot.prm")):
-                return exe, ligplus_dir
-
-    # 3. Fallback to Homebrew miniforge common path
-    fallback = "/opt/homebrew/Caskroom/miniforge/base/envs/autodock/opt/ligplus"
-    if os.path.isfile(os.path.join(fallback, "lib", "exe_mac64", "ligplot")):
-        exe = os.path.join(fallback, "lib", "exe_mac64", "ligplot")
-        return exe, fallback
-
-    return None
-
-
-def _pdbqt_to_pdb(ligand_pdbqt: str, output_pdb: str, chain: str = "Z") -> None:
-    """Convert a PDBQT ligand file to standard PDB format for LigPlot+.
-
-    Strips charges / atom-types, converts ATOM -> HETATM, assigns chain.
-    """
-    with open(ligand_pdbqt) as fh:
-        lines = fh.readlines()
-
-    out_lines: list[str] = []
-    for line in lines:
-        if line.startswith("ATOM") or line.startswith("HETATM"):
-            # Standard PDB is 80 columns; PDBQT appends charge + atom type.
-            # Truncate to 78 chars and overwrite chain (col 22).
-            new_line = line[:21] + chain + line[22:78] + "\n"
-            if new_line.startswith("ATOM"):
-                new_line = "HETATM" + new_line[6:]
-            out_lines.append(new_line)
-        elif line.startswith("CONECT"):
-            out_lines.append(line)
-
-    if out_lines and not out_lines[-1].endswith("END\n"):
-        out_lines.append("END\n")
-
-    with open(output_pdb, "w") as fh:
-        fh.writelines(out_lines)
-
-
-def _merge_complex_pdb(receptor_pdb: str, ligand_pdb: str, output_pdb: str) -> None:
-    """Merge receptor PDB and ligand PDB into a single complex PDB."""
-    with open(receptor_pdb) as fh:
-        rec_lines = fh.readlines()
-    with open(ligand_pdb) as fh:
-        lig_lines = fh.readlines()
-
-    # Remove END/ENDMDL from receptor
-    filtered_rec = [ln for ln in rec_lines if not ln.strip().startswith("END")]
-
-    with open(output_pdb, "w") as fh:
-        fh.writelines(filtered_rec)
-        fh.writelines(lig_lines)
-
-
-def _extract_ligand_info(ligand_pdb: str) -> tuple[str, int, int, str]:
-    """Extract ligand residue name, number range, and chain from a ligand PDB.
-
-    Returns (resname, first_resnum, last_resnum, chain).
-    Raises VisualizationError if no HETATM records are found.
-    """
-    residues: list[tuple[str, int, str]] = []
-    with open(ligand_pdb) as fh:
-        for line in fh:
-            if not (line.startswith("ATOM") or line.startswith("HETATM")):
-                continue
-            if len(line) < 26:
-                continue
-            resname = line[17:20].strip()
-            chain = line[21] if len(line) > 21 else ""
-            try:
-                resnum = int(line[22:26].strip())
-            except ValueError:
-                continue
-            key = (resname, resnum, chain)
-            if key not in residues:
-                residues.append(key)
-
-    if not residues:
-        raise VisualizationError("No ATOM/HETATM records found in ligand PDB")
-
-    # Sort by chain then resnum
-    residues.sort(key=lambda x: (x[2], x[1]))
-    first = residues[0]
-    last = residues[-1]
-    return first[0], first[1], last[1], first[2]
-
-
-def _ligplot_res_arg(resname: str) -> str:
-    """Format a residue name for the LigPlot+ CLI.
-
-    If the name starts with a digit, prefix with -n (e.g. 02J -> -n02J).
-    """
-    if resname and resname[0].isdigit():
-        return f"-n{resname}"
-    return resname
-
-
-def render_interactions_ligplot(
-    receptor_pdb: str,
-    ligand_pdbqt: str,
-    output_ps: str = "ligplot.ps",
-    output_png: str | None = None,
-    timeout: int = 60,
-    title: str | None = None,
-) -> str | None:
-    """Generate a 2D interaction diagram via the external LigPlot+ binary.
-
-    Wraps the official LigPlot+ (v5.5) command-line tool from the conda
-    ``autodock`` environment.  The function:
-      1. Converts the PDBQT ligand to a standard PDB HETATM block.
-      2. Merges it with the receptor PDB.
-      3. Invokes ``ligplot`` with the correct residue range and chain.
-      4. Copies the generated ``ligplot.ps`` to *output_ps*.
-      5. Optionally rasterises to PNG via Ghostscript.
-
-    Returns:
-        Path to the generated PS file, or ``None`` if LigPlot+ is not
-        installed or the run fails.
-    """
-    # 1. Locate LigPlot+ binary and resource directory
-    found = _find_ligplot()
-    if found is None:
-        logger.warning("LigPlot+ binary not found — skipping")
-        return None
-    ligplot_exe, ligplus_dir = found
-
-    # 2. Prepare temporary working directory inside ligplus_dir
-    #    (ligplot writes ligplot.ps there by default)
-    work_dir = tempfile.mkdtemp(prefix="ligplot_run_", dir=ligplus_dir)
-    try:
-        complex_pdb = os.path.join(work_dir, "complex.pdb")
-        ligand_pdb = os.path.join(work_dir, "ligand.pdb")
-
-        # Convert PDBQT -> PDB and merge with receptor
-        _pdbqt_to_pdb(ligand_pdbqt, ligand_pdb, chain="Z")
-        _merge_complex_pdb(receptor_pdb, ligand_pdb, complex_pdb)
-
-        # Extract ligand residue info
-        resname, first_num, last_num, chain = _extract_ligand_info(ligand_pdb)
-
-        # Build command
-        cmd = [
-            ligplot_exe,
-            complex_pdb,
-            _ligplot_res_arg(resname),
-            str(first_num),
-            _ligplot_res_arg(resname) if first_num == last_num else _ligplot_res_arg(resname),
-            str(last_num),
-            chain,
-        ]
-        if first_num == last_num:
-            # Single-residue ligand: duplicate resname/resnum
-            cmd = [
-                ligplot_exe,
-                complex_pdb,
-                _ligplot_res_arg(resname),
-                str(first_num),
-                _ligplot_res_arg(resname),
-                str(last_num),
-                chain,
-            ]
-
-        logger.info(f"Running LigPlot+: {' '.join(cmd)}")
-        success, stdout, stderr = safe_subprocess(cmd, timeout=timeout, cwd=ligplus_dir)
-
-        combined = stdout + stderr
-        if "No ligand residues found" in combined:
-            logger.warning("LigPlot+: No ligand residues found in PDB")
-            return None
-        if "Nothing to plot" in combined:
-            logger.warning("LigPlot+: Nothing to plot")
-            return None
-        if not success:
-            # Log the output for debugging
-            logger.warning(f"LigPlot+ stdout: {stdout[:500]}")
-            logger.warning(f"LigPlot+ stderr: {stderr[:500]}")
-            return None
-
-        # Check for the expected output file
-        ligplot_ps = os.path.join(ligplus_dir, "ligplot.ps")
-        if not os.path.isfile(ligplot_ps):
-            logger.warning("LigPlot+ did not produce ligplot.ps")
-            return None
-
-        # Copy to destination
-        ensure_dir(os.path.dirname(output_ps) or ".")
-        shutil.copy2(ligplot_ps, output_ps)
-        logger.info(f"LigPlot+ PostScript: {output_ps}")
-
-        # Optional PNG conversion via Ghostscript
-        if output_png:
-            ensure_dir(os.path.dirname(output_png) or ".")
-            gs_result = subprocess.run(
-                [
-                    "gs",
-                    "-dSAFER",
-                    "-dBATCH",
-                    "-dNOPAUSE",
-                    "-dEPSCrop",
-                    "-sDEVICE=png16m",
-                    "-r300",
-                    f"-sOutputFile={output_png}",
-                    output_ps,
-                ],
-                capture_output=True,
-                text=True,
-                timeout=60,
-            )
-            if gs_result.returncode == 0:
-                logger.info(f"LigPlot+ PNG: {output_png}")
-            else:
-                logger.warning(f"GS->PNG failed: {gs_result.stderr[:200]}")
-
-        return output_ps
-    finally:
-        # Clean up temporary work directory
-        shutil.rmtree(work_dir, ignore_errors=True)
 
 
 # ─────────────────────────────────────────────────────────────────────────────

@@ -12,7 +12,7 @@ import shutil
 import tempfile
 from typing import Any
 
-from autodock.core import _HAVE_MDANALYSIS, _HAVE_PLIP, _HAVE_PROLIF, VisualizationError, logger
+from autodock.core import _HAVE_MDANALYSIS, _HAVE_PLIP, _HAVE_PROLIF, _HAVE_RDKIT, VisualizationError, logger
 from autodock.utils import _AD4_ELEMENT_MAP, safe_pdb_slice
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -228,64 +228,198 @@ def detect_interactions_plip(
 # ProLIF-based interaction detection (secondary)
 # ─────────────────────────────────────────────────────────────────────────────
 
+_PROLIF_COLOR_MAP = {
+    "Hydrophobic": "orange",
+    "HBDonor": "cyan",
+    "HBAcceptor": "cyan",
+    "PiStacking": "green",
+    "FaceToFace": "green",
+    "EdgeToFace": "green",
+    "PiCation": "purple",
+    "CationPi": "purple",
+    "Cationic": "red",
+    "Anionic": "red",
+    "VdWContact": "grey",
+    "MetalDonor": "grey",
+    "MetalAcceptor": "grey",
+    "XBDonor": "yellow",
+    "XBAcceptor": "yellow",
+    "WaterBridge": "blue",
+}
+
+_PROLIF_DISPLAY_NAME = {
+    "Hydrophobic": "Hydrophobic",
+    "HBDonor": "H-bond",
+    "HBAcceptor": "H-bond",
+    "PiStacking": "π-π",
+    "FaceToFace": "π-π",
+    "EdgeToFace": "π-π",
+    "PiCation": "π-cation",
+    "CationPi": "π-cation",
+    "Cationic": "Salt bridge",
+    "Anionic": "Salt bridge",
+    "VdWContact": "van der Waals",
+    "MetalDonor": "Metal complex",
+    "MetalAcceptor": "Metal complex",
+    "XBDonor": "Halogen bond",
+    "XBAcceptor": "Halogen bond",
+    "WaterBridge": "Water bridge",
+}
+
+
+def _parse_smiles_from_pdbqt(ligand_pdbqt: str) -> str | None:
+    """Extract REMARK SMILES from AutoDock Vina PDBQT output."""
+    with open(ligand_pdbqt) as fh:
+        for line in fh:
+            if line.startswith("REMARK SMILES ") and not line.startswith("REMARK SMILES IDX"):
+                return line.split(None, 2)[2].strip()
+    return None
+
+
+def _build_ligand_mol_for_prolif(ligand_pdbqt: str):
+    """
+    Build an RDKit molecule with explicit hydrogens and docking pose coordinates.
+
+    Strategy:
+      1. Try REMARK SMILES from PDBQT → full molecule with correct H count.
+      2. MCS-align SMILES molecule to PDBQT coordinates.
+      3. Fallback: read PDBQT directly (incomplete H, but functional).
+    """
+    from rdkit import Chem
+    from rdkit.Chem import AllChem, rdFMCS
+
+    smiles = _parse_smiles_from_pdbqt(ligand_pdbqt)
+
+    if smiles:
+        mol = Chem.MolFromSmiles(smiles)
+        if mol is None:
+            logger.warning(f"Could not parse SMILES from PDBQT: {smiles!r}")
+        else:
+            mol = Chem.AddHs(mol)
+            # Load PDBQT into RDKit for coordinate transfer
+            mol_pdbqt = Chem.MolFromPDBFile(ligand_pdbqt, sanitize=False)
+            if mol_pdbqt and mol_pdbqt.GetNumAtoms() > 0:
+                try:
+                    mcs = rdFMCS.FindMCS(
+                        [mol, mol_pdbqt],
+                        atomCompare=rdFMCS.AtomCompare.CompareAny,
+                        bondCompare=rdFMCS.BondCompare.CompareAny,
+                    )
+                    if mcs.numAtoms > 0:
+                        patt = Chem.MolFromSmarts(mcs.smartsString)
+                        match_lig = mol.GetSubstructMatch(patt)
+                        match_pdbqt = mol_pdbqt.GetSubstructMatch(patt)
+                        if len(match_lig) == len(match_pdbqt) and len(match_lig) > 0:
+                            coord_map = {}
+                            conf_pdbqt = mol_pdbqt.GetConformer()
+                            for i, j in zip(match_lig, match_pdbqt):
+                                coord_map[i] = conf_pdbqt.GetAtomPosition(j)
+                            mol.RemoveAllConformers()
+                            AllChem.EmbedMolecule(mol, coordMap=coord_map)
+                            return mol
+                except Exception as exc:
+                    logger.debug(f"MCS coordinate transfer failed: {exc}")
+            # If MCS fails, generate coordinates from scratch (geometry is lost)
+            AllChem.EmbedMolecule(mol, AllChem.ETKDGv3())
+            AllChem.MMFFOptimizeMolecule(mol)
+            logger.warning("ProLIF ligand: using SMILES-generated coordinates (not docking pose)")
+            return mol
+
+    # Fallback: read PDBQT directly
+    mol = Chem.MolFromPDBFile(ligand_pdbqt, sanitize=False)
+    if mol is None:
+        raise VisualizationError(f"Could not read ligand PDBQT: {ligand_pdbqt}")
+    mol = Chem.AddHs(mol, addCoords=True)
+    logger.warning("ProLIF ligand: using PDBQT direct read (hydrogens may be incomplete)")
+    return mol
+
 
 def detect_interactions_prolif(
     receptor_pdb: str,
     ligand_pdbqt: str,
 ) -> list[dict[str, Any]]:
     """
-    Detect interactions using ProLIF as a secondary / cross-validation source.
+    Detect interactions using ProLIF v2.1.0 as a secondary / cross-validation source.
+
+    Uses RDKit to add explicit hydrogens to both receptor and ligand, then
+    runs ProLIF's Fingerprint.generate() for static structure analysis.
 
     Args:
         receptor_pdb: Receptor PDB file.
-        ligand_pdbqt: Ligand PDBQT file.
+        ligand_pdbqt: Ligand PDBQT file (may contain REMARK SMILES).
 
     Returns:
-        List of interaction dicts.
+        List of interaction dicts compatible with PLIP format.
     """
-    if not _HAVE_MDANALYSIS or not _HAVE_PROLIF:
+    if not _HAVE_RDKIT or not _HAVE_PROLIF:
         raise VisualizationError(
-            "ProLIF requires MDAnalysis + prolif."
-            " Install: conda install mdanalysis; pip install prolif"
+            "ProLIF requires rdkit + prolif."
+            " Install: conda install rdkit; pip install prolif"
         )
 
-    import MDAnalysis as mda
+    from rdkit import Chem
     import prolif as plf
 
-    u = mda.Universe(receptor_pdb)
-    protein = u.select_atoms("protein")
+    # ── Receptor ──────────────────────────────────────────────────────────────
+    rec_mol = Chem.MolFromPDBFile(receptor_pdb, sanitize=False)
+    if rec_mol is None:
+        raise VisualizationError(f"Could not read receptor PDB: {receptor_pdb}")
+    rec_h = Chem.AddHs(rec_mol, addCoords=True)
+    prot_mol = plf.Molecule.from_rdkit(rec_h)
 
-    lig_u = mda.Universe(ligand_pdbqt)
-    ligand = lig_u.atoms
+    # ── Ligand ────────────────────────────────────────────────────────────────
+    lig_mol_rdkit = _build_ligand_mol_for_prolif(ligand_pdbqt)
+    lig_mol = plf.Molecule.from_rdkit(lig_mol_rdkit)
 
+    # ── Run ProLIF ────────────────────────────────────────────────────────────
     fp = plf.Fingerprint()
-    fp.run(u.trajectory, ligand, protein)
-    df = fp.to_dataframe()
+    ifp = fp.generate(lig_mol, prot_mol, metadata=True)
 
-    interactions = []
-    if df.empty:
+    interactions: list[dict[str, Any]] = []
+    if not ifp:
+        logger.info("ProLIF detected 0 interactions")
         return interactions
 
-    for col in df.columns:
-        interaction_type = col[0]
-        prot_res = col[2] if len(col) > 2 else str(col[1])
-        count = df[col].sum()
-        if count > 0:
-            color = "cyan"
-            interactions.append(
-                {
-                    "type": interaction_type.replace("_", " ").title(),
-                    "color": color,
-                    "resn": prot_res.split(":")[0] if ":" in str(prot_res) else str(prot_res),
-                    "resi": 0,
-                    "chain": "A",
-                    "atom": "",
-                    "distance": None,
-                    "description": f"{interaction_type}: {prot_res}",
-                }
-            )
+    ligand_conf = lig_mol_rdkit.GetConformer()
 
-    logger.info(f"ProLIF detected {len(interactions)} interaction types")
+    for (lig_resid, prot_resid), interaction_data in ifp.items():
+        for interaction_name, metadatas in interaction_data.items():
+            display_name = _PROLIF_DISPLAY_NAME.get(interaction_name, interaction_name)
+            color = _PROLIF_COLOR_MAP.get(interaction_name, "grey")
+
+            for metadata in metadatas:
+                distance = metadata.get("distance")
+                ligand_indices = metadata.get("parent_indices", {}).get("ligand", ())
+
+                ligand_atoms = []
+                for idx in ligand_indices:
+                    if 0 <= idx < lig_mol_rdkit.GetNumAtoms():
+                        pos = ligand_conf.GetAtomPosition(int(idx))
+                        ligand_atoms.append({"coords": (pos.x, pos.y, pos.z)})
+
+                resn = str(prot_resid.name) if hasattr(prot_resid, "name") else str(prot_resid).split(":")[0]
+                resi = int(prot_resid.number) if hasattr(prot_resid, "number") else 0
+                chain = str(prot_resid.chain) if prot_resid.chain else "A"
+
+                desc = f"{display_name}: {resn}{resi}.{chain}"
+                if distance is not None:
+                    desc += f" — {distance:.2f} Å"
+
+                interactions.append(
+                    {
+                        "type": display_name,
+                        "color": color,
+                        "resn": resn,
+                        "resi": resi,
+                        "chain": chain,
+                        "atom": "",
+                        "distance": round(float(distance), 2) if distance is not None else None,
+                        "description": desc,
+                        "ligand_atoms": ligand_atoms,
+                    }
+                )
+
+    logger.info(f"ProLIF detected {len(interactions)} interactions")
     return interactions
 
 
