@@ -29,12 +29,15 @@ from autodock.utils import ensure_dir
 
 _PYMOL_EXE = find_pymol()
 
-# Leipzig standard dash parameters
+# ─────────────────────────────────────────────────────────────────────────────
+# Publication-quality rendering presets
+# ─────────────────────────────────────────────────────────────────────────────
+
 DASH_PRESETS = {
     "fine": {
-        "dash_gap": 0.4,
-        "dash_radius": 0.05,
-        "dash_length": 0.3,
+        "dash_gap": 0.35,
+        "dash_radius": 0.04,
+        "dash_length": 0.25,
         "dash_as_cylinders": True,
         "dash_round_ends": True,
     },
@@ -51,6 +54,62 @@ INTERACTION_COLORS = {
     "Metal complex": "grey",
 }
 
+# Publication-grade colour schemes aligned with Nature/Science conventions
+COLOR_SCHEMES: dict[str, dict[str, Any]] = {
+    "publication_white": {
+        "bg": "white",
+        "receptor_c": "lightblue",
+        "ligand_c": "salmon",
+        "label_c": "black",
+        "pocket_surface": "lightblue",
+        "receptor_style": "cartoon",
+        "receptor_transparency": 0.0,
+    },
+    "publication_grey": {
+        "bg": "white",
+        "receptor_c": "grey80",
+        "ligand_c": "salmon",
+        "label_c": "black",
+        "pocket_surface": "bluewhite",
+        "receptor_style": "cartoon",
+        "receptor_transparency": 0.15,
+    },
+    "presentation_black": {
+        "bg": "black",
+        "receptor_c": "grey80",
+        "ligand_c": "gold",
+        "label_c": "white",
+        "pocket_surface": "bluewhite",
+        "receptor_style": "cartoon",
+        "receptor_transparency": 0.2,
+    },
+}
+
+# High-quality ray-tracing defaults (PyMOL wiki + bionerdnotes best practice)
+_RAY_QUALITY_PRESET = {
+    "antialias": 3,
+    "hash_max": 300,
+    "ray_trace_fog": 0,
+    "depth_cue": 0,
+    "orthoscopic": "on",
+    "ray_shadows": 0,
+    "ambient": 0.35,
+    "specular": 0.45,
+    "shininess": 60,
+    "direct": 0.55,
+    "reflect": 0.15,
+    "cartoon_fancy_helices": 1,
+    "cartoon_fancy_sheets": 1,
+    "cartoon_oval_length": 0.8,
+    "cartoon_oval_width": 0.2,
+    "cartoon_rect_length": 1.25,
+    "cartoon_rect_width": 0.25,
+    "cartoon_loop_radius": 0.15,
+    "cartoon_dumbbell_length": 1.25,
+    "cartoon_dumbbell_width": 0.25,
+    "cartoon_dumbbell_radius": 0.18,
+}
+
 
 def _build_pymol_script(
     receptor_pdb: str,
@@ -63,32 +122,43 @@ def _build_pymol_script(
     height: int = DEFAULT_RAY_HEIGHT,
     pocket_distance: float = 5.0,
     save_pse: str | None = None,
+    color_scheme: str = "publication_white",
 ) -> str:
-    """Build a PyMOL command script for publication-quality rendering."""
+    """Build a PyMOL command script for publication-quality rendering.
 
-    lines = []
+    Parameters
+    ----------
+    color_scheme:
+        One of ``publication_white`` (default), ``publication_grey``,
+        ``presentation_black``.
+    """
+    scheme = COLOR_SCHEMES.get(color_scheme, COLOR_SCHEMES["publication_white"])
+
+    lines: list[str] = []
     lines.append("cmd.delete('all')")
     lines.append(f'cmd.load("{receptor_pdb}", "receptor")')
     lines.append(f'cmd.load("{ligand_pdbqt}", "ligand")')
 
-    # Background
-    if scene in ("pocket", "interaction", "ligand_closeup"):
-        lines.append("cmd.bg_color('black')")
-    else:
-        lines.append("cmd.bg_color('white')")
+    # ── Background ──
+    lines.append(f"cmd.bg_color('{scheme['bg']}')")
 
-    # Protein representation
+    # ── Global quality settings ──
+    for key, val in _RAY_QUALITY_PRESET.items():
+        if isinstance(val, str):
+            lines.append(f"cmd.set('{key}', '{val}')")
+        else:
+            lines.append(f"cmd.set('{key}', {val})")
+
+    # ── Protein representation ──
     lines.append("cmd.show('cartoon', 'receptor')")
-    if scene == "complex":
-        lines.append("cmd.color('cold', 'receptor and elem C')")
-    else:
-        lines.append("cmd.color('grey80', 'receptor and elem C')")
+    lines.append(f"cmd.color('{scheme['receptor_c']}', 'receptor and elem C')")
 
-    # Transparency for pocket scenes
+    # Cartoon transparency for pocket / interaction scenes
     if scene in ("pocket", "interaction"):
-        lines.append("cmd.set('cartoon_transparency', 0.2, 'receptor')")
+        t = scheme.get("receptor_transparency", 0.15)
+        lines.append(f"cmd.set('cartoon_transparency', {t}, 'receptor')")
 
-    # Pocket surface
+    # ── Pocket surface ──
     if scene == "pocket" and center:
         cx, cy, cz = center
         lines.append(
@@ -97,23 +167,25 @@ def _build_pymol_script(
             f" around {pocket_distance}')"
         )
         lines.append("cmd.show('surface', 'pocket_surf')")
-        lines.append("cmd.set('transparency', 0.25, 'pocket_surf')")
-        lines.append("cmd.color('bluewhite', 'pocket_surf and elem C')")
-        lines.append("cmd.set('surface_quality', 1)")
+        lines.append("cmd.set('transparency', 0.30, 'pocket_surf')")
+        lines.append(f"cmd.color('{scheme['pocket_surface']}', 'pocket_surf and elem C')")
+        lines.append("cmd.set('surface_quality', 2)")
 
-    # Ligand
+    # ── Ligand ──
     lines.append("cmd.show('sticks', 'ligand')")
-    lines.append("cmd.set('stick_radius', 0.2, 'ligand')")
-    lines.append("cmd.color('gold', 'ligand and elem C')")
+    lines.append("cmd.set('stick_radius', 0.18, 'ligand')")
+    lines.append(f"cmd.color('{scheme['ligand_c']}', 'ligand and elem C')")
     lines.append("cmd.color('red', 'ligand and elem O')")
     lines.append("cmd.color('blue', 'ligand and elem N')")
     lines.append("cmd.color('yellow', 'ligand and elem S')")
 
+    # Ligand close-up: ball-and-stick for better atom visibility
     if scene == "pocket":
-        lines.append("cmd.show('spheres', 'ligand and name C')")
-        lines.append("cmd.set('sphere_scale', 0.3, 'ligand')")
+        lines.append("cmd.set('stick_radius', 0.22, 'ligand')")
+        lines.append("cmd.show('spheres', 'ligand and hetero')")
+        lines.append("cmd.set('sphere_scale', 0.25, 'ligand')")
 
-    # Interaction dashed lines
+    # ── Interaction dashed lines ──
     if scene == "interaction" and interactions and center:
         dash = DASH_PRESETS["fine"]
         lines.append(f"cmd.set('dash_gap', {dash['dash_gap']})")
@@ -142,43 +214,56 @@ def _build_pymol_script(
                 f"try: cmd.set('dash_color', '{INTERACTION_COLORS[itype]}', '{pair_name}')"
             )
             lines.append("except: pass")
-            lines.append(f"try: cmd.set('dash_width', 2.5, '{pair_name}')")
+            lines.append(f"try: cmd.set('dash_width', 2.0, '{pair_name}')")
             lines.append("except: pass")
             lines.append(f"try: cmd.hide('labels', '{pair_name}')")
             lines.append("except: pass")
 
-    # Labels for interacting residues
+    # ── Labels for interacting residues ──
     if scene == "interaction" and interactions:
-        resi_list = []
-        for inter in interactions:
+        # Label each residue individually to reduce PyMOL auto-layout overlap
+        label_color = scheme.get("label_c", "black")
+        for idx, inter in enumerate(interactions):
+            resn = inter.get("resn", "")
             resi = inter.get("resi", "")
             chain = inter.get("chain", "A")
-            if resi:
-                resi_list.append(f"(receptor and resi {resi} and chain {chain} and name CA)")
-        if resi_list:
-            sel = " or ".join(resi_list)
-            lines.append(f"cmd.select('lab_sel', '{sel}')")
-            lines.append("cmd.label('lab_sel', '\"%s-%s\" % (resn, resi)')")
-            lines.append("cmd.set('label_color', 'white')")
-            lines.append("cmd.set('label_size', 20)")
+            if not resi:
+                continue
+            lab_name = f"lab_{idx}"
+            sel = f"(receptor and resn {resn} and resi {resi} and chain {chain} and name CA)"
+            lines.append("try:")
+            lines.append(f"    cmd.select('{lab_name}', '{sel}')")
+            lines.append(f"    cmd.label('{lab_name}', '\"%s-%s\" % (resn, resi)')")
+            lines.append(f"    cmd.set('label_color', '{label_color}', '{lab_name}')")
+            lines.append(f"    cmd.set('label_size', -1.2, '{lab_name}')")
+            lines.append(f"    cmd.set('label_font_id', 7, '{lab_name}')")
+            lines.append("except: pass")
 
-    # Camera: center on ligand
-    lines.append("cmd.center('ligand')")
-    if scene == "pocket" and center:
-        cx, cy, cz = center
-        lines.append(f"cmd.origin(center=[{cx}, {cy}, {cz}])")
+    # ── Camera / viewport ──
+    # Use zoom with buffer to control field of view per scene
+    if scene == "complex":
+        lines.append("cmd.zoom('(receptor or ligand)', 5)")
+    elif scene == "pocket":
+        lines.append("cmd.zoom('ligand', 8)")
+        if center:
+            cx, cy, cz = center
+            lines.append(f"cmd.origin(center=[{cx}, {cy}, {cz}])")
+    elif scene == "interaction":
+        lines.append("cmd.zoom('ligand', 6)")
+        if center:
+            cx, cy, cz = center
+            lines.append(f"cmd.origin(center=[{cx}, {cy}, {cz}])")
+    else:
+        lines.append("cmd.center('ligand')")
 
-    # Ray tracing settings
-    lines.append("cmd.set('ray_trace_mode', 1)")
-    lines.append("cmd.set('ray_shadows', 0)")
-    lines.append("cmd.set('antialias', 2)")
-    lines.append("cmd.set('ambient', 0.5)")
-    lines.append("cmd.set('specular', 0.6)")
-    lines.append("cmd.set('shininess', 55)")
+    # ── Ray trace mode: 0 = normal high-quality (no outline) ──
+    # Mode 1 adds black outlines which can look cartoonish;
+    # mode 0 with antialias=3 gives the cleanest publication look.
+    lines.append("cmd.set('ray_trace_mode', 0)")
 
-    # Render
+    # ── Render ──
     lines.append(f"cmd.ray({width}, {height})")
-    lines.append(f'cmd.png("{output_png}", dpi={DEFAULT_DPI})')
+    lines.append(f'cmd.png("{output_png}", dpi={DEFAULT_DPI}, ray=1)')
     if save_pse:
         lines.append(f'cmd.save("{save_pse}")')
     lines.append("cmd.quit()")
@@ -197,6 +282,7 @@ def render_scene_pymol(
     width: int = DEFAULT_RAY_WIDTH,
     height: int = DEFAULT_RAY_HEIGHT,
     save_pse: str | None = None,
+    color_scheme: str = "publication_white",
 ) -> str:
     """
     Render a 3D scene using PyMOL CLI.
@@ -211,6 +297,8 @@ def render_scene_pymol(
         width: Image width in pixels.
         height: Image height in pixels.
         save_pse: Optional path to save a PyMOL session (.pse) file.
+        color_scheme: Colour preset — ``publication_white`` (default),
+            ``publication_grey``, or ``presentation_black``.
 
     Returns:
         Path to output PNG.
@@ -234,6 +322,7 @@ def render_scene_pymol(
         width=width,
         height=height,
         save_pse=save_pse,
+        color_scheme=color_scheme,
     )
 
     fd, script_path = tempfile.mkstemp(suffix=".pml")
@@ -936,7 +1025,7 @@ def render_interactions_2d(
     draw.text((title_x + 1, title_y + 1), title_text, fill=(180, 180, 180), font=font_legend)
     draw.text((title_x, title_y), title_text, fill=(0, 0, 0), font=font_legend)
 
-    # ── Legend box (compact, top-right) ───────────────────────────────────────
+    # ── Legend box (bottom-right, with safe margin) ───────────────────────────
     type_counts: dict[str, int] = {}
     for g in group_list:
         t = g.get("type")
@@ -944,20 +1033,7 @@ def render_interactions_2d(
             type_counts[t] = type_counts.get(t, 0) + 1
 
     if type_counts:
-        legend_x = canvas_w - 220
-        legend_y = 20
-        legend_h = 28 + len(type_counts) * 22
-        draw.rounded_rectangle(
-            [(legend_x - 10, legend_y - 10), (legend_x + 200, legend_y + legend_h)],
-            radius=6,
-            fill=(255, 255, 255, 230),
-            outline=(120, 120, 120),
-            width=1,
-        )
-        draw.text((legend_x, legend_y), "Interactions", fill=(0, 0, 0), font=font_legend)
-
-        y_off = legend_y + 26
-        # LigPlot+ canonical display colours (matching drawn elements)
+        # Compute max text width to size the legend box dynamically
         legend_display_rgb = {
             "H-bond": (0, 170, 0),
             "Hydrophobic": (210, 30, 50),
@@ -968,24 +1044,59 @@ def render_interactions_2d(
             "Water bridge": (40, 115, 255),
             "Metal complex": (128, 128, 128),
         }
+        _text_widths: list[int] = []
+        for itype, count in sorted(type_counts.items()):
+            text = f"{itype}: {count}"
+            try:
+                tb = draw.textbbox((0, 0), text, font=font_legend)
+                _text_widths.append(int(tb[2] - tb[0]))
+            except Exception:
+                pass
+        max_text_w = max(_text_widths + [80])
+
+        legend_margin = 40  # safe margin from canvas edges
+        legend_pad_x = 14
+        legend_pad_y = 10
+        legend_row_h = 22
+        legend_header_h = 24
+        legend_w = max(120, max_text_w + legend_pad_x * 2 + 20)  # +20 for swatch
+        legend_h = legend_header_h + len(type_counts) * legend_row_h + legend_pad_y * 2
+        legend_x = canvas_w - legend_w - legend_margin
+        legend_y = canvas_h - legend_h - legend_margin
+
+        draw.rounded_rectangle(
+            [(legend_x, legend_y), (legend_x + legend_w, legend_y + legend_h)],
+            radius=6,
+            fill=(255, 255, 255, 240),
+            outline=(100, 100, 100),
+            width=1,
+        )
+        draw.text(
+            (legend_x + legend_pad_x, legend_y + legend_pad_y),
+            "Interactions",
+            fill=(0, 0, 0),
+            font=font_legend,
+        )
+
+        y_off = legend_y + legend_pad_y + legend_header_h
         for itype, count in sorted(type_counts.items()):
             rgb = legend_display_rgb.get(
                 itype,
                 color_rgb_int.get(INTERACTION_COLORS.get(itype, "grey"), (128, 128, 128)),
             )
-            # Swatch: small rounded rect
+            # Swatch
             draw.rounded_rectangle(
-                [(legend_x, y_off), (legend_x + 14, y_off + 14)],
+                [(legend_x + legend_pad_x, y_off), (legend_x + legend_pad_x + 14, y_off + 14)],
                 radius=3,
                 fill=rgb,
             )
             draw.text(
-                (legend_x + 20, y_off),
+                (legend_x + legend_pad_x + 20, y_off),
                 f"{itype}: {count}",
                 fill=(0, 0, 0),
                 font=font_legend,
             )
-            y_off += 22
+            y_off += legend_row_h
 
     ensure_dir(os.path.dirname(output_png) or ".")
     img.save(output_png, dpi=(dpi, dpi))
@@ -1021,9 +1132,15 @@ def composite_summary(
     panel_titles: list[str] | None = None,
     figure_title: str | None = None,
     dpi: int = DEFAULT_DPI,
+    max_panel_width: int = 1600,
 ) -> str:
     """
     Assemble multiple panel images into a single composite figure.
+
+    Each panel is scaled uniformly so that its width does not exceed
+    *max_panel_width*, preserving aspect ratio.  This prevents the
+    common problem where one huge panel forces all other panels into
+    oversized cells with excessive whitespace.
 
     Args:
         panel_paths: List of PNG file paths.
@@ -1032,6 +1149,7 @@ def composite_summary(
         panel_titles: Optional titles for each panel.
         figure_title: Optional overall figure title.
         dpi: Output DPI.
+        max_panel_width: Maximum width (px) for each panel after scaling.
 
     Returns:
         Path to output PNG.
@@ -1041,18 +1159,29 @@ def composite_summary(
     if not panel_paths:
         raise VisualizationError("No panels provided for composite figure")
 
-    images = [Image.open(p) for p in panel_paths if os.path.exists(p)]
-    if not images:
+    raw_images = [Image.open(p) for p in panel_paths if os.path.exists(p)]
+    if not raw_images:
         raise VisualizationError("No valid panel images found")
+
+    # ── Scale all panels to a uniform maximum width ──
+    images: list[Image.Image] = []
+    for img in raw_images:
+        if img.width > max_panel_width:
+            ratio = max_panel_width / img.width
+            new_h = int(img.height * ratio)
+            images.append(img.resize((max_panel_width, new_h), Image.Resampling.LANCZOS))
+        else:
+            images.append(img)
 
     nrows = (len(images) + ncols - 1) // ncols
     panel_w = max(img.width for img in images)
     panel_h = max(img.height for img in images)
 
+    pad = 24
     title_h = 60 if figure_title else 0
-    label_h = 40 if panel_titles else 0
-    total_w = panel_w * ncols + 20 * (ncols + 1)
-    total_h = panel_h * nrows + label_h * nrows + title_h + 20 * (nrows + 1)
+    label_h = 36 if panel_titles else 0
+    total_w = panel_w * ncols + pad * (ncols + 1)
+    total_h = panel_h * nrows + label_h * nrows + title_h + pad * (nrows + 1)
 
     composite = Image.new("RGB", (total_w, total_h), (255, 255, 255))
     draw = ImageDraw.Draw(composite)
@@ -1076,34 +1205,34 @@ def composite_summary(
         return ImageFont.load_default()
 
     title_font = _load_font(28)
-    label_font = _load_font(20)
+    label_font = _load_font(18)
 
     if figure_title:
-        draw.text((20, 20), figure_title, fill=(0, 0, 0), font=title_font)
+        draw.text((pad, pad), figure_title, fill=(0, 0, 0), font=title_font)
 
-    y_offset = title_h + 20
+    y_offset = title_h + pad
     for row in range(nrows):
-        x_offset = 20
+        x_offset = pad
         for col in range(ncols):
             idx = row * ncols + col
             if idx >= len(images):
                 break
             img = images[idx]
-            # Center the image in its cell
+            # Center the image in its uniform cell
             x_pos = x_offset + (panel_w - img.width) // 2
             y_pos = y_offset + label_h + (panel_h - img.height) // 2
             composite.paste(img, (x_pos, y_pos))
 
             if panel_titles and idx < len(panel_titles):
                 draw.text(
-                    (x_offset + 10, y_offset),
+                    (x_offset, y_offset),
                     panel_titles[idx],
-                    fill=(0, 0, 0),
+                    fill=(60, 60, 60),
                     font=label_font,
                 )
 
-            x_offset += panel_w + 20
-        y_offset += panel_h + label_h + 20
+            x_offset += panel_w + pad
+        y_offset += panel_h + label_h + pad
 
     ensure_dir(os.path.dirname(output_png) or ".")
     composite.save(output_png, dpi=(dpi, dpi))
