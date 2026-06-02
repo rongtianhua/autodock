@@ -21,6 +21,8 @@ dependencies:
   - pdbfixer>=1.8
   # MD analysis & interaction detection
   - mdanalysis>=2.6.0
+  - openbabel>=3.1
+  - plip>=2.3.0
   # Utility packages for tests
   - openpyxl>=3.1
   - gemmi>=0.6
@@ -33,7 +35,6 @@ dependencies:
   # Pip-only packages (conda versions incompatible with Python 3.12)
   - pip:
     - meeko>=0.6.0
-    - plip>=2.3.0
     - prolif>=2.0.0
     - posebusters>=0.2.0
     - propka>=3.4.0
