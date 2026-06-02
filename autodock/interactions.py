@@ -12,7 +12,13 @@ import shutil
 import tempfile
 from typing import Any
 
-from autodock.core import _HAVE_MDANALYSIS, _HAVE_PLIP, _HAVE_PROLIF, _HAVE_RDKIT, VisualizationError, logger
+from autodock.core import (
+    _HAVE_PLIP,
+    _HAVE_PROLIF,
+    _HAVE_RDKIT,
+    VisualizationError,
+    logger,
+)
 from autodock.utils import _AD4_ELEMENT_MAP, safe_pdb_slice
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -312,7 +318,7 @@ def _build_ligand_mol_for_prolif(ligand_pdbqt: str):
                         if len(match_lig) == len(match_pdbqt) and len(match_lig) > 0:
                             coord_map = {}
                             conf_pdbqt = mol_pdbqt.GetConformer()
-                            for i, j in zip(match_lig, match_pdbqt):
+                            for i, j in zip(match_lig, match_pdbqt, strict=False):
                                 coord_map[i] = conf_pdbqt.GetAtomPosition(j)
                             mol.RemoveAllConformers()
                             AllChem.EmbedMolecule(mol, coordMap=coord_map)
@@ -357,8 +363,8 @@ def detect_interactions_prolif(
             " Install: conda install rdkit; pip install prolif"
         )
 
-    from rdkit import Chem
     import prolif as plf
+    from rdkit import Chem
 
     # ── Receptor ──────────────────────────────────────────────────────────────
     rec_mol = Chem.MolFromPDBFile(receptor_pdb, sanitize=False)
@@ -382,7 +388,7 @@ def detect_interactions_prolif(
 
     ligand_conf = lig_mol_rdkit.GetConformer()
 
-    for (lig_resid, prot_resid), interaction_data in ifp.items():
+    for (_lig_resid, prot_resid), interaction_data in ifp.items():
         for interaction_name, metadatas in interaction_data.items():
             display_name = _PROLIF_DISPLAY_NAME.get(interaction_name, interaction_name)
             color = _PROLIF_COLOR_MAP.get(interaction_name, "grey")

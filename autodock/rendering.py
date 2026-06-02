@@ -9,9 +9,6 @@ from __future__ import annotations
 import contextlib
 import math
 import os
-import re
-import shutil
-import subprocess
 import tempfile
 from typing import Any
 
@@ -933,7 +930,6 @@ def render_interactions_2d(
     title_text = "Ligand Interaction Diagram"
     title_bbox = draw.textbbox((0, 0), title_text, font=font_legend)
     title_w = title_bbox[2] - title_bbox[0]
-    title_h = title_bbox[3] - title_bbox[1]
     title_x = (canvas_w - title_w) // 2
     title_y = 10
     # Subtle shadow for readability over any background
