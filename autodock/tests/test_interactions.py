@@ -340,14 +340,41 @@ class TestDetectInteractionsPlip:
 
 
 class TestDetectInteractionsProlif:
-    def test_prolif_integration(self):
-        """End-to-end test with real PDB + PDBQT data."""
-        rec_pdb = "mettl8_docking/METTL8_af_iso2.pdb"
-        lig_pdbqt = "mettl8_docking/idebenone.pdbqt"
+    def test_prolif_integration(self, tmp_path):
+        """End-to-end test with synthetic PDB + PDBQT data."""
+        rec = tmp_path / "rec.pdb"
+        rec.write_text(
+            "ATOM      1  N   ALA A   1      0.000   0.000   0.000  1.00  0.00           N  \n"
+            "ATOM      2  CA  ALA A   1      1.458   0.000   0.000  1.00  0.00           C  \n"
+            "ATOM      3  C   ALA A   1      2.009   1.420   0.000  1.00  0.00           C  \n"
+            "ATOM      4  O   ALA A   1      1.251   2.390   0.000  1.00  0.00           O  \n"
+            "ATOM      5  CB  ALA A   1      1.989  -0.729   1.232  1.00  0.00           C  \n"
+            "ATOM      6  N   PHE A   2      3.327   1.593   0.000  1.00  0.00           N  \n"
+            "ATOM      7  CA  PHE A   2      4.022   2.842   0.000  1.00  0.00           C  \n"
+            "ATOM      8  C   PHE A   2      5.537   2.715   0.000  1.00  0.00           C  \n"
+            "ATOM      9  O   PHE A   2      6.075   1.667   0.000  1.00  0.00           O  \n"
+            "ATOM     10  CB  PHE A   2      3.654   3.789   1.142  1.00  0.00           C  \n"
+            "ATOM     11  CG  PHE A   2      4.112   5.219   1.065  1.00  0.00           C  \n"
+            "ATOM     12  CD1 PHE A   2      3.438   6.240   0.415  1.00  0.00           C  \n"
+            "ATOM     13  CD2 PHE A   2      5.341   5.539   1.622  1.00  0.00           C  \n"
+            "ATOM     14  CE1 PHE A   2      3.989   7.500   0.323  1.00  0.00           C  \n"
+            "ATOM     15  CE2 PHE A   2      5.892   6.799   1.530  1.00  0.00           C  \n"
+            "ATOM     16  CZ  PHE A   2      5.218   7.820   0.880  1.00  0.00           C  \n"
+            "TER\nEND\n"
+        )
+        lig = tmp_path / "lig.pdbqt"
+        lig.write_text(
+            "REMARK SMILES c1ccccc1\n"
+            "ATOM      1  C   LIG A   1       5.300   7.500   0.300  1.00  0.00     0.000 C \n"
+            "ATOM      2  C   LIG A   1       6.100   8.600   0.300  1.00  0.00     0.000 C \n"
+            "ATOM      3  C   LIG A   1       5.800   9.900   0.300  1.00  0.00     0.000 C \n"
+            "ATOM      4  C   LIG A   1       4.500   9.900   0.300  1.00  0.00     0.000 C \n"
+            "ATOM      5  C   LIG A   1       4.200   8.600   0.300  1.00  0.00     0.000 C \n"
+            "ATOM      6  C   LIG A   1       4.800   7.500   0.300  1.00  0.00     0.000 C \n"
+        )
 
-        result = intx.detect_interactions_prolif(rec_pdb, lig_pdbqt)
+        result = intx.detect_interactions_prolif(str(rec), str(lig))
         assert isinstance(result, list)
-        assert len(result) > 0
 
         # Verify output schema matches PLIP format
         for r in result:

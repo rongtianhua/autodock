@@ -321,7 +321,16 @@ def _build_ligand_mol_for_prolif(ligand_pdbqt: str):
                             for i, j in zip(match_lig, match_pdbqt, strict=False):
                                 coord_map[i] = conf_pdbqt.GetAtomPosition(j)
                             mol.RemoveAllConformers()
-                            AllChem.EmbedMolecule(mol, coordMap=coord_map)
+                            ret = AllChem.EmbedMolecule(mol, coordMap=coord_map)
+                            if ret == 0:
+                                return mol
+                            # If coordMap fails (e.g. planar rings with missing H coords),
+                            # fall back to full ETKDG and warn
+                            mol.RemoveAllConformers()
+                            AllChem.EmbedMolecule(mol, AllChem.ETKDGv3())
+                            logger.warning(
+                                "ProLIF ligand: coordMap ETKDG failed, using generated coordinates"
+                            )
                             return mol
                 except Exception as exc:
                     logger.debug(f"MCS coordinate transfer failed: {exc}")
