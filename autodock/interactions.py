@@ -359,8 +359,7 @@ def detect_interactions_prolif(
     """
     if not _HAVE_RDKIT or not _HAVE_PROLIF:
         raise VisualizationError(
-            "ProLIF requires rdkit + prolif."
-            " Install: conda install rdkit; pip install prolif"
+            "ProLIF requires rdkit + prolif." " Install: conda install rdkit; pip install prolif"
         )
 
     import prolif as plf
@@ -403,7 +402,11 @@ def detect_interactions_prolif(
                         pos = ligand_conf.GetAtomPosition(int(idx))
                         ligand_atoms.append({"coords": (pos.x, pos.y, pos.z)})
 
-                resn = str(prot_resid.name) if hasattr(prot_resid, "name") else str(prot_resid).split(":")[0]
+                resn = (
+                    str(prot_resid.name)
+                    if hasattr(prot_resid, "name")
+                    else str(prot_resid).split(":")[0]
+                )
                 resi = int(prot_resid.number) if hasattr(prot_resid, "number") else 0
                 chain = str(prot_resid.chain) if prot_resid.chain else "A"
 
