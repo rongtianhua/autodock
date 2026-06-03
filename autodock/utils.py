@@ -413,6 +413,29 @@ _AD4_ELEMENT_MAP = {
 }
 
 
+def _sanitize_pdbqt_block_for_rdkit(pdbqt_block: str) -> str:
+    """Process a raw PDBQT string: keep ATOM/HETATM lines and fix element symbols."""
+    out_lines = []
+    for line in pdbqt_block.splitlines(keepends=True):
+        if not line.startswith(("ATOM  ", "HETATM")):
+            continue
+        stripped_tail = line[71:].strip() if len(line) > 71 else ""
+        ad_type = stripped_tail.split()[-1] if stripped_tail else ""
+        elem = _AD4_ELEMENT_MAP.get(ad_type, ad_type)
+
+        atom_name = safe_pdb_slice(line, 12, 16)
+        if atom_name == "G" and ad_type == "G0":
+            continue
+
+        stripped = line.rstrip("\n\r")
+        if atom_name == "G":
+            stripped = stripped[:12] + " C  " + stripped[16:]
+
+        new_line = stripped[:76] + f"{elem:>2}\n"
+        out_lines.append(new_line)
+    return "".join(out_lines)
+
+
 def _sanitize_pdbqt_for_rdkit(pdbqt_path: str) -> str:
     """
     Read a PDBQT file, keep only ATOM/HETATM lines, and replace AutoDock atom
@@ -430,41 +453,8 @@ def _sanitize_pdbqt_for_rdkit(pdbqt_path: str) -> str:
     Also fixes atom names that RDKit mis-interprets as element symbols
     (e.g. atom name 'G' causes RDKit to look up element 'G' and crash).
     """
-    out_lines = []
     with open(pdbqt_path) as fh:
-        for line in fh:
-            if not line.startswith(("ATOM  ", "HETATM")):
-                continue
-            # Read AutoDock atom type from the PDBQT extension position
-            # (may be 1-3 chars depending on the generator; e.g. G0, CG0, Cl0)
-            # Read AutoDock atom type from the last token on the line.
-            # Different generators (Meeko, Open Babel, Vina) place the atom type
-            # at slightly different positions, so reading the final token is the
-            # most robust approach.
-            stripped_tail = line[71:].strip() if len(line) > 71 else ""
-            ad_type = stripped_tail.split()[-1] if stripped_tail else ""
-            elem = _AD4_ELEMENT_MAP.get(ad_type, ad_type)
-
-            # Skip ghost/virtual atoms added by some AutoDock preparation tools
-            # (atom name "G" with type "G0" — these duplicate real carbons and
-            # break substructure matching in post-processing).
-            atom_name = safe_pdb_slice(line, 12, 16)
-            if atom_name == "G" and ad_type == "G0":
-                continue
-
-            # Strip trailing whitespace / newline so we can rebuild the line
-            stripped = line.rstrip("\n\r")
-
-            # Fix atom name (cols 13-16 = 0-based 12-15) if RDKit would choke on it
-            if atom_name == "G":
-                stripped = stripped[:12] + " C  " + stripped[16:]
-
-            # Reconstruct with element at proper PDB position (cols 77-78 = 0-based 76-77).
-            # Truncate anything from position 76 onward and append the element
-            # right-justified in a 2-char field, then add newline.
-            new_line = stripped[:76] + f"{elem:>2}\n"
-            out_lines.append(new_line)
-    return "".join(out_lines)
+        return _sanitize_pdbqt_block_for_rdkit(fh.read())
 
 
 def obabel_convert(

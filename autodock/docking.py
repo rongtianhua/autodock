@@ -41,9 +41,7 @@ from autodock.utils import ensure_dir, strip_model_headers, write_temp_file
 def _count_pdbqt_atoms(pdbqt_path: str) -> int:
     """Count ATOM/HETATM lines in a PDBQT file."""
     if not os.path.isfile(pdbqt_path):
-        raise DockingCalculationError(
-            f"Cannot count atoms — ligand file not found: {pdbqt_path}"
-        )
+        raise DockingCalculationError(f"Cannot count atoms — ligand file not found: {pdbqt_path}")
     count = 0
     with open(pdbqt_path) as fh:
         for line in fh:
@@ -1282,8 +1280,7 @@ def batch_dock(
         mp_ctx = multiprocessing.get_context("spawn")
         with ProcessPoolExecutor(max_workers=n_workers, mp_context=mp_ctx) as executor:
             futures = {
-                executor.submit(_batch_dock_one, item): i
-                for i, item in enumerate(work_items)
+                executor.submit(_batch_dock_one, item): i for i, item in enumerate(work_items)
             }
             for future in as_completed(futures):
                 idx = futures[future]
@@ -1524,12 +1521,8 @@ def dock_ensemble(
         "n_successful": len(valid_repeats),
         "ensemble_best_affinity_mean": energy_mean,
         "ensemble_best_affinity_std": energy_std,
-        "ensemble_best_affinity_min": (
-            float(np.min(affinities)) if affinities.size > 0 else None
-        ),
-        "ensemble_best_affinity_max": (
-            float(np.max(affinities)) if affinities.size > 0 else None
-        ),
+        "ensemble_best_affinity_min": (float(np.min(affinities)) if affinities.size > 0 else None),
+        "ensemble_best_affinity_max": (float(np.max(affinities)) if affinities.size > 0 else None),
         "ensemble_best_affinity_cv": energy_cv,
         "ensemble_consensus_affinity_mean": (
             float(np.mean(consensus_affinities)) if consensus_affinities.size > 0 else None

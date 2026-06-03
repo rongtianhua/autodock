@@ -20,6 +20,7 @@ from autodock.core import (
     logger,
 )
 from autodock.utils import (
+    _sanitize_pdbqt_block_for_rdkit,
     _sanitize_pdbqt_for_rdkit,
     compute_bounding_box,
     extract_ligand_from_pdb,
@@ -480,6 +481,15 @@ def compute_best_rmsd_from_all_poses(
     if not _HAVE_RDKIT or not os.path.isfile(all_poses_pdbqt):
         return None, -1
 
+    from rdkit import Chem
+    from rdkit.Chem import AllChem
+
+    # Parse crystal ligand once
+    crystal_mol = Chem.MolFromPDBFile(crystal_ligand_pdb, removeHs=True)
+    if crystal_mol is None:
+        logger.warning("Failed to parse crystal ligand for best-RMSD search")
+        return None, -1
+
     import re
 
     with open(all_poses_pdbqt) as fh:
@@ -500,20 +510,20 @@ def compute_best_rmsd_from_all_poses(
         if not model_block.strip():
             continue
 
-        # Write temporary single-pose PDBQT
-        tmp = tempfile.NamedTemporaryFile(mode="w", suffix=".pdbqt", delete=False)
-        tmp.write("MODEL\n")
-        tmp.write(model_block)
-        tmp.write("ENDMDL\n")
-        tmp.close()
+        # In-memory sanitization: no temporary files
+        block = _sanitize_pdbqt_block_for_rdkit(model_block)
+        docked_mol = Chem.MolFromPDBBlock(block, removeHs=True)
+        if docked_mol is None:
+            continue
 
         try:
-            rmsd = compute_rmsd_to_crystal(tmp.name, crystal_ligand_pdb)
-            if rmsd is not None and rmsd < best_rmsd:
-                best_rmsd = rmsd
+            rms = AllChem.GetBestRMS(docked_mol, crystal_mol)
+            if rms < best_rmsd:
+                best_rmsd = rms
                 best_idx = idx
-        finally:
-            os.unlink(tmp.name)
+        except (RuntimeError, ValueError, TypeError):
+            # Topology mismatch — skip this pose
+            continue
 
     if best_idx == -1:
         return None, -1

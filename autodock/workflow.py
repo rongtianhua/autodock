@@ -344,8 +344,7 @@ def run_docking_workflow(
 
         if not ligand_smiles:
             raise ValueError(
-                "ligand_smiles must be provided as a PubChem CID "
-                "when ligand_source='pubchem'"
+                "ligand_smiles must be provided as a PubChem CID " "when ligand_source='pubchem'"
             )
         cid = ligand_smiles
         smiles = fetch_pubchem_smiles(cid)
