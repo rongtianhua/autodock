@@ -8,6 +8,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- `autodock/cache.py` — Parameter-sensitive disk cache for receptor/ligand/pocket preparation.
+  Three cache classes (`ReceptorCache`, `LigandCache`, `PocketCache`) using SHA-256 content
+  hashing + JSON-serialized parameters for cache keys. Atomic writes via temp-file + rename
+  for concurrency safety. Integrated into `prepare_receptor()`, `prepare_ligand()`,
+  `find_top_pockets()`, `workflow.py`, and all CLI commands. Default cache directory:
+  `~/.autodock/cache/{receptors,ligands,pockets}/`.
 - `autodock/workflow.py` — `run_docking_workflow()` single-call entry point.
   Orchestrates: receptor acquisition (PDB/AlphaFold/file) → preparation →
   pocket detection → ligand prep → multi-pocket docking → post-processing.
@@ -64,7 +70,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `set_log_level()` now raises `ValueError` for unrecognised level strings
   instead of silently falling back to INFO.
 
+### Changed
+- **Architecture boundary**: `pipeline.py` renamed to `post_dock_pipeline.py`.
+  `workflow.py` is now a pure orchestrator — all 2D/3D rendering delegated to
+  `post_process_docking()` in `post_dock_pipeline.py`. Eliminates duplicate
+  rendering logic between workflow and post-processing pipeline.
+
 ### Fixed
+- `test_cli.py` mock assertions updated for `cache_dir` kwarg compatibility:
+  switched from exact call-signature matching to semantic assertions on
+  positional args and key kwargs.
 - Replaced `yourorg` placeholders in `README.md` and `pyproject.toml` with
   actual repository owner.
 - Added missing type hints to `_minimize_ligand_only()` and

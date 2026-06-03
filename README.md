@@ -65,6 +65,21 @@ result = dock_ligand(
 print(f"Best affinity: {result.best_affinity:.2f} kcal/mol")
 ```
 
+### Cache API (optional advanced usage)
+
+For batch workflows, preparation results are cached automatically. To control or inspect the cache:
+
+```python
+from autodock import ReceptorCache, LigandCache, PocketCache, clear_all_caches
+
+# Clear all caches
+clear_all_caches()
+
+# Or inspect individual caches
+rc = ReceptorCache()
+print(f"Cached receptors: {len(list(rc.cache_dir.glob('*')))}")
+```
+
 ---
 
 ## 📋 Features
@@ -85,6 +100,7 @@ print(f"Best affinity: {result.best_affinity:.2f} kcal/mol")
 | **📉 Scoring Bias** | Affinity-vs-RMSD scatter plots to diagnose Vina scoring deficiencies |
 | **🔄 Repeat Docking** | n-repeat statistics (mean ± SD) for stochastic sampling variability |
 | **🧹 OpenMM Post-Proc** | Ligand-only energy minimization to improve PoseBusters compliance |
+| **💾 Disk Cache** | Parameter-sensitive SHA-256 cache for receptor/ligand/pocket preparation (batch speedup 10–50×) |
 
 ---
 
@@ -265,6 +281,7 @@ Key publication-grade defaults:
 | `energy_range` | 3.0 | Standard energy window above best pose |
 | `seed` | 42 | Deterministic by default for reproducibility |
 | `dpi` | 300 | Publication-ready figure resolution |
+| `cache_dir` | `~/.autodock/cache` | Automatic disk cache for repeated preparation |
 
 ---
 
