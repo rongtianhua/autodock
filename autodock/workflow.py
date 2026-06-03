@@ -746,7 +746,7 @@ def run_docking_workflow(
             logger.info("=" * 60)
 
             try:
-                from autodock.pipeline import post_process_docking
+                from autodock.post_dock_pipeline import post_process_docking
 
                 pp_out = post_process_docking(
                     result.best_result,
@@ -759,6 +759,9 @@ def run_docking_workflow(
                 result.report_pdf = pp_out.get("pdf")
                 result.report_csv = pp_out.get("csv")
                 result.figures_3d = pp_out.get("figures", [])
+                fig_2d_png = pp_out.get("fig_2d_png")
+                fig_2d_pdf = pp_out.get("fig_2d_pdf")
+                result.figures_2d = [p for p in (fig_2d_png, fig_2d_pdf) if p]
                 result.pymol_sessions = (
                     [
                         os.path.join(pair_root, "03_figures", f)
@@ -768,25 +771,6 @@ def run_docking_workflow(
                     if os.path.isdir(os.path.join(pair_root, "03_figures"))
                     else []
                 )
-
-                # 2D interaction diagram
-                if do_2d_figures:
-                    try:
-                        from autodock.rendering import render_interactions_2d
-
-                        fig_dir = os.path.join(pair_root, "03_figures")
-                        png_2d = os.path.join(fig_dir, "2d_interactions.png")
-                        pdf_2d = os.path.join(fig_dir, "2d_interactions.pdf")
-                        render_interactions_2d(
-                            result.receptor_pdb,
-                            result.best_result.best_pose_pdbqt,
-                            result.best_result.interactions,
-                            output_png=png_2d,
-                            output_pdf=pdf_2d,
-                        )
-                        result.figures_2d = [png_2d, pdf_2d]
-                    except (RuntimeError, OSError, ValueError, ImportError) as exc:
-                        result.warnings.append(f"2D rendering skipped: {exc}")
 
                 state["step_6_complete"] = True
                 _save_state(out_dir, state)

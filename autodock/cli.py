@@ -192,7 +192,7 @@ def cmd_find_pockets(args: argparse.Namespace) -> int:
 def cmd_dock(args: argparse.Namespace) -> int:
     """Run molecular docking with full post-processing."""
     from autodock.docking import dock_ligand
-    from autodock.pipeline import post_process_docking
+    from autodock.post_dock_pipeline import post_process_docking
     from autodock.preparation import find_top_pockets
 
     center = tuple(args.center) if args.center else None
@@ -341,7 +341,7 @@ def cmd_analyze(args: argparse.Namespace) -> int:
 
 def cmd_report(args: argparse.Namespace) -> int:
     """Generate PDF/Excel/CSV report from completed docking results."""
-    from autodock.pipeline import post_process_docking, read_docking_results
+    from autodock.post_dock_pipeline import post_process_docking, read_docking_results
     from autodock.utils import ensure_dir
 
     results = read_docking_results(args.result_dir)
@@ -469,7 +469,7 @@ def cmd_batch_dock(args: argparse.Namespace) -> int:
     import json
 
     from autodock.docking import batch_dock
-    from autodock.pipeline import post_process_docking
+    from autodock.post_dock_pipeline import post_process_docking
 
     # Load pocket definitions
     with open(args.pockets) as fh:

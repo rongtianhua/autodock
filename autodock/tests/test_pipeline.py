@@ -1,9 +1,9 @@
-"""Tests for autodock.pipeline."""
+"""Tests for autodock.post_dock_pipeline."""
 
 import json
 import os
 
-from autodock import pipeline
+from autodock import post_dock_pipeline as pipeline
 from autodock.core import DockingResult
 
 

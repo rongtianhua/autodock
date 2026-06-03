@@ -41,7 +41,7 @@ from autodock.interactions import (
     detect_interactions_plip,
     detect_interactions_prolif,
 )
-from autodock.pipeline import build_pair_dir, post_process_docking, read_docking_results
+from autodock.post_dock_pipeline import build_pair_dir, post_process_docking, read_docking_results
 from autodock.preparation import (
     find_top_pockets,
     prepare_ligand,

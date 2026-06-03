@@ -1,5 +1,5 @@
 """
-autodock.pipeline — Standardized per-pair output pipeline.
+autodock.post_dock_pipeline — Standardized per-pair output pipeline.
 ===========================================================
 Takes a completed DockingResult and produces a structured output directory
 with all analysis artifacts: structures, interactions, figures (PNG+PDF),
