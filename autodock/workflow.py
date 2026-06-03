@@ -41,6 +41,133 @@ from autodock.core import (
 from autodock.utils import ensure_dir
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Checkpoint / resume helpers
+# ─────────────────────────────────────────────────────────────────────────────
+
+_STATE_FILE = "workflow_state.json"
+
+
+def _load_state(out_dir: str) -> dict:
+    """Load checkpoint state if it exists."""
+    path = os.path.join(out_dir, _STATE_FILE)
+    if os.path.isfile(path):
+        try:
+            with open(path) as fh:
+                return json.load(fh)
+        except (OSError, json.JSONDecodeError):
+            pass
+    return {}
+
+
+def _save_state(out_dir: str, state: dict) -> None:
+    """Write checkpoint state atomically."""
+    path = os.path.join(out_dir, _STATE_FILE)
+    tmp = path + ".tmp"
+    try:
+        with open(tmp, "w") as fh:
+            json.dump(state, fh, indent=2)
+        os.replace(tmp, path)
+    except OSError:
+        pass
+
+
+def _step_done(state: dict, step: str, required_files: list[str] | None = None) -> bool:
+    """Return True if *step* is recorded complete and required files exist."""
+    if not state.get(step):
+        return False
+    if required_files:
+        return all(os.path.isfile(f) for f in required_files)
+    return True
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Config integration helpers
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+def _resolve_params_from_config(
+    config_path: str | None,
+    **kwargs,
+) -> dict:
+    """
+    Merge explicit keyword arguments with an optional YAML config file.
+
+    Explicit arguments always win over config-file values.
+    Returns a dict of parameters ready to pass to ``run_docking_workflow``.
+    """
+    if config_path is None:
+        return kwargs
+
+    from autodock.config import load_config
+
+    cfg = load_config(config_path)
+
+    def _get(*keys, default=None):
+        d = cfg
+        for k in keys:
+            if isinstance(d, dict):
+                d = d.get(k)
+            else:
+                return default
+        return d if d is not None else default
+
+    # Map config schema → workflow parameter names
+    param_map = {
+        "output_dir": _get("project", "output_dir", default=kwargs.get("output_dir")),
+        "log_level": _get("project", "log_level", default=kwargs.get("log_level")),
+        "receptor_source": _get("receptor", "source", default=kwargs.get("receptor_source")),
+        "receptor_format": kwargs.get("receptor_format", "auto"),
+        "receptor_chain": _get("receptor", "chain", default=kwargs.get("receptor_chain")),
+        "ph": _get("receptor", "ph", default=kwargs.get("ph")),
+        "fix_protonation": _get("receptor", "minimize", default=kwargs.get("fix_protonation")),
+        "max_pockets": _get("pocket", "top_n", default=kwargs.get("max_pockets")),
+        "pocket_padding": _get("pocket", "padding", default=kwargs.get("pocket_padding")),
+        "exhaustiveness": _get("docking", "exhaustiveness", default=kwargs.get("exhaustiveness")),
+        "n_poses": _get("docking", "num_modes", default=kwargs.get("n_poses")),
+        "seed": _get("docking", "seed", default=kwargs.get("seed")),
+        # ligand_source mapping is context-dependent; keep explicit if provided
+        "ligand_name": kwargs.get("ligand_name"),
+    }
+
+    # Only override if the user did NOT provide an explicit value
+    merged = dict(kwargs)
+    for key, cfg_val in param_map.items():
+        if (key not in merged or merged[key] is None) and cfg_val is not None:
+            merged[key] = cfg_val
+
+    # Handle receptor_id from config when not explicitly passed
+    if not merged.get("receptor_id"):
+        pdb_id = _get("receptor", "pdb_id")
+        uniprot = _get("receptor", "uniprot_id")
+        rec_file = _get("receptor", "file")
+        if pdb_id:
+            merged["receptor_id"] = pdb_id
+        elif uniprot:
+            merged["receptor_id"] = uniprot
+        elif rec_file:
+            merged["receptor_id"] = rec_file
+
+    # Handle ligand source from config
+    lig_src_cfg = _get("ligands", "source", default="smiles")
+    if merged.get("ligand_source") is None:
+        merged["ligand_source"] = lig_src_cfg
+
+    # Handle ligand_smiles from config
+    if not merged.get("ligand_smiles"):
+        smiles_cfg = _get("ligands", "smiles")
+        cid_cfg = _get("ligands", "compound_id")
+        file_cfg = _get("ligands", "file")
+        if smiles_cfg:
+            merged["ligand_smiles"] = smiles_cfg
+        elif cid_cfg:
+            merged["ligand_smiles"] = cid_cfg
+        elif file_cfg:
+            merged["ligand_smiles"] = file_cfg
+
+    return merged
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Workflow result container
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -110,7 +237,7 @@ class DockingWorkflowResult:
 
 def run_docking_workflow(
     # ── Receptor ──────────────────────────────────────────────────────────
-    receptor_id: str,
+    receptor_id: str | None = None,
     receptor_source: str = "auto",
     receptor_format: str = "auto",
     receptor_chain: str | None = None,
@@ -139,6 +266,10 @@ def run_docking_workflow(
     do_3d_figures: bool = True,
     do_2d_figures: bool = True,
     do_report: bool = True,
+    # ── Advanced ──────────────────────────────────────────────────────────
+    config_path: str | None = None,
+    resume: bool = True,
+    run_posebusters: bool = True,
 ) -> DockingWorkflowResult:
     """
     Run an end-to-end publication-grade molecular docking analysis.
@@ -185,6 +316,12 @@ def run_docking_workflow(
         do_3d_figures: Render PyMOL 3D figures (complex/pocket/interaction).
         do_2d_figures: Render RDKit Cairo 2D interaction diagram.
         do_report: Generate PDF + CSV reports.
+        config_path: Optional path to a YAML config file.  Explicit keyword
+            arguments always override config values.
+        resume: If ``True`` (default), skip steps whose outputs already exist
+            in the output directory from a previous run.
+        run_posebusters: If ``True`` (default), run PoseBusters validation on
+            the best docked pose when PoseBusters is installed.
 
     Returns:
         :class:`DockingWorkflowResult` with all output paths and metadata.
@@ -193,12 +330,73 @@ def run_docking_workflow(
         ValueError: If required parameters are missing (e.g. ``ligand_smiles``).
         DockingCalculationError: If docking fails entirely.
     """
+    # ── Config integration ──────────────────────────────────────────────────
+    if config_path is not None:
+        merged = _resolve_params_from_config(
+            config_path,
+            receptor_id=receptor_id,
+            receptor_source=receptor_source,
+            receptor_format=receptor_format,
+            receptor_chain=receptor_chain,
+            ligand_smiles=ligand_smiles,
+            ligand_source=ligand_source,
+            ligand_name=ligand_name,
+            exhaustiveness=exhaustiveness,
+            n_poses=n_poses,
+            seed=seed,
+            multi_conformer=multi_conformer,
+            n_conformers=n_conformers,
+            max_pockets=max_pockets,
+            pocket_padding=pocket_padding,
+            ph=ph,
+            fix_protonation=fix_protonation,
+            detect_af=detect_af,
+            output_dir=output_dir,
+            report_name=report_name,
+            log_level=log_level,
+            do_3d_figures=do_3d_figures,
+            do_2d_figures=do_2d_figures,
+            do_report=do_report,
+            run_posebusters=run_posebusters,
+        )
+        # Unpack merged parameters back into local variables
+        receptor_id = merged.get("receptor_id", receptor_id)
+        receptor_source = merged.get("receptor_source", receptor_source)
+        receptor_format = merged.get("receptor_format", receptor_format)
+        receptor_chain = merged.get("receptor_chain", receptor_chain)
+        ligand_smiles = merged.get("ligand_smiles", ligand_smiles)
+        ligand_source = merged.get("ligand_source", ligand_source)
+        ligand_name = merged.get("ligand_name", ligand_name)
+        exhaustiveness = merged.get("exhaustiveness", exhaustiveness)
+        n_poses = merged.get("n_poses", n_poses)
+        seed = merged.get("seed", seed)
+        multi_conformer = merged.get("multi_conformer", multi_conformer)
+        n_conformers = merged.get("n_conformers", n_conformers)
+        max_pockets = merged.get("max_pockets", max_pockets)
+        pocket_padding = merged.get("pocket_padding", pocket_padding)
+        ph = merged.get("ph", ph)
+        fix_protonation = merged.get("fix_protonation", fix_protonation)
+        detect_af = merged.get("detect_af", detect_af)
+        output_dir = merged.get("output_dir", output_dir)
+        report_name = merged.get("report_name", report_name)
+        log_level = merged.get("log_level", log_level)
+        do_3d_figures = merged.get("do_3d_figures", do_3d_figures)
+        do_2d_figures = merged.get("do_2d_figures", do_2d_figures)
+        do_report = merged.get("do_report", do_report)
+        run_posebusters = merged.get("run_posebusters", run_posebusters)
+
+    if receptor_id is None:
+        raise ValueError(
+            "receptor_id is required (or set receptor.pdb_id / receptor.uniprot_id in config)."
+        )
+
     _t0 = time.perf_counter()
     set_log_level(log_level)
 
     # ── Resolve output directory & report name ────────────────────────────
     out_dir = os.path.abspath(output_dir)
     ensure_dir(out_dir)
+    state = _load_state(out_dir) if resume else {}
     result = DockingWorkflowResult(
         receptor_name=receptor_id,
         ligand_name=ligand_name or "ligand",
@@ -214,6 +412,9 @@ def run_docking_workflow(
             "pocket_padding": pocket_padding,
             "ph": ph,
             "fix_protonation": fix_protonation,
+            "config_path": config_path,
+            "resume": resume,
+            "run_posebusters": run_posebusters,
         },
         environment=get_environment_status(),
     )
@@ -227,35 +428,46 @@ def run_docking_workflow(
     logger.info(f"Step 1/6: Receptor acquisition ({receptor_id}, source={receptor_source})")
     logger.info("=" * 60)
 
-    receptor_file: str | None = None
-
-    if receptor_source == "file" or (receptor_source == "auto" and os.path.isfile(receptor_id)):
-        receptor_file = receptor_id
-        result.receptor_source = "file"
-        logger.info(f"  Using local file: {receptor_file}")
-
-    elif receptor_source in ("pdb", "auto") and len(receptor_id) == 4 and receptor_id.isalnum():
-        # PDB ID (4 alphanumeric chars)
-        from autodock.fetchers import download_pdb
-
-        fmt = "cif" if receptor_format in ("auto", "cif") else "pdb"
-        receptor_file = download_pdb(receptor_id, out_dir, format=fmt)
-        result.receptor_source = "PDB"
-        logger.info(f"  Downloaded from PDB: {receptor_file}")
-
-    elif receptor_source in ("alphafold", "auto"):
-        # AlphaFold / UniProt
-        from autodock.fetchers import download_alphafold
-
-        receptor_file = download_alphafold(receptor_id, out_dir, format="cif")
-        result.receptor_source = "AlphaFold"
-        logger.info(f"  Downloaded AlphaFold: {receptor_file}")
-
+    receptor_file: str | None = state.get("receptor_file")
+    if receptor_file and os.path.isfile(receptor_file):
+        logger.info(f"  ⏩ Resumed — using existing receptor: {receptor_file}")
+        result.receptor_source = state.get("receptor_source", result.receptor_source)
     else:
-        raise ValueError(
-            f"Cannot resolve receptor: {receptor_id} (source={receptor_source}). "
-            "Try: PDB ID (4 chars), UniProt ID, or local file path."
-        )
+        receptor_file = None
+
+    if receptor_file is None:
+        if receptor_source == "file" or (receptor_source == "auto" and os.path.isfile(receptor_id)):
+            receptor_file = receptor_id
+            result.receptor_source = "file"
+            logger.info(f"  Using local file: {receptor_file}")
+
+        elif receptor_source in ("pdb", "auto") and len(receptor_id) == 4 and receptor_id.isalnum():
+            # PDB ID (4 alphanumeric chars)
+            from autodock.fetchers import download_pdb
+
+            fmt = "cif" if receptor_format in ("auto", "cif") else "pdb"
+            receptor_file = download_pdb(receptor_id, out_dir, format=fmt)
+            result.receptor_source = "PDB"
+            logger.info(f"  Downloaded from PDB: {receptor_file}")
+
+        elif receptor_source in ("alphafold", "auto"):
+            # AlphaFold / UniProt
+            from autodock.fetchers import download_alphafold
+
+            receptor_file = download_alphafold(receptor_id, out_dir, format="cif")
+            result.receptor_source = "AlphaFold"
+            logger.info(f"  Downloaded AlphaFold: {receptor_file}")
+
+        else:
+            raise ValueError(
+                f"Cannot resolve receptor: {receptor_id} (source={receptor_source}). "
+                "Try: PDB ID (4 chars), UniProt ID, or local file path."
+            )
+
+        state["receptor_file"] = receptor_file
+        state["receptor_source"] = result.receptor_source
+        state["step_1_complete"] = True
+        _save_state(out_dir, state)
 
     result.receptor_name = os.path.basename(receptor_file)
 
@@ -268,29 +480,37 @@ def run_docking_workflow(
 
     receptor_pdbqt = os.path.join(out_dir, f"{_rep_name}_receptor.pdbqt")
     receptor_pdb_out = os.path.join(out_dir, f"{_rep_name}_receptor.pdb")
-    try:
-        from autodock.preparation import prepare_receptor
 
-        prepare_receptor(
-            receptor_file,
-            receptor_pdbqt,
-            ph=ph,
-            remove_water=True,
-            remove_hetatms=True,
-            retain_metal_ions=True,
-            predict_pka=True,
-            fix_protonation=fix_protonation,
-            detect_af_structure=detect_af,
-            force=True,
-            output_pdb=receptor_pdb_out,
-        )
+    if _step_done(state, "step_2_complete", [receptor_pdbqt, receptor_pdb_out]):
+        logger.info("  ⏩ Resumed — receptor already prepared")
         result.receptor_pdbqt = receptor_pdbqt
         result.receptor_pdb = receptor_pdb_out
-        logger.info(f"  Receptor PDBQT: {receptor_pdbqt}")
-    except (OSError, RuntimeError, ValueError, ImportError) as exc:
-        result.errors.append(f"Receptor preparation failed: {exc}")
-        logger.error(f"  Receptor preparation failed: {exc}")
-        raise
+    else:
+        try:
+            from autodock.preparation import prepare_receptor
+
+            prepare_receptor(
+                receptor_file,
+                receptor_pdbqt,
+                ph=ph,
+                remove_water=True,
+                remove_hetatms=True,
+                retain_metal_ions=True,
+                predict_pka=True,
+                fix_protonation=fix_protonation,
+                detect_af_structure=detect_af,
+                force=True,
+                output_pdb=receptor_pdb_out,
+            )
+            result.receptor_pdbqt = receptor_pdbqt
+            result.receptor_pdb = receptor_pdb_out
+            logger.info(f"  Receptor PDBQT: {receptor_pdbqt}")
+            state["step_2_complete"] = True
+            _save_state(out_dir, state)
+        except (OSError, RuntimeError, ValueError, ImportError) as exc:
+            result.errors.append(f"Receptor preparation failed: {exc}")
+            logger.error(f"  Receptor preparation failed: {exc}")
+            raise
 
     # ═══════════════════════════════════════════════════════════════════════
     # Step 3: Pocket detection
@@ -299,20 +519,28 @@ def run_docking_workflow(
     logger.info("Step 3/6: Pocket detection (P2Rank + fpocket)")
     logger.info("=" * 60)
 
-    try:
-        from autodock.preparation import find_top_pockets
-
-        pockets = find_top_pockets(
-            receptor_file,
-            max_pockets=max_pockets,
-            padding=pocket_padding,
-        )
+    pockets = state.get("pockets")
+    if pockets and _step_done(state, "step_3_complete"):
+        logger.info(f"  ⏩ Resumed — using {len(pockets)} cached pocket(s)")
         result.pockets = pockets
-        logger.info(f"  Found {len(pockets)} pocket(s)")
-    except (OSError, RuntimeError, ValueError, TypeError, ImportError) as exc:
-        result.errors.append(f"Pocket detection failed: {exc}")
-        logger.error(f"  Pocket detection failed: {exc}")
-        pockets = []
+    else:
+        try:
+            from autodock.preparation import find_top_pockets
+
+            pockets = find_top_pockets(
+                receptor_file,
+                max_pockets=max_pockets,
+                padding=pocket_padding,
+            )
+            result.pockets = pockets
+            logger.info(f"  Found {len(pockets)} pocket(s)")
+            state["pockets"] = pockets
+            state["step_3_complete"] = True
+            _save_state(out_dir, state)
+        except (OSError, RuntimeError, ValueError, ImportError) as exc:
+            result.errors.append(f"Pocket detection failed: {exc}")
+            logger.error(f"  Pocket detection failed: {exc}")
+            pockets = []
 
     if not pockets:
         raise DockingCalculationError("No binding pockets detected. Cannot proceed with docking.")
@@ -326,44 +554,51 @@ def run_docking_workflow(
 
     ligand_pdbqt = os.path.join(out_dir, f"{_rep_name}_ligand.pdbqt")
 
-    if ligand_source == "smiles" and ligand_smiles:
-        from autodock.preparation import prepare_ligand
-
-        ligand_name_resolved = ligand_name or "LIG"
-        prepare_ligand(
-            ligand_smiles,
-            ligand_pdbqt,
-            ph=ph,
-            name=ligand_name_resolved[:3],
-            molscrub_states=True,
-            enumerate_stereo=True,
-        )
-        logger.info(f"  Ligand from SMILES: {ligand_pdbqt}")
-    elif ligand_source == "pubchem":
-        from autodock.fetchers import fetch_pubchem_smiles
-
-        if not ligand_smiles:
-            raise ValueError(
-                "ligand_smiles must be provided as a PubChem CID " "when ligand_source='pubchem'"
-            )
-        cid = ligand_smiles
-        smiles = fetch_pubchem_smiles(cid)
-        from autodock.preparation import prepare_ligand
-
-        prepare_ligand(smiles, ligand_pdbqt, ph=ph)
-        logger.info(f"  Ligand from PubChem CID {cid}: {ligand_pdbqt}")
-    elif ligand_source == "file" and os.path.isfile(ligand_smiles or ""):
-        from autodock.preparation import prepare_ligand_from_file
-
-        prepare_ligand_from_file(ligand_smiles, ligand_pdbqt)
-        logger.info(f"  Ligand from file: {ligand_pdbqt}")
+    if _step_done(state, "step_4_complete", [ligand_pdbqt]):
+        logger.info("  ⏩ Resumed — ligand already prepared")
+        result.ligand_pdbqt = ligand_pdbqt
     else:
-        raise ValueError(
-            f"Cannot prepare ligand: source={ligand_source}, "
-            f"smiles={'provided' if ligand_smiles else 'missing'}"
-        )
+        if ligand_source == "smiles" and ligand_smiles:
+            from autodock.preparation import prepare_ligand
 
-    result.ligand_pdbqt = ligand_pdbqt
+            ligand_name_resolved = ligand_name or "LIG"
+            prepare_ligand(
+                ligand_smiles,
+                ligand_pdbqt,
+                ph=ph,
+                name=ligand_name_resolved[:3],
+                molscrub_states=True,
+                enumerate_stereo=True,
+            )
+            logger.info(f"  Ligand from SMILES: {ligand_pdbqt}")
+        elif ligand_source == "pubchem":
+            from autodock.fetchers import fetch_pubchem_smiles
+
+            if not ligand_smiles:
+                raise ValueError(
+                    "ligand_smiles must be provided as a PubChem CID "
+                    "when ligand_source='pubchem'"
+                )
+            cid = ligand_smiles
+            smiles = fetch_pubchem_smiles(cid)
+            from autodock.preparation import prepare_ligand
+
+            prepare_ligand(smiles, ligand_pdbqt, ph=ph)
+            logger.info(f"  Ligand from PubChem CID {cid}: {ligand_pdbqt}")
+        elif ligand_source == "file" and os.path.isfile(ligand_smiles or ""):
+            from autodock.preparation import prepare_ligand_from_file
+
+            prepare_ligand_from_file(ligand_smiles, ligand_pdbqt)
+            logger.info(f"  Ligand from file: {ligand_pdbqt}")
+        else:
+            raise ValueError(
+                f"Cannot prepare ligand: source={ligand_source}, "
+                f"smiles={'provided' if ligand_smiles else 'missing'}"
+            )
+
+        result.ligand_pdbqt = ligand_pdbqt
+        state["step_4_complete"] = True
+        _save_state(out_dir, state)
 
     # ═══════════════════════════════════════════════════════════════════════
     # Step 5: Docking (multi-pocket)
@@ -373,44 +608,61 @@ def run_docking_workflow(
     logger.info("=" * 60)
 
     pocket_results: list[DockingResult] = []
-    for i, pocket in enumerate(pockets):
-        pocket_dir = os.path.join(out_dir, f"pocket_{i + 1}")
-        ensure_dir(pocket_dir)
-        logger.info(f"  Pocket #{i + 1}: center={pocket['center']}, box={pocket['box_size']}")
-
-        try:
-            from autodock.docking import dock_ligand
-
-            r = dock_ligand(
+    if _step_done(state, "step_5_complete"):
+        logger.info("  ⏩ Resumed — loading cached docking results")
+        for i, pocket in enumerate(pockets):
+            pocket_dir = os.path.join(out_dir, f"pocket_{i + 1}")
+            result_json = os.path.join(pocket_dir, "docking_result.json")
+            if os.path.isfile(result_json):
+                try:
+                    with open(result_json) as fh:
+                        data = json.load(fh)
+                    r = DockingResult(**data)
+                    pocket_results.append(r)
+                    if r.best_affinity is not None:
+                        logger.info(
+                            f"    Pocket #{i + 1} (resumed): {r.best_affinity:.2f} kcal/mol"
+                        )
+                    continue
+                except (OSError, json.JSONDecodeError, TypeError, ValueError):
+                    pass
+            # Fallback: re-dock this pocket
+            logger.info(f"    Pocket #{i + 1}: re-docking (cache missing)")
+            _dock_single_pocket(
                 receptor_pdbqt,
                 ligand_pdbqt,
-                center=pocket["center"],
-                box_size=pocket["box_size"],
-                exhaustiveness=exhaustiveness,
-                n_poses=n_poses,
-                seed=seed,
-                output_dir=pocket_dir,
-                compound_name=f"{_rep_name}_pocket{i + 1}",
-                skip_consensus=False,
-                min_rmsd=1.0,
-                multi_conformer=multi_conformer,
-                ligand_smiles=ligand_smiles if multi_conformer else None,
+                pocket,
+                pocket_dir,
+                _rep_name,
+                i,
+                exhaustiveness,
+                n_poses,
+                seed,
+                multi_conformer,
+                ligand_smiles,
+                result,
+                pocket_results,
             )
-            pocket_results.append(r)
-            logger.info(f"    Affinity: {r.best_affinity:.2f} kcal/mol")
-        except (DockingCalculationError, RuntimeError, OSError, ValueError, TypeError) as exc:
-            result.errors.append(f"Pocket #{i + 1} docking failed: {exc}")
-            logger.warning(f"    Pocket #{i + 1} docking failed: {exc}")
-            # Continue with other pockets
-            pocket_results.append(
-                DockingResult(
-                    compound_name=f"{_rep_name}_pocket{i + 1}",
-                    receptor=receptor_pdbqt,
-                    center=pocket["center"],
-                    box_size=pocket["box_size"],
-                    best_affinity=None,
-                )
+    else:
+        for i, pocket in enumerate(pockets):
+            pocket_dir = os.path.join(out_dir, f"pocket_{i + 1}")
+            _dock_single_pocket(
+                receptor_pdbqt,
+                ligand_pdbqt,
+                pocket,
+                pocket_dir,
+                _rep_name,
+                i,
+                exhaustiveness,
+                n_poses,
+                seed,
+                multi_conformer,
+                ligand_smiles,
+                result,
+                pocket_results,
             )
+        state["step_5_complete"] = True
+        _save_state(out_dir, state)
 
     result.pocket_results = pocket_results
 
@@ -431,60 +683,117 @@ def run_docking_workflow(
         logger.warning("  No successful docking results")
 
     # ═══════════════════════════════════════════════════════════════════════
+    # Step 5b: PoseBusters validation (best pose)
+    # ═══════════════════════════════════════════════════════════════════════
+    if run_posebusters and result.best_result and result.best_result.best_pose_pdbqt:
+        logger.info("=" * 60)
+        logger.info("Step 5b: PoseBusters validation")
+        logger.info("=" * 60)
+        try:
+            from autodock.validation import validate_pose_with_posebusters
+
+            pb = validate_pose_with_posebusters(
+                result.best_result.best_pose_pdbqt,
+                result.receptor_pdb or receptor_pdb_out,
+            )
+            result.best_result.posebusters_pass = pb.get("pass")
+            status = "PASS" if pb.get("pass") else "FAIL"
+            avail = "available" if pb.get("available") else "unavailable"
+            logger.info(f"  PoseBusters {avail}: {status}")
+        except (RuntimeError, OSError, ValueError, ImportError) as exc:
+            result.warnings.append(f"PoseBusters validation skipped: {exc}")
+            logger.warning(f"  PoseBusters validation skipped: {exc}")
+
+    # ═══════════════════════════════════════════════════════════════════════
     # Step 6: Post-processing & report
     # ═══════════════════════════════════════════════════════════════════════
+    pair_root = os.path.join(out_dir, "best_result")
+    summary_marker = os.path.join(pair_root, "summary.txt")
+
     if result.best_result and result.receptor_pdb:
-        logger.info("=" * 60)
-        logger.info("Step 6/6: Post-processing & report generation")
-        logger.info("=" * 60)
+        if resume and _step_done(state, "step_6_complete", [summary_marker]):
+            logger.info("=" * 60)
+            logger.info("Step 6/6: Post-processing & report generation")
+            logger.info("=" * 60)
+            logger.info("  ⏩ Resumed — post-processing already complete")
+            # Re-hydrate output paths from directory
+            if os.path.isdir(pair_root):
+                fig_dir = os.path.join(pair_root, "03_figures")
+                if os.path.isdir(fig_dir):
+                    result.figures_3d = [
+                        os.path.join(fig_dir, f)
+                        for f in os.listdir(fig_dir)
+                        if f.endswith(".png") and f.startswith("3d_")
+                    ]
+                    result.pymol_sessions = [
+                        os.path.join(fig_dir, f) for f in os.listdir(fig_dir) if f.endswith(".pse")
+                    ]
+                    result.figures_2d = [
+                        os.path.join(fig_dir, f)
+                        for f in os.listdir(fig_dir)
+                        if f.startswith("2d_interactions")
+                    ]
+                rep_dir = os.path.join(pair_root, "04_reports")
+                if os.path.isdir(rep_dir):
+                    for f in os.listdir(rep_dir):
+                        if f.endswith(".pdf"):
+                            result.report_pdf = os.path.join(rep_dir, f)
+                        elif f.endswith(".csv"):
+                            result.report_csv = os.path.join(rep_dir, f)
+        else:
+            logger.info("=" * 60)
+            logger.info("Step 6/6: Post-processing & report generation")
+            logger.info("=" * 60)
 
-        try:
-            from autodock.pipeline import post_process_docking
+            try:
+                from autodock.pipeline import post_process_docking
 
-            pair_root = os.path.join(out_dir, "best_result")
-            pp_out = post_process_docking(
-                result.best_result,
-                pair_root,
-                receptor_pdb=result.receptor_pdb,
-                do_interactions=True,
-                do_rendering=do_3d_figures,
-                do_report=do_report,
-            )
-            result.report_pdf = pp_out.get("pdf")
-            result.report_csv = pp_out.get("csv")
-            result.figures_3d = pp_out.get("figures", [])
-            result.pymol_sessions = (
-                [
-                    os.path.join(pair_root, "03_figures", f)
-                    for f in os.listdir(os.path.join(pair_root, "03_figures"))
-                    if f.endswith(".pse")
-                ]
-                if os.path.isdir(os.path.join(pair_root, "03_figures"))
-                else []
-            )
+                pp_out = post_process_docking(
+                    result.best_result,
+                    pair_root,
+                    receptor_pdb=result.receptor_pdb,
+                    do_interactions=True,
+                    do_rendering=do_3d_figures,
+                    do_report=do_report,
+                )
+                result.report_pdf = pp_out.get("pdf")
+                result.report_csv = pp_out.get("csv")
+                result.figures_3d = pp_out.get("figures", [])
+                result.pymol_sessions = (
+                    [
+                        os.path.join(pair_root, "03_figures", f)
+                        for f in os.listdir(os.path.join(pair_root, "03_figures"))
+                        if f.endswith(".pse")
+                    ]
+                    if os.path.isdir(os.path.join(pair_root, "03_figures"))
+                    else []
+                )
 
-            # 2D interaction diagram
-            if do_2d_figures:
-                try:
-                    from autodock.rendering import render_interactions_2d
+                # 2D interaction diagram
+                if do_2d_figures:
+                    try:
+                        from autodock.rendering import render_interactions_2d
 
-                    fig_dir = os.path.join(pair_root, "03_figures")
-                    png_2d = os.path.join(fig_dir, "2d_interactions.png")
-                    pdf_2d = os.path.join(fig_dir, "2d_interactions.pdf")
-                    render_interactions_2d(
-                        result.receptor_pdb,
-                        result.best_result.best_pose_pdbqt,
-                        result.best_result.interactions,
-                        output_png=png_2d,
-                        output_pdf=pdf_2d,
-                    )
-                    result.figures_2d = [png_2d, pdf_2d]
-                except (RuntimeError, OSError, ValueError, TypeError, ImportError) as exc:
-                    result.warnings.append(f"2D rendering skipped: {exc}")
+                        fig_dir = os.path.join(pair_root, "03_figures")
+                        png_2d = os.path.join(fig_dir, "2d_interactions.png")
+                        pdf_2d = os.path.join(fig_dir, "2d_interactions.pdf")
+                        render_interactions_2d(
+                            result.receptor_pdb,
+                            result.best_result.best_pose_pdbqt,
+                            result.best_result.interactions,
+                            output_png=png_2d,
+                            output_pdf=pdf_2d,
+                        )
+                        result.figures_2d = [png_2d, pdf_2d]
+                    except (RuntimeError, OSError, ValueError, ImportError) as exc:
+                        result.warnings.append(f"2D rendering skipped: {exc}")
 
-        except (RuntimeError, OSError, ValueError, TypeError, ImportError, KeyError) as exc:
-            result.errors.append(f"Post-processing failed: {exc}")
-            logger.warning(f"  Post-processing failed: {exc}")
+                state["step_6_complete"] = True
+                _save_state(out_dir, state)
+
+            except (RuntimeError, OSError, ValueError, ImportError, KeyError) as exc:
+                result.errors.append(f"Post-processing failed: {exc}")
+                logger.warning(f"  Post-processing failed: {exc}")
 
     # ── Write summary JSON ───────────────────────────────────────────────
     summary_path = os.path.join(out_dir, "workflow_summary.json")
@@ -504,6 +813,75 @@ def run_docking_workflow(
     logger.info("=" * 60)
 
     return result
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Internal helpers
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+def _dock_single_pocket(
+    receptor_pdbqt: str,
+    ligand_pdbqt: str,
+    pocket: dict,
+    pocket_dir: str,
+    rep_name: str,
+    pocket_idx: int,
+    exhaustiveness: int,
+    n_poses: int,
+    seed: int,
+    multi_conformer: bool,
+    ligand_smiles: str | None,
+    workflow_result: DockingWorkflowResult,
+    pocket_results: list[DockingResult],
+) -> None:
+    """Dock a single pocket and append the result to *pocket_results*."""
+    from autodock.utils import ensure_dir
+
+    ensure_dir(pocket_dir)
+    logger.info(f"  Pocket #{pocket_idx + 1}: center={pocket['center']}, box={pocket['box_size']}")
+
+    try:
+        from autodock.docking import dock_ligand
+
+        r = dock_ligand(
+            receptor_pdbqt,
+            ligand_pdbqt,
+            center=pocket["center"],
+            box_size=pocket["box_size"],
+            exhaustiveness=exhaustiveness,
+            n_poses=n_poses,
+            seed=seed,
+            output_dir=pocket_dir,
+            compound_name=f"{rep_name}_pocket{pocket_idx + 1}",
+            skip_consensus=False,
+            min_rmsd=1.0,
+            multi_conformer=multi_conformer,
+            ligand_smiles=ligand_smiles if multi_conformer else None,
+        )
+        pocket_results.append(r)
+        logger.info(f"    Affinity: {r.best_affinity:.2f} kcal/mol")
+        # Cache result JSON for resume
+        try:
+            import json
+
+            result_json = os.path.join(pocket_dir, "docking_result.json")
+            with open(result_json, "w") as fh:
+                json.dump(r.to_dict(), fh, indent=2, default=str)
+        except (OSError, TypeError):
+            pass
+    except (DockingCalculationError, RuntimeError, OSError, ValueError) as exc:
+        workflow_result.errors.append(f"Pocket #{pocket_idx + 1} docking failed: {exc}")
+        logger.warning(f"    Pocket #{pocket_idx + 1} docking failed: {exc}")
+        pocket_results.append(
+            DockingResult(
+                compound_name=f"{rep_name}_pocket{pocket_idx + 1}",
+                receptor=receptor_pdbqt,
+                center=pocket["center"],
+                box_size=pocket["box_size"],
+                best_affinity=None,
+            )
+        )
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -552,6 +930,9 @@ def main():
     parser.add_argument("--no-3d", action="store_true", help="Skip 3D figures")
     parser.add_argument("--no-2d", action="store_true", help="Skip 2D figures")
     parser.add_argument("--no-report", action="store_true", help="Skip report generation")
+    parser.add_argument("--config", help="Path to YAML config file")
+    parser.add_argument("--no-resume", action="store_true", help="Re-run all steps from scratch")
+    parser.add_argument("--no-posebusters", action="store_true", help="Skip PoseBusters validation")
 
     args = parser.parse_args()
 
@@ -573,6 +954,9 @@ def main():
         do_3d_figures=not args.no_3d,
         do_2d_figures=not args.no_2d,
         do_report=not args.no_report,
+        config_path=args.config,
+        resume=not args.no_resume,
+        run_posebusters=not args.no_posebusters,
     )
 
     # Print summary
