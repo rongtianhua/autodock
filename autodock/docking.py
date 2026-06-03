@@ -14,6 +14,7 @@ import os
 import queue
 import tempfile
 import threading
+import time
 from pathlib import Path
 from typing import Any
 
@@ -40,7 +41,9 @@ from autodock.utils import ensure_dir, strip_model_headers, write_temp_file
 def _count_pdbqt_atoms(pdbqt_path: str) -> int:
     """Count ATOM/HETATM lines in a PDBQT file."""
     if not os.path.isfile(pdbqt_path):
-        return 0
+        raise DockingCalculationError(
+            f"Cannot count atoms — ligand file not found: {pdbqt_path}"
+        )
     count = 0
     with open(pdbqt_path) as fh:
         for line in fh:
@@ -820,7 +823,7 @@ def dock_ligand_multi_conformer(
             exhaustiveness,
             n_poses,
             energy_range,
-            base_seed + i if seed is not None else None,
+            base_seed + i,
             timeout,
             auto_exhaustiveness,
             scoring_function,
@@ -842,14 +845,7 @@ def dock_ligand_multi_conformer(
             ):
                 try:
                     pool, ok = future.result(timeout=timeout + 5)
-                except (
-                    TimeoutError,
-                    DockingCalculationError,
-                    RuntimeError,
-                    OSError,
-                    ValueError,
-                    TypeError,
-                ) as exc:
+                except Exception as exc:
                     conf_path = future_to_item[future][1]
                     logger.warning(f"Conformer docking failed for {conf_path}: {exc}")
                     continue
@@ -917,7 +913,14 @@ def dock_ligand_multi_conformer(
     with open(all_poses_path, "w") as fh:
         for i, pose in enumerate(all_poses, start=1):
             fh.write(f"MODEL {i}\n")
-            fh.write(pose.replace("MODEL ", "").replace("ENDMDL", "").strip())
+            # Strip any existing MODEL/ENDMDL headers line-by-line to avoid
+            # global substring replacement corrupting atom names.
+            cleaned_lines = []
+            for line in pose.splitlines():
+                if line.startswith("MODEL ") or line.strip() == "ENDMDL":
+                    continue
+                cleaned_lines.append(line)
+            fh.write("\n".join(cleaned_lines))
             fh.write("\nENDMDL\n")
 
     # Persist cluster representatives
@@ -997,7 +1000,7 @@ def _dock_single_compound(
             compound_name=name,
         )
         return result
-    except (RuntimeError, OSError, ValueError, TypeError, DockingCalculationError) as exc:
+    except (RuntimeError, OSError, ValueError, DockingCalculationError) as exc:
         logger.error(f"{name}: docking failed — {exc}")
         return DockingResult(
             compound_name=name,
@@ -1095,14 +1098,7 @@ def virtual_screen(
                 idx = futures[future]
                 try:
                     results[idx] = future.result()
-                except (
-                    TimeoutError,
-                    DockingCalculationError,
-                    RuntimeError,
-                    OSError,
-                    ValueError,
-                    TypeError,
-                ) as exc:
+                except Exception as exc:
                     name = work_items[idx][0]
                     logger.error(f"{name}: worker crashed — {exc}")
                     results[idx] = DockingResult(
@@ -1125,6 +1121,60 @@ def virtual_screen(
 # ─────────────────────────────────────────────────────────────────────────────
 # Batch docking: multiple receptors × multiple ligands
 # ─────────────────────────────────────────────────────────────────────────────
+
+
+def _batch_dock_one(
+    item: tuple,
+) -> tuple[str, DockingResult]:
+    """Picklable worker for batch_dock (must stay at module level)."""
+    (
+        rec_name,
+        rec_path,
+        lig_name,
+        lig_path,
+        center,
+        box_size,
+        job_seed,
+        exhaustiveness,
+        n_poses,
+        energy_range,
+        timeout,
+        job_out,
+    ) = item
+    from autodock.utils import ensure_dir
+
+    ensure_dir(job_out)
+    t0 = time.perf_counter()
+    try:
+        result = dock_ligand(
+            rec_path,
+            lig_path,
+            center,
+            box_size,
+            exhaustiveness=exhaustiveness,
+            n_poses=n_poses,
+            energy_range=energy_range,
+            seed=job_seed,
+            timeout=timeout,
+            output_dir=job_out,
+            compound_name=lig_name,
+        )
+        result.runtime_seconds = round(time.perf_counter() - t0, 2)
+        logger.info(f"[{rec_name} × {lig_name}] {result.best_affinity:.2f} kcal/mol")
+        return rec_name, result
+    except DockingCalculationError as exc:
+        logger.error(f"[{rec_name} × {lig_name}] failed: {exc}")
+        fail_result = DockingResult(
+            compound_name=lig_name,
+            receptor=rec_path,
+            center=center,
+            box_size=box_size,
+            seed=job_seed,
+            best_affinity=None,
+            output_dir=job_out,
+        )
+        fail_result.runtime_seconds = round(time.perf_counter() - t0, 2)
+        return rec_name, fail_result
 
 
 def batch_dock(
@@ -1166,8 +1216,6 @@ def batch_dock(
         DockingCalculationError: If no receptor/ligand files are valid.
         ValueError: If pocket definitions are missing for any receptor.
     """
-    import time
-
     if not receptors or not ligands:
         raise DockingCalculationError("At least one receptor and one ligand required.")
 
@@ -1189,13 +1237,29 @@ def batch_dock(
 
     # Build work list: one item per receptor-ligand pair
     base_seed = _get_vina_seed(seed)
-    work_items: list[tuple[str, str, str, str, dict, int]] = []
+    work_items = []
     pair_idx = 0
     for rec_name, rec_path in receptors.items():
         for lig_name, lig_path in ligands.items():
             pair_seed = base_seed + pair_idx if seed is None else base_seed
+            center = pockets[rec_name]["center"]
+            box_size = pockets[rec_name]["box_size"]
+            job_out = os.path.join(output_dir, rec_name, lig_name)
             work_items.append(
-                (rec_name, rec_path, lig_name, lig_path, pockets[rec_name], pair_seed)
+                (
+                    rec_name,
+                    rec_path,
+                    lig_name,
+                    lig_path,
+                    center,
+                    box_size,
+                    pair_seed,
+                    exhaustiveness,
+                    n_poses,
+                    energy_range,
+                    timeout,
+                    job_out,
+                )
             )
             pair_idx += 1
 
@@ -1204,47 +1268,9 @@ def batch_dock(
         f"{len(work_items)} jobs, seed={base_seed}"
     )
 
-    def _dock_one(item: tuple) -> tuple[str, DockingResult]:
-        rec_name, rec_path, lig_name, lig_path, pocket, job_seed = item
-        center = pocket["center"]
-        box_size = pocket["box_size"]
-        job_out = os.path.join(output_dir, rec_name, lig_name)
-        ensure_dir(job_out)
-        t0 = time.perf_counter()
-        try:
-            result = dock_ligand(
-                rec_path,
-                lig_path,
-                center,
-                box_size,
-                exhaustiveness=exhaustiveness,
-                n_poses=n_poses,
-                energy_range=energy_range,
-                seed=job_seed,
-                timeout=timeout,
-                output_dir=job_out,
-                compound_name=lig_name,
-            )
-            result.runtime_seconds = round(time.perf_counter() - t0, 2)
-            logger.info(f"[{rec_name} × {lig_name}] {result.best_affinity:.2f} kcal/mol")
-            return rec_name, result
-        except DockingCalculationError as exc:
-            logger.error(f"[{rec_name} × {lig_name}] failed: {exc}")
-            fail_result = DockingResult(
-                compound_name=lig_name,
-                receptor=rec_path,
-                center=center,
-                box_size=box_size,
-                seed=job_seed,
-                best_affinity=None,
-                output_dir=job_out,
-            )
-            fail_result.runtime_seconds = round(time.perf_counter() - t0, 2)
-            return rec_name, fail_result
-
     # Execute
     if n_workers == 1:
-        raw_results = [_dock_one(item) for item in work_items]
+        raw_results = [_batch_dock_one(item) for item in work_items]
     else:
         if n_workers == -1:
             import multiprocessing
@@ -1255,7 +1281,10 @@ def batch_dock(
         raw_results = [None] * len(work_items)
         mp_ctx = multiprocessing.get_context("spawn")
         with ProcessPoolExecutor(max_workers=n_workers, mp_context=mp_ctx) as executor:
-            futures = {executor.submit(_dock_one, item): i for i, item in enumerate(work_items)}
+            futures = {
+                executor.submit(_batch_dock_one, item): i
+                for i, item in enumerate(work_items)
+            }
             for future in as_completed(futures):
                 idx = futures[future]
                 try:
@@ -1266,9 +1295,9 @@ def batch_dock(
                     RuntimeError,
                     OSError,
                     ValueError,
-                    TypeError,
                 ) as exc:
-                    rec_name, _, lig_name, _, _, _ = work_items[idx]
+                    rec_name = work_items[idx][0]
+                    lig_name = work_items[idx][2]
                     logger.error(f"[{rec_name} × {lig_name}] worker crashed: {exc}")
                     raw_results[idx] = (
                         rec_name,
@@ -1364,9 +1393,7 @@ def dock_ensemble(
             repeat_out = os.path.join(output_dir, f"repeat_{i + 1}")
             ensure_dir(repeat_out)
 
-        import time as _time
-
-        t0 = _time.perf_counter()
+        t0 = time.perf_counter()
         try:
             result = dock_ligand(
                 receptor_pdbqt,
@@ -1382,7 +1409,7 @@ def dock_ensemble(
                 compound_name=f"{name}_repeat{i + 1}",
                 receptor_pdb=receptor_pdb,
             )
-            result.runtime_seconds = round((_time.perf_counter() - t0), 2)
+            result.runtime_seconds = round((time.perf_counter() - t0), 2)
             repeats.append(result)
             logger.info(f"Repeat {i + 1}/{n_repeats}: affinity={result.best_affinity:.3f} kcal/mol")
         except DockingCalculationError as exc:
@@ -1472,13 +1499,13 @@ def dock_ensemble(
     n_clusters = len(cluster_summary)
 
     # ── Confidence assessment ───────────────────────────────────────
-    if energy_cv < 0.05 and (rmsd_mean is not None and rmsd_mean < 1.0):
+    if energy_cv is not None and energy_cv < 0.05 and (rmsd_mean is not None and rmsd_mean < 1.0):
         confidence = "high"
         recommendation = (
             "Docking result is highly reproducible. "
             "The reported affinity and pose can be trusted for publication."
         )
-    elif energy_cv < 0.10 and (rmsd_mean is not None and rmsd_mean < 2.0):
+    elif energy_cv is not None and energy_cv < 0.10 and (rmsd_mean is not None and rmsd_mean < 2.0):
         confidence = "moderate"
         recommendation = (
             "Docking result is moderately reproducible. "
@@ -1497,8 +1524,12 @@ def dock_ensemble(
         "n_successful": len(valid_repeats),
         "ensemble_best_affinity_mean": energy_mean,
         "ensemble_best_affinity_std": energy_std,
-        "ensemble_best_affinity_min": float(np.min(affinities)),
-        "ensemble_best_affinity_max": float(np.max(affinities)),
+        "ensemble_best_affinity_min": (
+            float(np.min(affinities)) if affinities.size > 0 else None
+        ),
+        "ensemble_best_affinity_max": (
+            float(np.max(affinities)) if affinities.size > 0 else None
+        ),
         "ensemble_best_affinity_cv": energy_cv,
         "ensemble_consensus_affinity_mean": (
             float(np.mean(consensus_affinities)) if consensus_affinities.size > 0 else None
@@ -1512,9 +1543,13 @@ def dock_ensemble(
         "recommendation": recommendation,
     }
 
+    _cv_str = f"{energy_cv:.3f}" if energy_cv is not None else "N/A"
+    _rmsd_str = f"{rmsd_mean:.2f}" if rmsd_mean is not None else "N/A"
+    _mean_str = f"{energy_mean:.3f}" if energy_mean is not None else "N/A"
+    _std_str = f"{energy_std:.3f}" if energy_std is not None else "N/A"
     logger.info(
-        f"Ensemble summary: mean={energy_mean:.3f} ± {energy_std:.3f} kcal/mol, "
-        f"CV={energy_cv:.3f}, RMSD={rmsd_mean:.2f} Å, "
+        f"Ensemble summary: mean={_mean_str} ± {_std_str} kcal/mol, "
+        f"CV={_cv_str}, RMSD={_rmsd_str} Å, "
         f"clusters={n_clusters}, confidence={confidence}"
     )
     return summary

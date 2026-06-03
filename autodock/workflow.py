@@ -287,7 +287,7 @@ def run_docking_workflow(
         result.receptor_pdbqt = receptor_pdbqt
         result.receptor_pdb = receptor_pdb_out
         logger.info(f"  Receptor PDBQT: {receptor_pdbqt}")
-    except (OSError, RuntimeError, ValueError, TypeError, ImportError) as exc:
+    except (OSError, RuntimeError, ValueError, ImportError) as exc:
         result.errors.append(f"Receptor preparation failed: {exc}")
         logger.error(f"  Receptor preparation failed: {exc}")
         raise
@@ -342,7 +342,12 @@ def run_docking_workflow(
     elif ligand_source == "pubchem":
         from autodock.fetchers import fetch_pubchem_smiles
 
-        cid = receptor_id if ligand_source == "pubchem" else ligand_smiles
+        if not ligand_smiles:
+            raise ValueError(
+                "ligand_smiles must be provided as a PubChem CID "
+                "when ligand_source='pubchem'"
+            )
+        cid = ligand_smiles
         smiles = fetch_pubchem_smiles(cid)
         from autodock.preparation import prepare_ligand
 
@@ -574,9 +579,9 @@ def main():
     # Print summary
     if result.best_result and result.best_result.best_affinity is not None:
         print(f"\\n✅ Best affinity: {result.best_result.best_affinity:.2f} kcal/mol")
-        print(
-            f"   Pocket #{result.best_pocket_idx + 1 if result.best_pocket_idx is not None else '?'}"
-        )
+        _pidx = result.best_pocket_idx
+        _pocket_str = f"#{_pidx + 1}" if _pidx is not None else "?"
+        print(f"   Pocket {_pocket_str}")
     else:
         print("\\n❌ Docking failed — see workflow_summary.json for details")
     if result.report_pdf:
