@@ -417,9 +417,12 @@ def dock_ligand(
         multi_conformer: If True, pre-generate multiple 3D conformers
             from ``ligand_smiles`` and dock each one independently.
             The globally best pose across all conformers is returned.
-            This combines the pre-generation and flexible-sampling
-            strategies recommended by top-tier journals.  Requires
-            ``ligand_smiles``.  (default False)
+            **Not recommended for typical Vina docking** — Vina already
+            performs internal torsion search, so this adds runtime without
+            improving accuracy for most ligands.  Only useful for
+            macrocycles or rigid ring systems where Vina cannot cross
+            conformational barriers.  Requires ``ligand_smiles``.
+            (default False)
 
     Returns:
         DockingResult with scores, file paths, and metadata.
@@ -730,7 +733,18 @@ def dock_ligand_multi_conformer(
     Dock multiple ligand conformers and return the globally best pose.
 
     Each conformer is docked independently in parallel; all poses are pooled
-    and ranked. This is the recommended protocol for publication-quality docking.
+    and ranked.
+
+    .. warning::
+
+        **Multi-conformer docking is usually unnecessary for AutoDock Vina.**
+        Vina performs its own internal torsion-angle search, so a single
+        conformer from ``prepare_ligand()`` is sufficient for the vast
+        majority of ligands.  This function is intended for special cases
+        where Vina cannot cross conformational barriers, such as macrocycles
+        or rigid ring systems with distinct conformers (chair vs. boat
+        cyclohexane).  For typical drug-like molecules, multi-conformer
+        docking increases runtime linearly without improving pose accuracy.
 
     Args:
         conformer_pdbqts: List of prepared ligand conformer PDBQT files.

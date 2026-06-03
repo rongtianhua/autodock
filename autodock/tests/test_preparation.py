@@ -456,13 +456,14 @@ class TestPrepareLigandAdaptive:
         assert isinstance(result, str)
         assert Path(result).exists()
 
-    def test_medium_ligand_returns_multiple_paths(self, tmp_path):
+    def test_medium_ligand_with_force_multi_returns_multiple_paths(self, tmp_path):
         out_dir = tmp_path / "conformers"
         result = prep.prepare_ligand_adaptive(
             "CCC(CC)O[C@@H]1CC(C(O)O)C[C@H](N)[C@H]1NC(C)O",
             str(out_dir),
             strategy="medium",
             seed=42,
+            force_multi_conformer=True,
         )
         assert isinstance(result, list)
         assert len(result) >= 2
@@ -474,11 +475,14 @@ class TestPrepareLigandAdaptive:
         result = prep.prepare_ligand_adaptive("CCO", str(out), seed=42)
         assert isinstance(result, str)
 
-    def test_auto_detects_medium(self, tmp_path):
-        out_dir = tmp_path / "conformers"
+    def test_auto_detects_medium_defaults_to_single(self, tmp_path):
+        # Default behaviour: medium ligands use single conformer because
+        # Vina performs internal torsion search.
+        out = tmp_path / "lig.pdbqt"
         result = prep.prepare_ligand_adaptive(
             "CCC(CC)O[C@@H]1CC(C(O)O)C[C@H](N)[C@H]1NC(C)O",
-            str(out_dir),
+            str(out),
             seed=42,
         )
-        assert isinstance(result, list)
+        assert isinstance(result, str)
+        assert Path(result).exists()

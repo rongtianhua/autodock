@@ -1754,6 +1754,18 @@ def prepare_ligand_conformers(
     """
     Generate multiple 3D conformers of a ligand for multi-conformer docking.
 
+    .. warning::
+
+        **This function is rarely needed for AutoDock Vina.** Vina performs
+        its own internal torsion-angle search during docking, so a single
+        well-optimised conformer (from ``prepare_ligand()``) is sufficient
+        for most ligands.  Multi-conformer docking is only useful for
+        special cases where Vina cannot cross conformational barriers,
+        such as macrocycles (>12-membered rings) or rigid ring systems
+        with distinct conformers (e.g. chair vs. boat cyclohexane).
+        For typical drug-like molecules, multi-conformer docking adds
+        compute time without improving pose accuracy.
+
     Args:
         smiles: SMILES string.
         output_dir: Directory for conformer PDBQT files.
@@ -1788,10 +1800,24 @@ def _classify_ligand_complexity(mol) -> str:
     """
     Classify ligand structural complexity to choose preparation strategy.
 
-    Heuristics tuned on the 20-target benchmark set:
-        - simple  : ETKDGv3 single-conformer is usually sufficient
-        - medium  : benefits from 5-rep multi-conformer docking
-        - complex : needs 10-rep multi-conformer or external tools
+    Heuristics tuned on the 20-target benchmark set.
+
+    .. note::
+
+        AutoDock Vina performs its own torsion-angle search during docking,
+        so **single-conformer input is sufficient for most ligands**.
+        Multi-conformer docking is only useful for special cases where Vina
+        cannot cross conformational barriers (macrocycles, rigid ring
+        systems with distinct conformers such as chair/boat cyclohexane).
+        For typical drug-like molecules, multi-conformer docking adds
+        runtime without improving accuracy.
+
+    Categories:
+        - **simple**  : single-conformer preparation (default, recommended).
+        - **medium**  : may benefit from multi-conformer if rigid rings
+          have accessible alternative conformers.
+        - **complex** : macrocycles or very large/flexible ligands that may
+          need external conformational sampling (e.g. CREST) before docking.
 
     Returns:
         "simple", "medium", or "complex"
@@ -2032,9 +2058,21 @@ def prepare_ligand_adaptive(
     max_reps_medium: int = 5,
     n_conformers_complex: int = 100,
     max_reps_complex: int = 10,
+    force_multi_conformer: bool = False,
 ) -> str | list[str]:
     """
     Adaptive ligand preparation: auto-selects strategy based on molecular complexity.
+
+    .. note::
+
+        **Default behaviour (``force_multi_conformer=False``):** all ligands
+        receive single-conformer preparation, because AutoDock Vina performs
+        its own internal conformational search.  Multi-conformer docking is
+        only engaged automatically for macrocycles (>12-membered rings),
+        where Vina cannot cross ring-conformation barriers.
+
+        Set ``force_multi_conformer=True`` to override and use the legacy
+        medium/complex multi-conformer strategy for all non-simple ligands.
 
     Args:
         smiles: SMILES string.
@@ -2042,13 +2080,19 @@ def prepare_ligand_adaptive(
         name: Residue name.
         seed: Random seed.
         strategy: "simple", "medium", "complex", or None for auto-detection.
-        n_conformers_medium: Conformers to generate for medium ligands.
-        max_reps_medium: Max representatives for medium ligands.
-        n_conformers_complex: Conformers to generate for complex ligands.
-        max_reps_complex: Max representatives for complex ligands.
+        n_conformers_medium: Conformers to generate for medium ligands
+            (only when ``force_multi_conformer=True``).
+        max_reps_medium: Max representatives for medium ligands
+            (only when ``force_multi_conformer=True``).
+        n_conformers_complex: Conformers to generate for complex ligands
+            (only when ``force_multi_conformer=True``).
+        max_reps_complex: Max representatives for complex ligands
+            (only when ``force_multi_conformer=True``).
+        force_multi_conformer: If True, use legacy multi-conformer strategy
+            for medium/complex ligands.  Default False (recommended for Vina).
 
     Returns:
-        Single PDBQT path for simple ligands, or list of paths for medium/complex.
+        Single PDBQT path, or list of paths for multi-conformer mode.
     """
     from rdkit import Chem
 
@@ -2060,18 +2104,41 @@ def prepare_ligand_adaptive(
         strategy = _classify_ligand_complexity(mol)
         logger.info(f"Adaptive ligand prep: complexity='{strategy}' for '{smiles[:40]}...'")
 
-    if strategy == "simple":
-        # Simple: single conformer. If output_pdbqt is a directory, write ligand.pdbqt inside.
+    # Auto-detect macrocycles: the one case where multi-conformer may help Vina
+    ring_info = mol.GetRingInfo()
+    has_macrocycle = any(len(r) > 12 for r in ring_info.AtomRings())
+
+    # Default (force_multi_conformer=False): single-conformer for everything.
+    # Vina performs its own torsion search; multi-conformer docking is only
+    # useful when rigid ring conformers cannot be interconverted by torsion
+    # changes (macrocycles, chair/boat cyclohexane, etc.).
+    if not force_multi_conformer and strategy in ("simple", "medium"):
         if os.path.isdir(output_pdbqt):
             output_pdbqt = os.path.join(output_pdbqt, "ligand.pdbqt")
         return prepare_ligand(smiles, output_pdbqt, name=name, seed=seed)
 
-    # Medium/complex: output_pdbqt is treated as a directory
+    if not force_multi_conformer and strategy == "complex" and not has_macrocycle:
+        logger.info(
+            "Complex ligand without macrocycle — using single conformer "
+            "(Vina handles torsion search internally). "
+            "Set force_multi_conformer=True to override."
+        )
+        if os.path.isdir(output_pdbqt):
+            output_pdbqt = os.path.join(output_pdbqt, "ligand.pdbqt")
+        return prepare_ligand(smiles, output_pdbqt, name=name, seed=seed)
+
+    # Multi-conformer path (legacy behaviour, or macrocycle auto-detection)
     if os.path.isfile(output_pdbqt):
         output_dir = os.path.dirname(output_pdbqt) or "."
     else:
         output_dir = output_pdbqt
         ensure_dir(output_dir)
+
+    if has_macrocycle and not force_multi_conformer:
+        logger.info(
+            "Macrocycle detected — using multi-conformer preparation "
+            "(Vina cannot cross macrocycle conformational barriers)."
+        )
 
     if strategy == "medium":
         return prepare_ligand_multi(
@@ -2083,11 +2150,11 @@ def prepare_ligand_adaptive(
             max_representatives=max_reps_medium,
         )
 
-    # Complex: cap representatives for very large ligands to keep docking tractable
+    # Complex: cap representatives for very large ligands
     n_heavy = mol.GetNumHeavyAtoms()
     effective_max_reps = max_reps_complex
 
-    # Scheme C: >50 atoms — force single conformer to avoid Vina timeout/hang
+    # >50 atoms — force single conformer to avoid Vina timeout/hang
     if n_heavy > 50:
         logger.info(
             f"Very large ligand ({n_heavy} heavy atoms)"

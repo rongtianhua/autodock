@@ -168,7 +168,9 @@ def run_docking_workflow(
         n_poses: Number of poses to generate per conformer (default 20).
         seed: Random seed for reproducibility (default 42).
         multi_conformer: If True, generate N conformers via ETKDG and dock each
-            independently (recommended for ligands with >8 rotatable bonds).
+            independently.  **Not recommended for most Vina docking** — Vina
+            already searches torsion space internally.  Only useful for
+            macrocycles or rigid ring systems with distinct conformers.
         n_conformers: Number of conformers for multi-conformer docking (default 10).
         max_pockets: Maximum pockets to detect and dock into (default 5).
         pocket_padding: Box padding around pocket dimensions (Å, default 5.0).
