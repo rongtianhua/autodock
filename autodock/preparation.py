@@ -269,7 +269,6 @@ def _write_prep_report(
     report: dict[str, Any],
 ) -> str:
     """Write a JSON preparation report for Methods-section reproducibility."""
-    import json
 
     ensure_dir(os.path.dirname(output_path) or ".")
     with open(output_path, "w") as fh:
@@ -301,6 +300,7 @@ def prepare_receptor(
     output_report_json: str | None = None,
     detect_af_structure: bool = True,
     output_pdb: str | None = None,
+    cache_dir: str | None = None,
 ) -> str:
     """
     Prepare a protein structure for docking (PDB/mmCIF → PDBQT).
@@ -404,6 +404,36 @@ def prepare_receptor(
     if not force and os.path.isfile(output_pdbqt):
         logger.info(f"Receptor PDBQT already exists — skipping prep: {output_pdbqt}")
         return os.path.abspath(output_pdbqt)
+
+    # ── Cache lookup -------------------------------------------------------
+    if cache_dir is not None:
+        from autodock.cache import ReceptorCache
+
+        rc = ReceptorCache(cache_dir)
+        cache_params = {
+            "remove_water": remove_water,
+            "remove_hetatms": remove_hetatms,
+            "input_format": input_format,
+            "keep_residues": sorted(keep_residues) if keep_residues else None,
+            "ph": ph,
+            "forcefield": forcefield,
+            "restraint_center": restraint_center,
+            "restraint_radius": restraint_radius,
+            "retain_metal_ions": retain_metal_ions,
+            "predict_pka": predict_pka,
+            "fix_protonation": fix_protonation,
+            "keep_waters_near_metal": keep_waters_near_metal,
+            "detect_af_structure": detect_af_structure,
+        }
+        cached = rc.get(pdb_file, **cache_params)
+        if cached:
+            import shutil
+
+            shutil.copy2(cached["receptor.pdbqt"], output_pdbqt)
+            if output_pdb and "receptor.pdb" in cached:
+                shutil.copy2(cached["receptor.pdb"], output_pdb)
+            logger.info(f"Receptor cache hit — copied from {rc.cache_dir}")
+            return os.path.abspath(output_pdbqt)
 
     # Accumulators for report detail (enlarged scope so report section can see them)
     gaps_detail: list[str] = []
@@ -1215,6 +1245,32 @@ def prepare_receptor(
             logger.warning(f"Receptor PDB save failed ({_pdb_exc})")
 
     logger.info(f"Receptor prepared: {output_pdbqt}")
+
+    # ── Cache store --------------------------------------------------------
+    if cache_dir is not None:
+        from autodock.cache import ReceptorCache
+
+        rc = ReceptorCache(cache_dir)
+        cache_params = {
+            "remove_water": remove_water,
+            "remove_hetatms": remove_hetatms,
+            "input_format": input_format,
+            "keep_residues": sorted(keep_residues) if keep_residues else None,
+            "ph": ph,
+            "forcefield": forcefield,
+            "restraint_center": restraint_center,
+            "restraint_radius": restraint_radius,
+            "retain_metal_ions": retain_metal_ions,
+            "predict_pka": predict_pka,
+            "fix_protonation": fix_protonation,
+            "keep_waters_near_metal": keep_waters_near_metal,
+            "detect_af_structure": detect_af_structure,
+        }
+        files_to_cache = {"receptor.pdbqt": output_pdbqt}
+        if output_pdb and os.path.isfile(output_pdb):
+            files_to_cache["receptor.pdb"] = output_pdb
+        rc.put(pdb_file, files_to_cache, **cache_params)
+
     return os.path.abspath(output_pdbqt)
 
 
@@ -1391,6 +1447,7 @@ def prepare_ligand(
     molscrub_states: bool = True,
     enumerate_stereo: bool = True,
     max_stereo_isomers: int = 8,
+    cache_dir: str | None = None,
 ) -> str:
     """
     Prepare a ligand for docking (SMILES → PDBQT).
@@ -1440,6 +1497,29 @@ def prepare_ligand(
     Returns:
         Absolute path to the prepared PDBQT file.
     """
+    # ── Cache lookup -------------------------------------------------------
+    if cache_dir is not None:
+        from autodock.cache import LigandCache
+
+        lc = LigandCache(cache_dir)
+        cache_params = {
+            "name": name,
+            "seed": seed,
+            "n_conformer_attempts": n_conformer_attempts,
+            "ph": ph,
+            "ph_range": ph_range,
+            "molscrub_states": molscrub_states,
+            "enumerate_stereo": enumerate_stereo,
+            "max_stereo_isomers": max_stereo_isomers,
+        }
+        cached = lc.get(smiles, **cache_params)
+        if cached:
+            import shutil
+
+            shutil.copy2(cached["ligand.pdbqt"], output_pdbqt)
+            logger.info(f"Ligand cache hit — copied from {lc.cache_dir}")
+            return os.path.abspath(output_pdbqt)
+
     try:
         from meeko import MoleculePreparation, PDBQTWriterLegacy
         from rdkit import Chem
@@ -1536,7 +1616,23 @@ def prepare_ligand(
 
     if not candidate_mols:
         logger.warning("RDKit embedding failed — falling back to Open Babel")
-        return _prepare_ligand_with_obabel(smiles, output_pdbqt, name=name, ph=ph)
+        result = _prepare_ligand_with_obabel(smiles, output_pdbqt, name=name, ph=ph)
+        if cache_dir is not None:
+            from autodock.cache import LigandCache
+
+            lc = LigandCache(cache_dir)
+            cache_params = {
+                "name": name,
+                "seed": seed,
+                "n_conformer_attempts": n_conformer_attempts,
+                "ph": ph,
+                "ph_range": ph_range,
+                "molscrub_states": molscrub_states,
+                "enumerate_stereo": enumerate_stereo,
+                "max_stereo_isomers": max_stereo_isomers,
+            }
+            lc.put(smiles, {"ligand.pdbqt": output_pdbqt}, **cache_params)
+        return result
 
     # Compute Gasteiger charges and pick the best across all candidates
     best_mol: Any | None = None
@@ -1570,7 +1666,23 @@ def prepare_ligand(
         err_str = str(exc)
         if "non finite charge" in err_str or "charge" in err_str.lower():
             logger.warning(f"Meeko charge failure ({exc}) — falling back to Open Babel")
-            return _prepare_ligand_with_obabel(smiles, output_pdbqt, name=name, ph=ph)
+            result = _prepare_ligand_with_obabel(smiles, output_pdbqt, name=name, ph=ph)
+            if cache_dir is not None:
+                from autodock.cache import LigandCache
+
+                lc = LigandCache(cache_dir)
+                cache_params = {
+                    "name": name,
+                    "seed": seed,
+                    "n_conformer_attempts": n_conformer_attempts,
+                    "ph": ph,
+                    "ph_range": ph_range,
+                    "molscrub_states": molscrub_states,
+                    "enumerate_stereo": enumerate_stereo,
+                    "max_stereo_isomers": max_stereo_isomers,
+                }
+                lc.put(smiles, {"ligand.pdbqt": output_pdbqt}, **cache_params)
+            return result
         raise PreparationError(f"Meeko ligand prep failed: {exc}")
 
     setup = mol_setup[0] if isinstance(mol_setup, list) else mol_setup
@@ -1578,7 +1690,23 @@ def prepare_ligand(
     if not success:
         if "non finite charge" in err or "charge" in err.lower():
             logger.warning("Meeko PDBQT write charge failure — falling back to Open Babel")
-            return _prepare_ligand_with_obabel(smiles, output_pdbqt, name=name, ph=ph)
+            result = _prepare_ligand_with_obabel(smiles, output_pdbqt, name=name, ph=ph)
+            if cache_dir is not None:
+                from autodock.cache import LigandCache
+
+                lc = LigandCache(cache_dir)
+                cache_params = {
+                    "name": name,
+                    "seed": seed,
+                    "n_conformer_attempts": n_conformer_attempts,
+                    "ph": ph,
+                    "ph_range": ph_range,
+                    "molscrub_states": molscrub_states,
+                    "enumerate_stereo": enumerate_stereo,
+                    "max_stereo_isomers": max_stereo_isomers,
+                }
+                lc.put(smiles, {"ligand.pdbqt": output_pdbqt}, **cache_params)
+            return result
         raise PreparationError(f"Meeko ligand prep failed: {err}")
 
     safe_name = (name or "LIG")[:3]
@@ -1596,6 +1724,24 @@ def prepare_ligand(
         fh.write(pdbqt_str)
 
     logger.info(f"Ligand prepared: {output_pdbqt}")
+
+    # ── Cache store --------------------------------------------------------
+    if cache_dir is not None:
+        from autodock.cache import LigandCache
+
+        lc = LigandCache(cache_dir)
+        cache_params = {
+            "name": name,
+            "seed": seed,
+            "n_conformer_attempts": n_conformer_attempts,
+            "ph": ph,
+            "ph_range": ph_range,
+            "molscrub_states": molscrub_states,
+            "enumerate_stereo": enumerate_stereo,
+            "max_stereo_isomers": max_stereo_isomers,
+        }
+        lc.put(smiles, {"ligand.pdbqt": output_pdbqt}, **cache_params)
+
     return os.path.abspath(output_pdbqt)
 
 
@@ -3043,6 +3189,7 @@ def find_top_pockets(
     max_pockets: int = 5,
     known_active_site: tuple[float, float, float] | None = None,
     plddt_data: dict[str, Any] | None = None,
+    cache_dir: str | None = None,
 ) -> list[dict[str, Any]]:
     """
     Identify top-N candidate binding pockets with publication-grade analysis.
@@ -3083,22 +3230,20 @@ def find_top_pockets(
         af_min_plddt, pocket_type, distance_to_active.
     """
 
-    # -- Disk-based cache -------------------------------------------------
-    _cache_dir = os.path.expanduser("~/.cache/autodock/pockets")
-    _receptor_key = None
-    try:
-        import hashlib
+    # ── Cache lookup -------------------------------------------------------
+    if cache_dir is not None:
+        from autodock.cache import PocketCache
 
-        with open(receptor_pdb, "rb") as _fh:
-            _receptor_key = hashlib.md5(_fh.read(1048576)).hexdigest()
-        _cache_path = os.path.join(_cache_dir, "pockets_" + _receptor_key + ".json")
-        if os.path.isfile(_cache_path):
-            with open(_cache_path) as _cfh:
-                _cached = json.load(_cfh)
-            logger.info("Pocket cache hit: " + _cache_path + " (" + str(len(_cached)) + " pockets)")
-            return _cached
-    except (OSError, ValueError, TypeError, ImportError):
-        _receptor_key = None
+        pc = PocketCache(cache_dir)
+        cache_params = {
+            "padding": padding,
+            "max_pockets": max_pockets,
+            "known_active_site": known_active_site,
+        }
+        cached = pc.get(receptor_pdb, **cache_params)
+        if cached:
+            logger.info(f"Pocket cache hit — {len(cached)} pocket(s) from {pc.cache_dir}")
+            return cached
 
     # ── Gold standard: ligand-centered ──────────────────────────────────────
     if ligand_pdb and os.path.isfile(ligand_pdb):
@@ -3382,14 +3527,17 @@ def find_top_pockets(
                 f"druggability={pk['druggability']:.3f} ({pk['druggability_level']}))"
             )
 
-        # Disk cache: save pockets for next call
-        if _receptor_key is not None:
-            try:
-                os.makedirs(_cache_dir, exist_ok=True)
-                with open(_cache_path, "w") as _cfh:
-                    json.dump(result, _cfh, indent=2, default=str)
-            except (OSError, ValueError, TypeError):
-                pass
+        # ── Cache store --------------------------------------------------------
+        if cache_dir is not None:
+            from autodock.cache import PocketCache
+
+            pc = PocketCache(cache_dir)
+            cache_params = {
+                "padding": padding,
+                "max_pockets": max_pockets,
+                "known_active_site": known_active_site,
+            }
+            pc.put(receptor_pdb, result, **cache_params)
 
         return result
     finally:

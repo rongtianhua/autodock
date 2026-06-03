@@ -678,12 +678,16 @@ def cmd_virtual_screen(args: argparse.Namespace) -> int:
     elif os.path.exists(receptor_cif) and not os.path.exists(receptor_pdb):
         receptor_pdb = receptor_cif
 
-    # Prepare receptor
+    # Prepare receptor (with disk cache)
     receptor_pdbqt = os.path.join(outdir, f"{receptor_name}.pdbqt")
-    prepare_receptor(receptor_pdb, receptor_pdbqt)
+    prepare_receptor(
+        receptor_pdb, receptor_pdbqt, cache_dir=os.path.expanduser("~/.autodock/cache")
+    )
 
     # Detect pocket (P2Rank primary, fpocket validation)
-    pockets = find_top_pockets(receptor_pdb, max_pockets=3)
+    pockets = find_top_pockets(
+        receptor_pdb, max_pockets=3, cache_dir=os.path.expanduser("~/.autodock/cache")
+    )
     center = pockets[0]["center"]
     box_size = pockets[0]["box_size"]
 
@@ -804,7 +808,9 @@ def cmd_run(args: argparse.Namespace) -> int:
     receptor_pdbqt = os.path.join(outdir, f"{receptor_name}.pdbqt")
     ligand_pdbqt = os.path.join(outdir, f"{ligand_name}.pdbqt")
 
-    prepare_receptor(receptor_pdb, receptor_pdbqt)
+    prepare_receptor(
+        receptor_pdb, receptor_pdbqt, cache_dir=os.path.expanduser("~/.autodock/cache")
+    )
 
     # Try to get ligand SMILES from PubChem
     try:
@@ -828,12 +834,16 @@ def cmd_run(args: argparse.Namespace) -> int:
         smiles = ligand_name
         print(f"  Treating ligand as raw SMILES: {smiles}")
 
-    prepare_ligand(smiles, ligand_pdbqt, name="LIG")
+    prepare_ligand(
+        smiles, ligand_pdbqt, name="LIG", cache_dir=os.path.expanduser("~/.autodock/cache")
+    )
 
     print("\n" + "=" * 55)
     print("🔍  Step 3: Detecting binding pocket")
     print("=" * 55)
-    pockets = find_top_pockets(receptor_pdb, max_pockets=3)
+    pockets = find_top_pockets(
+        receptor_pdb, max_pockets=3, cache_dir=os.path.expanduser("~/.autodock/cache")
+    )
     center = pockets[0]["center"]
     box_size = pockets[0]["box_size"]
     print(f"  Best pocket: center={center}, box={box_size}")

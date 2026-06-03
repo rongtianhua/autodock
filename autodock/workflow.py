@@ -501,6 +501,7 @@ def run_docking_workflow(
                 detect_af_structure=detect_af,
                 force=True,
                 output_pdb=receptor_pdb_out,
+                cache_dir=os.path.expanduser("~/.autodock/cache"),
             )
             result.receptor_pdbqt = receptor_pdbqt
             result.receptor_pdb = receptor_pdb_out
@@ -531,6 +532,7 @@ def run_docking_workflow(
                 receptor_file,
                 max_pockets=max_pockets,
                 padding=pocket_padding,
+                cache_dir=os.path.expanduser("~/.autodock/cache"),
             )
             result.pockets = pockets
             logger.info(f"  Found {len(pockets)} pocket(s)")
@@ -569,6 +571,7 @@ def run_docking_workflow(
                 name=ligand_name_resolved[:3],
                 molscrub_states=True,
                 enumerate_stereo=True,
+                cache_dir=os.path.expanduser("~/.autodock/cache"),
             )
             logger.info(f"  Ligand from SMILES: {ligand_pdbqt}")
         elif ligand_source == "pubchem":
@@ -583,7 +586,9 @@ def run_docking_workflow(
             smiles = fetch_pubchem_smiles(cid)
             from autodock.preparation import prepare_ligand
 
-            prepare_ligand(smiles, ligand_pdbqt, ph=ph)
+            prepare_ligand(
+                smiles, ligand_pdbqt, ph=ph, cache_dir=os.path.expanduser("~/.autodock/cache")
+            )
             logger.info(f"  Ligand from PubChem CID {cid}: {ligand_pdbqt}")
         elif ligand_source == "file" and os.path.isfile(ligand_smiles or ""):
             from autodock.preparation import prepare_ligand_from_file

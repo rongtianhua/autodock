@@ -910,7 +910,11 @@ class TestCmdVirtualScreen:
         assert mock_dl.call_args[0][0] == "6LU7"
         assert str(mock_dl.call_args[0][1]) == str(tmp_path)
         mock_prep.assert_called_once()
-        mock_pockets.assert_called_once_with(os.path.join(str(tmp_path), "6LU7.pdb"), max_pockets=3)
+        mock_pockets.assert_called_once_with(
+            os.path.join(str(tmp_path), "6LU7.pdb"),
+            max_pockets=3,
+            cache_dir=os.path.expanduser("~/.autodock/cache"),
+        )
         mock_vs.assert_called_once()
         out = capsys.readouterr().out
         assert "Virtual Screening Results" in out

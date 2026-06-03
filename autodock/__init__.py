@@ -17,6 +17,7 @@ Quick start:
 
 from autodock.alphafold_tools import assess_alphafold_quality, relax_alphafold_structure
 from autodock.analysis import analyze_scoring_bias
+from autodock.cache import LigandCache, PocketCache, ReceptorCache, clear_all_caches
 from autodock.config import load_config, write_default_config
 from autodock.core import (
     ConfigurationError,
@@ -97,6 +98,7 @@ __all__ = [
     "assess_alphafold_quality",
     "batch_dock",
     "build_pair_dir",
+    "clear_all_caches",
     "composite_summary",
     "compute_bounding_box",
     "compute_bounding_box_from_pdb",
@@ -119,6 +121,7 @@ __all__ = [
     "filter_pdb_lines",
     "find_best_pdb_structure",
     "find_top_pockets",
+    "LigandCache",
     "generate_csv_report",
     "generate_excel_report",
     "generate_pdf_report",
@@ -127,6 +130,7 @@ __all__ = [
     "logger",
     "obabel_convert",
     "plot_energy_heatmap",
+    "PocketCache",
     "post_process_docking",
     "prepare_ligand",
     "prepare_ligand_adaptive",
@@ -134,6 +138,7 @@ __all__ = [
     "prepare_ligand_multi",
     "prepare_receptor",
     "print_environment_status",
+    "ReceptorCache",
     "read_docking_results",
     "read_pdb_atoms",
     "relax_alphafold_structure",
