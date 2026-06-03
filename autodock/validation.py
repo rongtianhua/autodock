@@ -481,6 +481,12 @@ def compute_best_rmsd_from_all_poses(
     if not _HAVE_RDKIT or not os.path.isfile(all_poses_pdbqt):
         return None, -1
 
+    if not os.path.isfile(crystal_ligand_pdb):
+        logger.warning(
+            f"Crystal ligand PDB not found: {crystal_ligand_pdb} — skipping best-RMSD search"
+        )
+        return None, -1
+
     from rdkit import Chem
     from rdkit.Chem import AllChem
 
