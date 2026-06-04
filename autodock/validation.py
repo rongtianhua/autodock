@@ -557,6 +557,7 @@ def run_redocking_validation(
     pocket_method: str = "crystal",
     interaction_method: str = "plip",
     auto_exhaustiveness: bool = False,
+    timeout: int = 600,
 ) -> dict[str, Any]:
     """
     Validate docking protocol by redocking the co-crystallized ligand.
@@ -776,6 +777,7 @@ def run_redocking_validation(
             compound_name="redock",
             skip_consensus=skip_consensus,
             auto_exhaustiveness=auto_exhaustiveness,
+            timeout=timeout,
         )
     else:
         result = dock_ligand(
@@ -790,6 +792,7 @@ def run_redocking_validation(
             compound_name="redock",
             skip_consensus=skip_consensus,
             auto_exhaustiveness=auto_exhaustiveness,
+            timeout=timeout,
         )
 
     # ── 6. Optional OpenMM energy minimisation ─────────────────────────────

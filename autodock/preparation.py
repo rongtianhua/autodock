@@ -697,6 +697,7 @@ def prepare_receptor(
         RuntimeError,
         TypeError,
         ImportError,
+        AttributeError,
         openmm.OpenMMException,
     ) as exc:
         logger.warning(f"PDBFixer failed ({exc}) — falling back to raw structure")

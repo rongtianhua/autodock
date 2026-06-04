@@ -12,6 +12,8 @@ import contextlib
 import multiprocessing
 import os
 import queue
+import shutil
+import subprocess
 import tempfile
 import threading
 import time
@@ -76,6 +78,107 @@ def _auto_exhaustiveness(ligand_pdbqt: str, base_exhaustiveness: int) -> int:
     if n_atoms > 35:
         return max(16, base_exhaustiveness // 2)
     return base_exhaustiveness
+
+
+def _run_vina_cli(
+    receptor_pdbqt: str,
+    ligand_pdbqt: str,
+    center: tuple[float, float, float],
+    box_size: tuple[float, float, float],
+    exhaustiveness: int,
+    n_poses: int,
+    energy_range: float,
+    seed: int | None,
+    scoring_function: str,
+    min_rmsd: float,
+    timeout: int,
+) -> tuple[np.ndarray, list[str]]:
+    """Run Vina via command-line interface.
+
+    The Python ``vina`` wrapper hangs after ``v.dock()`` for large ligands
+    (>45 heavy atoms). CLI Vina does not have this bug and is often 10×
+    faster for the same exhaustiveness.
+    """
+    import sys
+
+    vina_exe = shutil.which("vina")
+    if not vina_exe:
+        # Fallback: look next to the Python interpreter (conda env layout)
+        candidate = os.path.join(os.path.dirname(sys.executable), "vina")
+        if os.path.isfile(candidate):
+            vina_exe = candidate
+    if not vina_exe:
+        raise DockingCalculationError("vina command-line tool not found in PATH")
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        out_pdbqt = os.path.join(tmpdir, "poses.pdbqt")
+
+        cmd = [
+            vina_exe,
+            "--receptor", receptor_pdbqt,
+            "--ligand", ligand_pdbqt,
+            "--center_x", str(center[0]),
+            "--center_y", str(center[1]),
+            "--center_z", str(center[2]),
+            "--size_x", str(box_size[0]),
+            "--size_y", str(box_size[1]),
+            "--size_z", str(box_size[2]),
+            "--exhaustiveness", str(exhaustiveness),
+            "--num_modes", str(n_poses),
+            "--energy_range", str(energy_range),
+            "--min_rmsd", str(min_rmsd),
+            "--out", out_pdbqt,
+            "--cpu", "0",
+        ]
+        if seed is not None:
+            cmd.extend(["--seed", str(seed)])
+        if scoring_function != "vina":
+            cmd.extend(["--scoring", scoring_function])
+
+        try:
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+        except subprocess.TimeoutExpired as exc:
+            raise DockingCalculationError(
+                f"Docking timed out after {timeout}s. Try smaller search space or lower exhaustiveness."
+            ) from exc
+
+        if result.returncode != 0:
+            raise DockingCalculationError(f"Vina failed: {result.stderr}")
+
+        # Parse energies from stdout table
+        energies: list[list[float]] = []
+        in_table = False
+        for line in result.stdout.splitlines():
+            if line.strip().startswith("mode |") or line.strip().startswith("-----+"):
+                in_table = True
+                continue
+            if in_table and line.strip() and line.strip()[0].isdigit():
+                parts = line.split()
+                if len(parts) >= 2:
+                    try:
+                        affinity = float(parts[1])
+                        energies.append([affinity])
+                    except ValueError:
+                        pass
+
+        if not energies:
+            raise DockingCalculationError("Vina produced no poses.")
+
+        with open(out_pdbqt) as f:
+            pdbqt_str = f.read()
+
+        parts = pdbqt_str.split("MODEL ")
+        poses = []
+        for i, part in enumerate(parts[1:], start=1):
+            if part.strip():
+                # After splitting on "MODEL ", each part starts with the
+                # model number (e.g. "1\n..."). Strip that line so we can
+                # prepend a clean MODEL header.
+                lines = part.split("\n", 1)
+                body = lines[1] if len(lines) > 1 else part
+                poses.append(f"MODEL {i}\n{body}")
+
+        return np.array(energies), poses
 
 
 def _vina_dock_worker(
@@ -250,6 +353,29 @@ def _run_vina_dock(
         scoring_function,
         min_rmsd,
     )
+
+    # Prefer CLI Vina — the Python wrapper hangs for large ligands (>45 atoms)
+    import sys
+
+    vina_exe = shutil.which("vina")
+    if not vina_exe:
+        candidate = os.path.join(os.path.dirname(sys.executable), "vina")
+        if os.path.isfile(candidate):
+            vina_exe = candidate
+    if vina_exe and not in_subprocess and _use_subprocess:
+        return _run_vina_cli(
+            receptor_pdbqt,
+            ligand_pdbqt,
+            center,
+            box_size,
+            exhaustiveness=exhaustiveness,
+            n_poses=n_poses,
+            energy_range=energy_range,
+            seed=seed,
+            scoring_function=scoring_function,
+            min_rmsd=min_rmsd,
+            timeout=timeout,
+        )
 
     # Use spawn context to avoid fork-safety issues with Vina C++ extension
     ctx = multiprocessing.get_context("spawn")

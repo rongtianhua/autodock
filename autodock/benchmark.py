@@ -18,7 +18,7 @@ from typing import Any
 
 import numpy as np
 
-from autodock.core import REDocking_RMSD_THRESHOLD, StructureFetchError, ValidationError, logger
+from autodock.core import REDocking_RMSD_THRESHOLD, StructureFetchError, ValidationError, DockingError, logger
 from autodock.utils import safe_pdb_slice
 from autodock.validation import run_redocking_validation
 
@@ -80,11 +80,12 @@ DEFAULT_BENCHMARK_TARGETS: list[dict[str, Any]] = [
 #
 HARD_TARGET_OVERRIDES: dict[str, dict[str, Any]] = {
     "1D4K": {
-        "exhaustiveness": 16,  # saquinavir is 66 atoms — combinatorial explosion at e=32
+        "exhaustiveness": 8,  # saquinavir is 66 atoms — even e=16 times out at 600s
         "box_padding": 5.0,
         "ligand_strategy": "simple",
-        "auto_exhaustiveness": True,
-        "_note": "HIV-1 protease: very large ligand (66 atoms), needs reduced sampling",
+        "auto_exhaustiveness": False,
+        "timeout": 1200,
+        "_note": "HIV-1 protease: very large ligand (66 atoms), needs reduced sampling + long timeout",
     },
     "1GWX": {
         "exhaustiveness": 16,  # prevent combinatorial explosion
@@ -94,17 +95,19 @@ HARD_TARGET_OVERRIDES: dict[str, dict[str, Any]] = {
         "_note": "PPARγ Y-pocket: Vina scoring minima ≠ crystal pose",
     },
     "1T46": {
-        "exhaustiveness": 32,  # reduced from 64 — 5-ring system still well sampled
+        "exhaustiveness": 8,  # 50 atoms — e=16 times out at 600s
         "box_padding": 6.0,
         "ligand_strategy": "simple",
-        "auto_exhaustiveness": True,
+        "auto_exhaustiveness": False,
+        "timeout": 1200,
         "_note": "HIV-RT NNRTI: flexible pocket, ring conformation mismatch",
     },
     "1H22": {
-        "exhaustiveness": 16,  # reduced — spacious cavity doesn't need high sampling
+        "exhaustiveness": 8,  # reduced — spacious cavity doesn't need high sampling
         "box_padding": 8.0,  # spacious cavity
         "ligand_strategy": "simple",
-        "auto_exhaustiveness": True,
+        "auto_exhaustiveness": False,
+        "timeout": 1200,
         "_note": "PDE5: alkyl chain folds in crystal; Vina prefers extended",
     },
 }
@@ -598,6 +601,18 @@ def _run_single_benchmark(item: dict[str, Any]) -> dict[str, Any]:
         }
     except ValidationError as exc:
         logger.warning(f"[{pdb_id}] Redocking validation failed: {exc}")
+        return {
+            "pdb_id": pdb_id,
+            "family": family,
+            "name": name,
+            "success": False,
+            "rmsd": None,
+            "success_raw": False,
+            "rmsd_raw": None,
+            "error": str(exc),
+        }
+    except DockingError as exc:
+        logger.warning(f"[{pdb_id}] Docking failed: {exc}")
         return {
             "pdb_id": pdb_id,
             "family": family,

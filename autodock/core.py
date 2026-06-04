@@ -179,10 +179,18 @@ def find_conda_tool(name: str) -> str | None:
     Locate an executable in the current conda environment, then fall back
     to system PATH.  Returns the absolute path or None if not found.
     """
+    import sys
+
+    # 1. Explicit CONDA_PREFIX
     if CONDA_PREFIX:
         candidate = os.path.join(CONDA_PREFIX, "bin", name)
         if os.path.isfile(candidate) and os.access(candidate, os.X_OK):
             return candidate
+    # 2. sys.prefix (works when CONDA_PREFIX is unset, e.g. direct python call)
+    candidate = os.path.join(sys.prefix, "bin", name)
+    if os.path.isfile(candidate) and os.access(candidate, os.X_OK):
+        return candidate
+    # 3. System PATH
     return shutil.which(name)
 
 
