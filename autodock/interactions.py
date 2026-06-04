@@ -593,23 +593,79 @@ def detect_interactions_prolif(
 # ─────────────────────────────────────────────────────────────────────────────
 
 
-def _make_interaction_key(item: dict[str, Any]) -> tuple:
-    """Create a normalized key for cross-engine comparison.
+# Cross-engine interaction-type normalisation.
+# PLIP and ProLIF use different nomenclature and definitions for some
+# interaction classes (e.g. PLIP "Hydrophobic" vs ProLIF "van der Waals").
+# The mapping below is used for *loose* cross-engine comparison only.
+_INTERACTION_TYPE_NORMALISATION = {
+    # PLIP → canonical
+    "H-bond": "H-bond",
+    "Hydrophobic": "Hydrophobic",
+    "π-π": "Aromatic",
+    "π-cation": "Aromatic",
+    "Salt bridge": "Ionic",
+    "Halogen bond": "Halogen",
+    "Water bridge": "H-bond",
+    "Metal complex": "Metal",
+    # ProLIF → canonical
+    "van der Waals": "Hydrophobic",
+    "π-π": "Aromatic",
+    "π-cation": "Aromatic",
+    "Cationic": "Ionic",
+    "Anionic": "Ionic",
+    "XBDonor": "Halogen",
+    "XBAcceptor": "Halogen",
+    "MetalDonor": "Metal",
+    "MetalAcceptor": "Metal",
+    "WaterBridge": "H-bond",
+}
 
-    Key fields: interaction type, residue name/index/chain, and approximate
-    ligand atom coordinates (rounded to 1 Å for tolerance).
+
+def _normalise_interaction_type(name: str) -> str:
+    """Return a canonical interaction-type name for cross-engine comparison."""
+    return _INTERACTION_TYPE_NORMALISATION.get(name, name)
+
+
+def _make_interaction_key(
+    item: dict[str, Any],
+    normalise_type: bool = False,
+) -> tuple:
+    """Create a normalised key for cross-engine comparison.
+
+    Parameters
+    ----------
+    item:
+        Interaction dict (PLIP or ProLIF format).
+    normalise_type:
+        If *True*, map interaction-type names to a canonical vocabulary
+        (e.g. PLIP "Hydrophobic" ↔ ProLIF "van der Waals").
+        Default is *False* (strict type matching).
+
+    Notes
+    -----
+    Ligand-atom coordinates are **intentionally excluded** from the key
+    because PLIP reports global PDB coordinates whereas ProLIF reports
+    ligand-local RDKit conformer coordinates — the two systems never
+    overlap, so coordinate-based matching would always yield 0 %
+    agreement.
     """
-    lig_atoms = item.get("ligand_atoms", [])
-    coords_key: tuple[float, ...] = ()
-    if lig_atoms:
-        # Round to 1 decimal place (~0.1 nm tolerance) for coordinate matching
-        coords_key = tuple(round(float(c), 1) for atom in lig_atoms for c in atom.get("coords", ()))
+    itype = item.get("type", "")
+    if normalise_type:
+        itype = _normalise_interaction_type(itype)
     return (
-        item.get("type", ""),
+        itype,
         item.get("resn", ""),
         item.get("resi", 0),
         item.get("chain", ""),
-        coords_key,
+    )
+
+
+def _residue_key(item: dict[str, Any]) -> tuple:
+    """Return a residue-only key for residue-level agreement analysis."""
+    return (
+        item.get("resn", ""),
+        item.get("resi", 0),
+        item.get("chain", ""),
     )
 
 
@@ -621,12 +677,14 @@ def _generate_interaction_discrepancy_report(
     """Compare PLIP and ProLIF results and produce a structured discrepancy report.
 
     Returns a dict with:
-      - ``summary``: high-level statistics (agreement rate, counts).
-      - ``only_plip``: interactions found by PLIP but not ProLIF.
-      - ``only_prolif``: interactions found by ProLIF but not PLIP.
-      - ``both``: interactions detected by both engines.
+      - ``summary``: high-level statistics (strict agreement, loose type-normalised
+        agreement, residue-level agreement, counts).
+      - ``only_plip``: interactions found by PLIP but not ProLIF (strict).
+      - ``only_prolif``: interactions found by ProLIF but not PLIP (strict).
+      - ``both``: interactions detected by both engines (strict).
       - ``json_path`` / ``csv_path``: paths to saved files (if *output_dir* given).
     """
+    # ── Strict matching (type + residue) ──────────────────────────────────
     plip_keys = {_make_interaction_key(i): i for i in plip_results}
     prolif_keys = {_make_interaction_key(i): i for i in prolif_results}
 
@@ -641,8 +699,28 @@ def _generate_interaction_discrepancy_report(
     only_plip = [plip_keys[k] for k in only_plip_keys]
     only_prolif = [prolif_keys[k] for k in only_prolif_keys]
 
+    # ── Loose matching (normalised type + residue) ────────────────────────
+    plip_loose = {_make_interaction_key(i, normalise_type=True): i for i in plip_results}
+    prolif_loose = {_make_interaction_key(i, normalise_type=True): i for i in prolif_results}
+    both_loose_keys = set(plip_loose.keys()) & set(prolif_loose.keys())
+    only_plip_loose_keys = set(plip_loose.keys()) - set(prolif_loose.keys())
+    only_prolif_loose_keys = set(prolif_loose.keys()) - set(plip_loose.keys())
+
+    # ── Residue-level matching (any type, same residue) ───────────────────
+    plip_residues = {_residue_key(i) for i in plip_results}
+    prolif_residues = {_residue_key(i) for i in prolif_results}
+    both_residues = plip_residues & prolif_residues
+    only_plip_residues = plip_residues - prolif_residues
+    only_prolif_residues = prolif_residues - plip_residues
+
     total_unique = len(plip_set | prolif_set)
     agreement_rate = len(both_keys) / total_unique if total_unique > 0 else 1.0
+    loose_rate = len(both_loose_keys) / total_unique if total_unique > 0 else 1.0
+    residue_rate = (
+        len(both_residues) / len(plip_residues | prolif_residues)
+        if (plip_residues | prolif_residues)
+        else 1.0
+    )
 
     report = {
         "summary": {
@@ -652,6 +730,10 @@ def _generate_interaction_discrepancy_report(
             "prolif_unique": len(only_prolif),
             "agreed": len(both),
             "agreement_rate": round(agreement_rate, 3),
+            "loose_agreed": len(both_loose_keys),
+            "loose_agreement_rate": round(loose_rate, 3),
+            "residue_agreed": len(both_residues),
+            "residue_agreement_rate": round(residue_rate, 3),
             "total_unique": total_unique,
         },
         "only_plip": only_plip,
@@ -709,8 +791,11 @@ def _generate_interaction_discrepancy_report(
             logger.warning(f"Discrepancy CSV save failed: {exc}")
 
     logger.info(
-        f"Cross-engine agreement: {len(both)}/{total_unique} "
-        f"({agreement_rate*100:.1f}%) — "
+        f"Cross-engine agreement — strict: {len(both)}/{total_unique} "
+        f"({agreement_rate*100:.1f}%), "
+        f"loose: {len(both_loose_keys)}/{total_unique} ({loose_rate*100:.1f}%), "
+        f"residue: {len(both_residues)}/{len(plip_residues | prolif_residues)} "
+        f"({residue_rate*100:.1f}%) — "
         f"PLIP-only: {len(only_plip)}, ProLIF-only: {len(only_prolif)}"
     )
     return report
@@ -785,31 +870,37 @@ def detect_interactions(
             prolif_intx = []
 
     # Both: merge, deduplicate, and optionally generate discrepancy report.
-    # Key includes interaction type, residue, chain, AND the interacting atom(s)
-    # so that multiple H-bonds to the same residue (different atoms) are preserved.
-    seen = set()
-    merged = []
-    for i in plip_intx + prolif_intx:
-        # Extract ligand atom coordinates tuple for uniqueness
-        lig_atoms = i.get("ligand_atoms", [])
-        lig_coords_key: tuple[float, ...] = ()
-        if lig_atoms:
-            lig_coords_key = tuple(
-                round(float(c), 3) for atom in lig_atoms for c in atom.get("coords", ())
-            )
-        key = (
-            i.get("type"),
-            i.get("resn"),
-            i.get("resi"),
-            i.get("chain"),
-            i.get("atom"),
-            lig_coords_key,
-        )
-        if key not in seen:
-            seen.add(key)
+    #
+    # Cross-engine deduplication strategy:
+    #   1. PLIP is the primary / authoritative engine — all PLIP interactions
+    #      are always retained.
+    #   2. ProLIF interactions are added only if they do NOT match an existing
+    #      PLIP interaction at the *loose* level (normalised type + residue).
+    #      This avoids double-counting the same physical contact while still
+    #      preserving genuinely unique ProLIF findings.
+    #
+    # Coordinates are intentionally excluded from the dedup key because PLIP
+    # uses global PDB coordinates and ProLIF uses ligand-local RDKit conformer
+    # coordinates — they are never comparable.
+    seen_plip = set()
+    merged: list[dict[str, Any]] = []
+    for i in plip_intx:
+        key = _make_interaction_key(i)
+        if key not in seen_plip:
+            seen_plip.add(key)
             merged.append(i)
 
-    logger.info(f"Merged interactions (PLIP + ProLIF): {len(merged)} unique")
+    seen_loose = {_make_interaction_key(i, normalise_type=True) for i in merged}
+    for i in prolif_intx:
+        loose_key = _make_interaction_key(i, normalise_type=True)
+        if loose_key not in seen_loose:
+            seen_loose.add(loose_key)
+            merged.append(i)
+
+    logger.info(
+        f"Merged interactions (PLIP + ProLIF): {len(merged)} unique "
+        f"({len(plip_intx)} PLIP, {len(prolif_intx)} ProLIF)"
+    )
 
     # Discrepancy report for method="both"
     if method == "both" and (plip_intx or prolif_intx):
