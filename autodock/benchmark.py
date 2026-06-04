@@ -47,9 +47,9 @@ DEFAULT_BENCHMARK_TARGETS: list[dict[str, Any]] = [
     {"pdb_id": "1D4K", "family": "enzyme", "name": "HMGR", "ligand_resname": "PI8"},
     {"pdb_id": "1E1V", "family": "enzyme", "name": "DHFR"},
     {"pdb_id": "1F0R", "family": "enzyme", "name": "COX-2"},
-    {"pdb_id": "1T46", "family": "enzyme", "name": "HIV-RT"},
+    {"pdb_id": "1T46", "family": "enzyme", "name": "HIV-RT", "ligand_resname": "STI"},
     {"pdb_id": "1H1P", "family": "enzyme", "name": "AChE"},
-    {"pdb_id": "1H22", "family": "enzyme", "name": "PDE5"},
+    {"pdb_id": "1H22", "family": "enzyme", "name": "PDE5", "ligand_resname": "E10"},
     {"pdb_id": "3ELJ", "family": "enzyme", "name": "BACE1"},
 ]
 
@@ -79,22 +79,32 @@ DEFAULT_BENCHMARK_TARGETS: list[dict[str, Any]] = [
 #   1D4K (HMGR):  58 atoms — already handled by auto single-conformer cap.
 #
 HARD_TARGET_OVERRIDES: dict[str, dict[str, Any]] = {
+    "1D4K": {
+        "exhaustiveness": 16,  # saquinavir is 66 atoms — combinatorial explosion at e=32
+        "box_padding": 5.0,
+        "ligand_strategy": "simple",
+        "auto_exhaustiveness": True,
+        "_note": "HIV-1 protease: very large ligand (66 atoms), needs reduced sampling",
+    },
     "1GWX": {
         "exhaustiveness": 16,  # prevent combinatorial explosion
         "box_padding": 8.0,  # accommodate Y-shaped pocket
         "ligand_strategy": "simple",  # force single conformer (avoid hang)
+        "auto_exhaustiveness": True,
         "_note": "PPARγ Y-pocket: Vina scoring minima ≠ crystal pose",
     },
     "1T46": {
-        "exhaustiveness": 64,  # more sampling for 5-ring system
+        "exhaustiveness": 32,  # reduced from 64 — 5-ring system still well sampled
         "box_padding": 6.0,
         "ligand_strategy": "simple",
+        "auto_exhaustiveness": True,
         "_note": "HIV-RT NNRTI: flexible pocket, ring conformation mismatch",
     },
     "1H22": {
-        "exhaustiveness": 32,
+        "exhaustiveness": 16,  # reduced — spacious cavity doesn't need high sampling
         "box_padding": 8.0,  # spacious cavity
         "ligand_strategy": "simple",
+        "auto_exhaustiveness": True,
         "_note": "PDE5: alkyl chain folds in crystal; Vina prefers extended",
     },
 }
@@ -108,9 +118,10 @@ def run_redocking_benchmark(
     seed: int = 42,
     n_workers: int = 1,
     skip_consensus: bool = True,
-    minimize: bool = True,
+    minimize: bool = False,
     pocket_method: str = "crystal",
     interaction_method: str = "plip",
+    auto_exhaustiveness: bool = True,
 ) -> dict[str, Any]:
     """
     Run redocking validation on a benchmark set and compile statistics.
@@ -123,8 +134,9 @@ def run_redocking_benchmark(
         seed: Random seed for reproducibility.
         n_workers: Parallel workers (-1 = all CPU cores).
         skip_consensus: Skip Vinardo consensus scoring for speed (default True for benchmarks).
-        minimize: If True (default), run OpenMM ligand-only energy minimisation
-            on each best pose before RMSD evaluation.
+        minimize: If True, run OpenMM ligand-only energy minimisation
+            on each best pose before RMSD evaluation. Default False for benchmark
+            speed (minimization succeeds on only ~6% of targets in practice).
         pocket_method: Box-definition strategy:
             * ``"crystal"`` (default): centre box on crystal ligand (self-docking).
             * ``"blind"``: blind pocket detection (cross-docking).
@@ -156,6 +168,7 @@ def run_redocking_benchmark(
                 "minimize": minimize,
                 "pocket_method": pocket_method,
                 "interaction_method": interaction_method,
+                "auto_exhaustiveness": auto_exhaustiveness,
             }
         )
 
@@ -552,6 +565,7 @@ def _run_single_benchmark(item: dict[str, Any]) -> dict[str, Any]:
         "minimize": item.get("minimize", False),
         "pocket_method": item.get("pocket_method", "crystal"),
         "interaction_method": item.get("interaction_method", "plip"),
+        "auto_exhaustiveness": item.get("auto_exhaustiveness", True),
     }
     if pdb_id in HARD_TARGET_OVERRIDES:
         overrides = HARD_TARGET_OVERRIDES[pdb_id].copy()

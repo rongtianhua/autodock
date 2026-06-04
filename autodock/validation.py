@@ -555,6 +555,8 @@ def run_redocking_validation(
     skip_consensus: bool = False,
     minimize: bool = False,
     pocket_method: str = "crystal",
+    interaction_method: str = "plip",
+    auto_exhaustiveness: bool = False,
 ) -> dict[str, Any]:
     """
     Validate docking protocol by redocking the co-crystallized ligand.
@@ -773,7 +775,7 @@ def run_redocking_validation(
             output_dir=output_dir,
             compound_name="redock",
             skip_consensus=skip_consensus,
-            auto_exhaustiveness=False,
+            auto_exhaustiveness=auto_exhaustiveness,
         )
     else:
         result = dock_ligand(
@@ -787,7 +789,7 @@ def run_redocking_validation(
             output_dir=output_dir,
             compound_name="redock",
             skip_consensus=skip_consensus,
-            auto_exhaustiveness=False,
+            auto_exhaustiveness=auto_exhaustiveness,
         )
 
     # ── 6. Optional OpenMM energy minimisation ─────────────────────────────
@@ -858,6 +860,21 @@ def run_redocking_validation(
             f"(threshold: {REDocking_RMSD_THRESHOLD} Å)"
         )
 
+    # ── 8. Optional interaction detection ──────────────────────────────────
+    interactions = []
+    if interaction_method != "none":
+        from autodock.interactions import detect_interactions
+        try:
+            interactions = detect_interactions(
+                apo_pdb,
+                minimized_pose_pdbqt if minimize else result.best_pose_pdbqt,
+                method=interaction_method,
+                output_dir=output_dir,
+            )
+            logger.info(f"Detected {len(interactions)} interactions ({interaction_method})")
+        except Exception as exc:
+            logger.warning(f"Interaction detection failed: {exc}")
+
     return {
         "rmsd": rmsd,
         "rmsd_raw": rmsd_raw,
@@ -879,4 +896,6 @@ def run_redocking_validation(
         "crystal_ligand": crystal_ligand_pdb,
         "best_rmsd": best_rmsd,
         "best_rmsd_pose_idx": best_rmsd_pose_idx,
+        "interactions": interactions,
+        "interaction_method": interaction_method,
     }
