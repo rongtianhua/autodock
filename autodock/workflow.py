@@ -188,6 +188,7 @@ class DockingWorkflowResult:
     # File paths
     receptor_pdbqt: str | None = None
     receptor_pdb: str | None = None
+    receptor_pdb_holo: str | None = None  # original PDB with waters for PLIP water-bridge detection
     ligand_pdbqt: str | None = None
     output_dir: str | None = None
 
@@ -485,6 +486,7 @@ def run_docking_workflow(
         logger.info("  ⏩ Resumed — receptor already prepared")
         result.receptor_pdbqt = receptor_pdbqt
         result.receptor_pdb = receptor_pdb_out
+        result.receptor_pdb_holo = state.get("receptor_file")
     else:
         try:
             from autodock.preparation import prepare_receptor
@@ -505,6 +507,7 @@ def run_docking_workflow(
             )
             result.receptor_pdbqt = receptor_pdbqt
             result.receptor_pdb = receptor_pdb_out
+            result.receptor_pdb_holo = receptor_file
             logger.info(f"  Receptor PDBQT: {receptor_pdbqt}")
             state["step_2_complete"] = True
             _save_state(out_dir, state)
@@ -757,6 +760,7 @@ def run_docking_workflow(
                     result.best_result,
                     pair_root,
                     receptor_pdb=result.receptor_pdb,
+                    receptor_pdb_holo=result.receptor_pdb_holo,
                     do_interactions=True,
                     do_rendering=do_3d_figures,
                     do_report=do_report,

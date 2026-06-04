@@ -48,6 +48,7 @@ def post_process_docking(
     result: DockingResult,
     pair_root: str,
     receptor_pdb: str | None = None,
+    receptor_pdb_holo: str | None = None,
     do_interactions: bool = True,
     do_rendering: bool = True,
     do_report: bool = True,
@@ -63,7 +64,10 @@ def post_process_docking(
     Args:
         result: Completed DockingResult from dock_ligand().
         pair_root: Root directory for this pair (will be created).
-        receptor_pdb: Path to original receptor PDB for interaction/rendering.
+        receptor_pdb: Path to prepared (apo) receptor PDB for rendering.
+        receptor_pdb_holo: Path to original (holo) receptor PDB with waters
+            for PLIP water-bridge detection. Falls back to ``receptor_pdb``
+            if not provided.
         do_interactions: Run PLIP interaction detection.
         do_rendering: Render 2D/3D figures.
         do_report: Generate PDF + CSV reports.
@@ -123,11 +127,16 @@ def post_process_docking(
 
     # ── 2. Interaction detection ────────────────────────────────────────────
     interactions: list[dict[str, Any]] = result.interactions or []
-    if do_interactions and not interactions and receptor_pdb and result.best_pose_pdbqt:
+    # Prefer holo PDB (with crystallographic waters) for PLIP water-bridge detection;
+    # fall back to the prepared apo PDB if holo is unavailable.
+    _receptor_for_plip = receptor_pdb_holo or receptor_pdb
+    if do_interactions and not interactions and _receptor_for_plip and result.best_pose_pdbqt:
         try:
             from autodock.interactions import detect_interactions
 
-            interactions = detect_interactions(receptor_pdb, result.best_pose_pdbqt, method="plip")
+            interactions = detect_interactions(
+                _receptor_for_plip, result.best_pose_pdbqt, method="plip"
+            )
             result.interactions = interactions
             logger.info(f"Detected {len(interactions)} interactions for {compound}")
         except (RuntimeError, OSError, ValueError, TypeError, ImportError) as exc:

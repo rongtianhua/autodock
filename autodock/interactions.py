@@ -81,10 +81,48 @@ def _extract_ligand_atoms_plip(rec: Any, plip_attr: str) -> list[dict[str, Any]]
     return atoms
 
 
+def _generate_conect_from_pdbqt(pdbqt_path: str, atom_offset: int) -> list[str]:
+    """Generate PDB CONECT records from a ligand PDBQT using RDKit topology.
+
+    Args:
+        pdbqt_path: Path to ligand PDBQT file.
+        atom_offset: Number to add to each atom index (so ligand serials
+            do not overlap with receptor atoms in the merged PDB).
+
+    Returns:
+        List of CONECT record strings. Empty list if RDKit fails or is unavailable.
+    """
+    if not _HAVE_RDKIT:
+        return []
+
+    from rdkit import Chem
+
+    from autodock.utils import _sanitize_pdbqt_for_rdkit
+
+    try:
+        pdb_block = _sanitize_pdbqt_for_rdkit(pdbqt_path)
+        mol = Chem.MolFromPDBBlock(pdb_block, removeHs=False)
+        if mol is None or mol.GetNumAtoms() == 0:
+            return []
+    except Exception:
+        return []
+
+    conect_lines: list[str] = []
+    for bond in mol.GetBonds():
+        i = bond.GetBeginAtomIdx() + 1 + atom_offset  # PDB is 1-based
+        j = bond.GetEndAtomIdx() + 1 + atom_offset
+        conect_lines.append(f"CONECT{i:5d}{j:5d}\n")
+    return conect_lines
+
+
 def _build_complex_pdb(receptor_pdb: str, ligand_pdbqt: str, output_pdb: str) -> str:
     """
     Merge receptor PDB and ligand PDBQT into a single PDB for PLIP analysis.
     PLIP requires the ligand as HETATM records with a distinct residue name.
+
+    To avoid atom-serial collisions and help Open Babel infer bonds for
+    macrocycles / complex ring systems, ligand atoms are renumbered starting
+    from ``max_receptor_serial + 1``, and optional CONECT records are injected.
     """
     with open(receptor_pdb) as fh:
         rec_lines = fh.readlines()
@@ -92,9 +130,21 @@ def _build_complex_pdb(receptor_pdb: str, ligand_pdbqt: str, output_pdb: str) ->
     # Strip END/ENDMDL from receptor
     rec_lines = [line for line in rec_lines if not line.strip().startswith(("END", "ENDMDL"))]
 
+    # Find the highest atom serial in the receptor so ligand serials don't collide
+    max_rec_serial = 0
+    for line in rec_lines:
+        if line.startswith(("ATOM  ", "HETATM")):
+            try:
+                serial = int(line[6:11])
+                if serial > max_rec_serial:
+                    max_rec_serial = serial
+            except ValueError:
+                continue
+
     # Parse ligand from PDBQT and rewrite as properly formatted HETATM
     lig_lines = []
-    atom_num = 1
+    atom_num = max_rec_serial + 1
+    atom_count = 0
     with open(ligand_pdbqt) as fh:
         for line in fh:
             if not line.startswith(("ATOM  ", "HETATM")):
@@ -118,11 +168,17 @@ def _build_complex_pdb(receptor_pdb: str, ligand_pdbqt: str, output_pdb: str) ->
             )
             lig_lines.append(new_line)
             atom_num += 1
+            atom_count += 1
+
+    # Generate CONECT records to help PLIP/Open Babel with macrocycles
+    conect_lines = _generate_conect_from_pdbqt(ligand_pdbqt, atom_offset=max_rec_serial)
 
     with open(output_pdb, "w") as fh:
         fh.writelines(rec_lines)
         fh.write("TER\n")
         fh.writelines(lig_lines)
+        if conect_lines:
+            fh.writelines(conect_lines)
         fh.write("END\n")
 
     return output_pdb
@@ -508,11 +564,27 @@ def detect_interactions(
             logger.warning(f"ProLIF failed: {exc}")
             prolif_intx = []
 
-    # Both: merge and deduplicate by (type, resn, resi)
+    # Both: merge and deduplicate.
+    # Key includes interaction type, residue, chain, AND the interacting atom(s)
+    # so that multiple H-bonds to the same residue (different atoms) are preserved.
     seen = set()
     merged = []
     for i in plip_intx + prolif_intx:
-        key = (i.get("type"), i.get("resn"), i.get("resi"), i.get("chain"))
+        # Extract ligand atom coordinates tuple for uniqueness
+        lig_atoms = i.get("ligand_atoms", [])
+        lig_coords_key: tuple[float, ...] = ()
+        if lig_atoms:
+            lig_coords_key = tuple(
+                round(float(c), 3) for atom in lig_atoms for c in atom.get("coords", ())
+            )
+        key = (
+            i.get("type"),
+            i.get("resn"),
+            i.get("resi"),
+            i.get("chain"),
+            i.get("atom"),
+            lig_coords_key,
+        )
         if key not in seen:
             seen.add(key)
             merged.append(i)

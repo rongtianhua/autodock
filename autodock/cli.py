@@ -310,7 +310,7 @@ def cmd_analyze(args: argparse.Namespace) -> int:
     from autodock.interactions import detect_interactions
     from autodock.rendering import render_interactions_2d, render_scene_pymol
 
-    intx = detect_interactions(args.receptor, args.ligand, method="plip")
+    intx = detect_interactions(args.receptor, args.ligand, method=args.method)
 
     print(f"\nDetected {len(intx)} interactions:")
     for i in intx[:20]:
@@ -1078,6 +1078,12 @@ def build_parser() -> argparse.ArgumentParser:
     p_analyze.add_argument("receptor", help="Receptor PDB")
     p_analyze.add_argument("ligand", help="Docked ligand PDBQT")
     p_analyze.add_argument("--output-dir", help="Directory for figures")
+    p_analyze.add_argument(
+        "--method",
+        choices=["plip", "prolif", "both"],
+        default="plip",
+        help="Interaction detection engine (default: plip)",
+    )
     p_analyze.set_defaults(func=cmd_analyze)
 
     # report
