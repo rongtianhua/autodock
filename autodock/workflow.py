@@ -271,6 +271,7 @@ def run_docking_workflow(
     config_path: str | None = None,
     resume: bool = True,
     run_posebusters: bool = True,
+    interaction_method: str = "plip",
 ) -> DockingWorkflowResult:
     """
     Run an end-to-end publication-grade molecular docking analysis.
@@ -323,6 +324,8 @@ def run_docking_workflow(
             in the output directory from a previous run.
         run_posebusters: If ``True`` (default), run PoseBusters validation on
             the best docked pose when PoseBusters is installed.
+        interaction_method: Interaction backend for post-processing —
+            ``"plip"`` (default), ``"prolif"``, or ``"both"``.
 
     Returns:
         :class:`DockingWorkflowResult` with all output paths and metadata.
@@ -416,6 +419,7 @@ def run_docking_workflow(
             "config_path": config_path,
             "resume": resume,
             "run_posebusters": run_posebusters,
+            "interaction_method": interaction_method,
         },
         environment=get_environment_status(),
     )
@@ -764,6 +768,7 @@ def run_docking_workflow(
                     do_interactions=True,
                     do_rendering=do_3d_figures,
                     do_report=do_report,
+                    interaction_method=interaction_method,
                 )
                 result.report_pdf = pp_out.get("pdf")
                 result.report_csv = pp_out.get("csv")
@@ -926,6 +931,12 @@ def main():
     parser.add_argument("--config", help="Path to YAML config file")
     parser.add_argument("--no-resume", action="store_true", help="Re-run all steps from scratch")
     parser.add_argument("--no-posebusters", action="store_true", help="Skip PoseBusters validation")
+    parser.add_argument(
+        "--method",
+        choices=["plip", "prolif", "both"],
+        default="plip",
+        help="Interaction detection engine (default: plip)",
+    )
 
     args = parser.parse_args()
 
@@ -950,6 +961,7 @@ def main():
         config_path=args.config,
         resume=not args.no_resume,
         run_posebusters=not args.no_posebusters,
+        interaction_method=args.method,
     )
 
     # Print summary

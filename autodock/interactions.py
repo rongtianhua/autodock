@@ -7,9 +7,12 @@ PLIP (primary) and ProLIF (secondary) for comprehensive interaction profiling.
 from __future__ import annotations
 
 import contextlib
+import csv
+import json
 import os
 import shutil
 import tempfile
+import time
 from typing import Any
 
 from autodock.core import (
@@ -338,19 +341,54 @@ def _parse_smiles_from_pdbqt(ligand_pdbqt: str) -> str | None:
     return None
 
 
+def _get_smiles_from_pdbqt_via_openbabel(ligand_pdbqt: str) -> str | None:
+    """Use Open Babel Python API to convert PDBQT → SMILES.
+
+    This is a robust fallback when REMARK SMILES is missing from the PDBQT.
+    Open Babel handles the PDBQT atom-type mapping internally.
+    """
+    try:
+        from openbabel import openbabel as ob
+    except ImportError:
+        return None
+
+    try:
+        conv = ob.OBConversion()
+        conv.SetInFormat("pdbqt")
+        conv.SetOutFormat("smi")
+        mol = ob.OBMol()
+        if not conv.ReadFile(mol, ligand_pdbqt):
+            return None
+        # Remove title (after tab) to get pure SMILES
+        smi = conv.WriteString(mol).strip()
+        if "\t" in smi:
+            smi = smi.split("\t")[0]
+        return smi if smi else None
+    except Exception as exc:
+        logger.debug(f"Open Babel SMILES extraction failed: {exc}")
+        return None
+
+
 def _build_ligand_mol_for_prolif(ligand_pdbqt: str):
     """
     Build an RDKit molecule with explicit hydrogens and docking pose coordinates.
 
     Strategy:
       1. Try REMARK SMILES from PDBQT → full molecule with correct H count.
-      2. MCS-align SMILES molecule to PDBQT coordinates.
-      3. Fallback: read PDBQT directly (incomplete H, but functional).
+      2. If REMARK SMILES missing, try Open Babel → SMILES conversion.
+      3. MCS-align SMILES molecule to PDBQT coordinates.
+      4. Fallback: read PDBQT directly (incomplete H, but functional).
     """
     from rdkit import Chem
     from rdkit.Chem import AllChem, rdFMCS
 
     smiles = _parse_smiles_from_pdbqt(ligand_pdbqt)
+
+    if not smiles:
+        # Try Open Babel as robust fallback
+        smiles = _get_smiles_from_pdbqt_via_openbabel(ligand_pdbqt)
+        if smiles:
+            logger.info(f"ProLIF ligand: SMILES recovered via Open Babel: {smiles}")
 
     if smiles:
         mol = Chem.MolFromSmiles(smiles)
@@ -405,6 +443,59 @@ def _build_ligand_mol_for_prolif(ligand_pdbqt: str):
     return mol
 
 
+def _build_prolif_receptor_mol(receptor_pdb: str):
+    """Build a ProLIF Molecule from a receptor PDB.
+
+    Strategy (fastest-first):
+      1. Try MDAnalysis → ProLIF ``from_mda`` (inferrer=None for no-H PDBs).
+         This is ~2-3× faster than RDKit for large proteins.
+      2. Fallback: RDKit ``MolFromPDBFile`` + ``AddHs`` + ``from_rdkit``.
+
+    Returns:
+        ``prolif.Molecule`` ready for fingerprint generation.
+    """
+    t0 = time.perf_counter()
+
+    # ── Path A: MDAnalysis (fast, handles no-H PDBs via inferrer=None) ───────
+    try:
+        import MDAnalysis as mda
+        import prolif as plf
+
+        u = mda.Universe(receptor_pdb)
+        prot = u.select_atoms("protein")
+        if prot.n_atoms == 0:
+            # Some PDBs don't have standard protein residues; try all atoms
+            prot = u.atoms
+
+        # inferrer=None disables bond-order inference (safe for no-H PDBs).
+        # ProLIF interaction detection is distance-based, so exact bond orders
+        # are not required for correct results.
+        rec_mol = plf.Molecule.from_mda(prot, inferrer=None)
+        elapsed = time.perf_counter() - t0
+        logger.info(
+            f"ProLIF receptor loaded via MDAnalysis ({rec_mol.GetNumAtoms()} atoms, "
+            f"{elapsed:.3f}s)"
+        )
+        return rec_mol
+    except Exception as exc:
+        logger.debug(f"MDAnalysis receptor loading failed: {exc}")
+
+    # ── Path B: RDKit (legacy, slower for large proteins) ────────────────────
+    import prolif as plf
+    from rdkit import Chem
+
+    rec_mol_rdkit = Chem.MolFromPDBFile(receptor_pdb, sanitize=False)
+    if rec_mol_rdkit is None:
+        raise VisualizationError(f"Could not read receptor PDB: {receptor_pdb}")
+    rec_h = Chem.AddHs(rec_mol_rdkit, addCoords=True)
+    rec_mol = plf.Molecule.from_rdkit(rec_h)
+    elapsed = time.perf_counter() - t0
+    logger.info(
+        f"ProLIF receptor loaded via RDKit ({rec_mol.GetNumAtoms()} atoms, " f"{elapsed:.3f}s)"
+    )
+    return rec_mol
+
+
 def detect_interactions_prolif(
     receptor_pdb: str,
     ligand_pdbqt: str,
@@ -412,7 +503,7 @@ def detect_interactions_prolif(
     """
     Detect interactions using ProLIF v2.1.0 as a secondary / cross-validation source.
 
-    Uses RDKit to add explicit hydrogens to both receptor and ligand, then
+    Uses MDAnalysis (primary) or RDKit (fallback) to load the receptor, and
     runs ProLIF's Fingerprint.generate() for static structure analysis.
 
     Args:
@@ -428,14 +519,11 @@ def detect_interactions_prolif(
         )
 
     import prolif as plf
-    from rdkit import Chem
+
+    t0 = time.perf_counter()
 
     # ── Receptor ──────────────────────────────────────────────────────────────
-    rec_mol = Chem.MolFromPDBFile(receptor_pdb, sanitize=False)
-    if rec_mol is None:
-        raise VisualizationError(f"Could not read receptor PDB: {receptor_pdb}")
-    rec_h = Chem.AddHs(rec_mol, addCoords=True)
-    prot_mol = plf.Molecule.from_rdkit(rec_h)
+    prot_mol = _build_prolif_receptor_mol(receptor_pdb)
 
     # ── Ligand ────────────────────────────────────────────────────────────────
     lig_mol_rdkit = _build_ligand_mol_for_prolif(ligand_pdbqt)
@@ -448,6 +536,8 @@ def detect_interactions_prolif(
     interactions: list[dict[str, Any]] = []
     if not ifp:
         logger.info("ProLIF detected 0 interactions")
+        total_t = time.perf_counter() - t0
+        logger.info(f"ProLIF total time: {total_t:.3f}s")
         return interactions
 
     ligand_conf = lig_mol_rdkit.GetConformer()
@@ -493,8 +583,137 @@ def detect_interactions_prolif(
                     }
                 )
 
-    logger.info(f"ProLIF detected {len(interactions)} interactions")
+    total_t = time.perf_counter() - t0
+    logger.info(f"ProLIF detected {len(interactions)} interactions ({total_t:.3f}s)")
     return interactions
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Cross-engine discrepancy reporting
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+def _make_interaction_key(item: dict[str, Any]) -> tuple:
+    """Create a normalized key for cross-engine comparison.
+
+    Key fields: interaction type, residue name/index/chain, and approximate
+    ligand atom coordinates (rounded to 1 Å for tolerance).
+    """
+    lig_atoms = item.get("ligand_atoms", [])
+    coords_key: tuple[float, ...] = ()
+    if lig_atoms:
+        # Round to 1 decimal place (~0.1 nm tolerance) for coordinate matching
+        coords_key = tuple(round(float(c), 1) for atom in lig_atoms for c in atom.get("coords", ()))
+    return (
+        item.get("type", ""),
+        item.get("resn", ""),
+        item.get("resi", 0),
+        item.get("chain", ""),
+        coords_key,
+    )
+
+
+def _generate_interaction_discrepancy_report(
+    plip_results: list[dict[str, Any]],
+    prolif_results: list[dict[str, Any]],
+    output_dir: str | None = None,
+) -> dict[str, Any]:
+    """Compare PLIP and ProLIF results and produce a structured discrepancy report.
+
+    Returns a dict with:
+      - ``summary``: high-level statistics (agreement rate, counts).
+      - ``only_plip``: interactions found by PLIP but not ProLIF.
+      - ``only_prolif``: interactions found by ProLIF but not PLIP.
+      - ``both``: interactions detected by both engines.
+      - ``json_path`` / ``csv_path``: paths to saved files (if *output_dir* given).
+    """
+    plip_keys = {_make_interaction_key(i): i for i in plip_results}
+    prolif_keys = {_make_interaction_key(i): i for i in prolif_results}
+
+    plip_set = set(plip_keys.keys())
+    prolif_set = set(prolif_keys.keys())
+
+    both_keys = plip_set & prolif_set
+    only_plip_keys = plip_set - prolif_set
+    only_prolif_keys = prolif_set - plip_set
+
+    both = [plip_keys[k] for k in both_keys]
+    only_plip = [plip_keys[k] for k in only_plip_keys]
+    only_prolif = [prolif_keys[k] for k in only_prolif_keys]
+
+    total_unique = len(plip_set | prolif_set)
+    agreement_rate = len(both_keys) / total_unique if total_unique > 0 else 1.0
+
+    report = {
+        "summary": {
+            "plip_count": len(plip_results),
+            "prolif_count": len(prolif_results),
+            "plip_unique": len(only_plip),
+            "prolif_unique": len(only_prolif),
+            "agreed": len(both),
+            "agreement_rate": round(agreement_rate, 3),
+            "total_unique": total_unique,
+        },
+        "only_plip": only_plip,
+        "only_prolif": only_prolif,
+        "both": both,
+    }
+
+    if output_dir:
+        os.makedirs(output_dir, exist_ok=True)
+
+        # JSON report
+        json_path = os.path.join(output_dir, "interaction_discrepancy.json")
+        try:
+            with open(json_path, "w") as fh:
+                json.dump(report, fh, indent=2, default=str)
+            report["json_path"] = json_path
+        except (OSError, TypeError) as exc:
+            logger.warning(f"Discrepancy JSON save failed: {exc}")
+
+        # CSV flat-file for easy spreadsheet inspection
+        csv_path = os.path.join(output_dir, "interaction_discrepancy.csv")
+        try:
+            rows: list[dict[str, Any]] = []
+            for item in only_plip:
+                row = dict(item)
+                row["engine"] = "PLIP_only"
+                rows.append(row)
+            for item in only_prolif:
+                row = dict(item)
+                row["engine"] = "ProLIF_only"
+                rows.append(row)
+            for item in both:
+                row = dict(item)
+                row["engine"] = "Both"
+                rows.append(row)
+
+            if rows:
+                # Flatten ligand_atoms for CSV
+                for row in rows:
+                    atoms = row.pop("ligand_atoms", [])
+                    if atoms:
+                        row["ligand_atom_coords"] = "; ".join(
+                            f"({a['coords'][0]:.2f}, {a['coords'][1]:.2f}, {a['coords'][2]:.2f})"
+                            for a in atoms
+                        )
+                    else:
+                        row["ligand_atom_coords"] = ""
+
+                with open(csv_path, "w", newline="") as fh:
+                    w = csv.DictWriter(fh, fieldnames=rows[0].keys())
+                    w.writeheader()
+                    w.writerows(rows)
+                report["csv_path"] = csv_path
+        except (OSError, TypeError, ValueError) as exc:
+            logger.warning(f"Discrepancy CSV save failed: {exc}")
+
+    logger.info(
+        f"Cross-engine agreement: {len(both)}/{total_unique} "
+        f"({agreement_rate*100:.1f}%) — "
+        f"PLIP-only: {len(only_plip)}, ProLIF-only: {len(only_prolif)}"
+    )
+    return report
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -515,7 +734,8 @@ def detect_interactions(
         receptor_pdb: Receptor PDB file.
         ligand_pdbqt: Ligand PDBQT file.
         method: 'plip' | 'prolif' | 'both'.
-        output_dir: Optional working directory.
+        output_dir: Optional working directory for discrepancy reports
+            when *method* == ``"both"``.
 
     Returns:
         List of interaction dicts.
@@ -564,7 +784,7 @@ def detect_interactions(
             logger.warning(f"ProLIF failed: {exc}")
             prolif_intx = []
 
-    # Both: merge and deduplicate.
+    # Both: merge, deduplicate, and optionally generate discrepancy report.
     # Key includes interaction type, residue, chain, AND the interacting atom(s)
     # so that multiple H-bonds to the same residue (different atoms) are preserved.
     seen = set()
@@ -590,4 +810,9 @@ def detect_interactions(
             merged.append(i)
 
     logger.info(f"Merged interactions (PLIP + ProLIF): {len(merged)} unique")
+
+    # Discrepancy report for method="both"
+    if method == "both" and (plip_intx or prolif_intx):
+        _generate_interaction_discrepancy_report(plip_intx, prolif_intx, output_dir=output_dir)
+
     return merged

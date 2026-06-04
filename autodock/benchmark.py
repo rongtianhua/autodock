@@ -110,6 +110,7 @@ def run_redocking_benchmark(
     skip_consensus: bool = True,
     minimize: bool = True,
     pocket_method: str = "crystal",
+    interaction_method: str = "plip",
 ) -> dict[str, Any]:
     """
     Run redocking validation on a benchmark set and compile statistics.
@@ -154,6 +155,7 @@ def run_redocking_benchmark(
                 "skip_consensus": skip_consensus,
                 "minimize": minimize,
                 "pocket_method": pocket_method,
+                "interaction_method": interaction_method,
             }
         )
 
@@ -549,6 +551,7 @@ def _run_single_benchmark(item: dict[str, Any]) -> dict[str, Any]:
         "ligand_strategy": item.get("ligand_strategy"),
         "minimize": item.get("minimize", False),
         "pocket_method": item.get("pocket_method", "crystal"),
+        "interaction_method": item.get("interaction_method", "plip"),
     }
     if pdb_id in HARD_TARGET_OVERRIDES:
         overrides = HARD_TARGET_OVERRIDES[pdb_id].copy()

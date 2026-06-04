@@ -512,6 +512,82 @@ class TestDetectInteractionsUnified:
         assert result[0]["type"] == "Hydrophobic"
 
 
+# ── Discrepancy report ───────────────────────────────────────────────────────
+
+
+class TestDiscrepancyReport:
+    """Tests for _generate_interaction_discrepancy_report."""
+
+    def _make_intx(self, itype, resn, resi, chain, coords=None):
+        d = {"type": itype, "resn": resn, "resi": resi, "chain": chain}
+        if coords:
+            d["ligand_atoms"] = [{"coords": c} for c in coords]
+        return d
+
+    def test_agreement_rate_perfect(self):
+        plip = [self._make_intx("H-bond", "SER", 1, "A", [(1.0, 2.0, 3.0)])]
+        prolif = [self._make_intx("H-bond", "SER", 1, "A", [(1.0, 2.0, 3.0)])]
+        report = intx._generate_interaction_discrepancy_report(plip, prolif)
+        assert report["summary"]["agreement_rate"] == 1.0
+        assert report["summary"]["agreed"] == 1
+        assert report["summary"]["plip_unique"] == 0
+        assert report["summary"]["prolif_unique"] == 0
+
+    def test_agreement_rate_zero(self):
+        plip = [self._make_intx("H-bond", "SER", 1, "A", [(1.0, 2.0, 3.0)])]
+        prolif = [self._make_intx("Hydrophobic", "ALA", 2, "A", [(4.0, 5.0, 6.0)])]
+        report = intx._generate_interaction_discrepancy_report(plip, prolif)
+        assert report["summary"]["agreement_rate"] == 0.0
+        assert report["summary"]["agreed"] == 0
+        assert report["summary"]["plip_unique"] == 1
+        assert report["summary"]["prolif_unique"] == 1
+
+    def test_empty_inputs(self):
+        report = intx._generate_interaction_discrepancy_report([], [])
+        assert report["summary"]["agreement_rate"] == 1.0
+        assert report["summary"]["total_unique"] == 0
+
+    def test_writes_json_and_csv(self, tmp_path):
+        plip = [self._make_intx("H-bond", "SER", 1, "A", [(1.0, 2.0, 3.0)])]
+        prolif = [
+            self._make_intx("H-bond", "SER", 1, "A", [(1.0, 2.0, 3.0)]),
+            self._make_intx("Hydrophobic", "ALA", 2, "A", [(4.0, 5.0, 6.0)]),
+        ]
+        report = intx._generate_interaction_discrepancy_report(
+            plip, prolif, output_dir=str(tmp_path)
+        )
+        assert "json_path" in report
+        assert "csv_path" in report
+        assert (tmp_path / "interaction_discrepancy.json").exists()
+        assert (tmp_path / "interaction_discrepancy.csv").exists()
+
+    def test_csv_engine_column(self, tmp_path):
+        plip = [self._make_intx("H-bond", "SER", 1, "A", [(1.0, 2.0, 3.0)])]
+        prolif = [self._make_intx("Hydrophobic", "ALA", 2, "A", [(4.0, 5.0, 6.0)])]
+        report = intx._generate_interaction_discrepancy_report(
+            plip, prolif, output_dir=str(tmp_path)
+        )
+        import csv
+
+        with open(report["csv_path"]) as fh:
+            reader = csv.DictReader(fh)
+            rows = list(reader)
+        engines = {r["engine"] for r in rows}
+        assert engines == {"PLIP_only", "ProLIF_only"}
+
+    def test_both_mode_calls_discrepancy_report(self, tmp_path):
+        """detect_interactions with method='both' should generate a discrepancy report."""
+        plip = [self._make_intx("H-bond", "SER", 1, "A", [(1.0, 2.0, 3.0)])]
+        prolif = [self._make_intx("Hydrophobic", "ALA", 2, "A", [(4.0, 5.0, 6.0)])]
+        with patch("autodock.interactions.detect_interactions_plip", return_value=plip):
+            with patch("autodock.interactions.detect_interactions_prolif", return_value=prolif):
+                intx.detect_interactions(
+                    "rec.pdb", "lig.pdbqt", method="both", output_dir=str(tmp_path)
+                )
+        assert (tmp_path / "interaction_discrepancy.json").exists()
+        assert (tmp_path / "interaction_discrepancy.csv").exists()
+
+
 # ── Interaction categories ───────────────────────────────────────────────────
 
 

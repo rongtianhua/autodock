@@ -263,6 +263,7 @@ def cmd_dock(args: argparse.Namespace) -> int:
             do_rendering=True,
             do_report=True,
             copy_structures=True,
+            interaction_method=args.method,
         )
         print(f"📊  Full report: {outputs.get('pdf', 'N/A')}")
         print(f"🖼️   Figures:    {outputs['dirs']['figures']}")
@@ -435,6 +436,7 @@ def cmd_benchmark_redock(args: argparse.Namespace) -> int:
         n_poses=args.n_poses,
         seed=args.seed,
         n_workers=args.workers,
+        interaction_method=getattr(args, "method", "plip"),
     )
 
     print(f"\n{'=' * 55}")
@@ -552,6 +554,7 @@ def cmd_batch_dock(args: argparse.Namespace) -> int:
                     do_rendering=bool(receptor_pdb),
                     do_report=True,
                     copy_structures=True,
+                    interaction_method=getattr(args, "method", "plip"),
                 )
                 processed_count += 1
                 print(f"  ✓ {rec_name} × {lig_name}")
@@ -867,7 +870,7 @@ def cmd_run(args: argparse.Namespace) -> int:
     print("\n" + "=" * 55)
     print("🧪  Step 5: Interaction analysis")
     print("=" * 55)
-    intx = detect_interactions(receptor_pdb, result.best_pose_pdbqt, method="plip")
+    intx = detect_interactions(receptor_pdb, result.best_pose_pdbqt, method=args.method)
     print(f"  Detected {len(intx)} interactions")
     for i in intx[:10]:
         print(f"    {i['description']}")
@@ -1052,6 +1055,12 @@ def build_parser() -> argparse.ArgumentParser:
     p_dock.add_argument(
         "--receptor-pdb", default=None, help="Receptor PDB file (for interaction/rendering)"
     )
+    p_dock.add_argument(
+        "--method",
+        choices=["plip", "prolif", "both"],
+        default="plip",
+        help="Interaction detection engine (default: plip)",
+    )
     p_dock.set_defaults(func=cmd_dock)
 
     # validate
@@ -1103,6 +1112,12 @@ def build_parser() -> argparse.ArgumentParser:
     p_bench.add_argument("--workers", type=int, default=1)
     p_bench.add_argument(
         "--targets", type=str, default=None, help="JSON file with custom target list"
+    )
+    p_bench.add_argument(
+        "--method",
+        choices=["plip", "prolif", "both"],
+        default="plip",
+        help="Interaction detection engine for post-docking analysis",
     )
     p_bench.set_defaults(func=cmd_benchmark_redock)
 
@@ -1201,6 +1216,12 @@ def build_parser() -> argparse.ArgumentParser:
     p_run.add_argument("--exhaustiveness", type=int, default=32)
     p_run.add_argument("--n-poses", type=int, default=20)
     p_run.add_argument("--seed", type=int, default=42)
+    p_run.add_argument(
+        "--method",
+        choices=["plip", "prolif", "both"],
+        default="plip",
+        help="Interaction detection engine (default: plip)",
+    )
     p_run.set_defaults(func=cmd_run)
 
     return parser

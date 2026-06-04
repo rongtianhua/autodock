@@ -53,6 +53,7 @@ def post_process_docking(
     do_rendering: bool = True,
     do_report: bool = True,
     copy_structures: bool = True,
+    interaction_method: str = "plip",
 ) -> dict[str, Any]:
     """Run full post-processing on a DockingResult and write all outputs
     into the standardized pair directory.
@@ -68,10 +69,12 @@ def post_process_docking(
         receptor_pdb_holo: Path to original (holo) receptor PDB with waters
             for PLIP water-bridge detection. Falls back to ``receptor_pdb``
             if not provided.
-        do_interactions: Run PLIP interaction detection.
+        do_interactions: Run interaction detection.
         do_rendering: Render 2D/3D figures.
         do_report: Generate PDF + CSV reports.
         copy_structures: Copy original/intermediate structure files.
+        interaction_method: Interaction backend — ``"plip"`` (default),
+            ``"prolif"``, or ``"both"``.
 
     Returns:
         Dict with all output paths produced.
@@ -135,7 +138,10 @@ def post_process_docking(
             from autodock.interactions import detect_interactions
 
             interactions = detect_interactions(
-                _receptor_for_plip, result.best_pose_pdbqt, method="plip"
+                _receptor_for_plip,
+                result.best_pose_pdbqt,
+                method=interaction_method,
+                output_dir=dirs.get("interactions"),
             )
             result.interactions = interactions
             logger.info(f"Detected {len(interactions)} interactions for {compound}")
