@@ -609,8 +609,7 @@ _INTERACTION_TYPE_NORMALISATION = {
     "Metal complex": "Metal",
     # ProLIF → canonical
     "van der Waals": "Hydrophobic",
-    "π-π": "Aromatic",
-    "π-cation": "Aromatic",
+    # "π-π" and "π-cation" already mapped above (shared with PLIP)
     "Cationic": "Ionic",
     "Anionic": "Ionic",
     "XBDonor": "Halogen",
@@ -703,15 +702,11 @@ def _generate_interaction_discrepancy_report(
     plip_loose = {_make_interaction_key(i, normalise_type=True): i for i in plip_results}
     prolif_loose = {_make_interaction_key(i, normalise_type=True): i for i in prolif_results}
     both_loose_keys = set(plip_loose.keys()) & set(prolif_loose.keys())
-    only_plip_loose_keys = set(plip_loose.keys()) - set(prolif_loose.keys())
-    only_prolif_loose_keys = set(prolif_loose.keys()) - set(plip_loose.keys())
 
     # ── Residue-level matching (any type, same residue) ───────────────────
     plip_residues = {_residue_key(i) for i in plip_results}
     prolif_residues = {_residue_key(i) for i in prolif_results}
     both_residues = plip_residues & prolif_residues
-    only_plip_residues = plip_residues - prolif_residues
-    only_prolif_residues = prolif_residues - plip_residues
 
     total_unique = len(plip_set | prolif_set)
     agreement_rate = len(both_keys) / total_unique if total_unique > 0 else 1.0
