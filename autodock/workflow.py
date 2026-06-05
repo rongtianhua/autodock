@@ -852,7 +852,6 @@ def _dock_single_pocket(
             seed=seed,
             output_dir=pocket_dir,
             compound_name=f"{rep_name}_pocket{pocket_idx + 1}",
-            skip_consensus=False,
             min_rmsd=1.0,
             multi_conformer=multi_conformer,
             ligand_smiles=ligand_smiles if multi_conformer else None,

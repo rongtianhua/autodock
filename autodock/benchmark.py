@@ -18,7 +18,13 @@ from typing import Any
 
 import numpy as np
 
-from autodock.core import REDocking_RMSD_THRESHOLD, StructureFetchError, ValidationError, DockingError, logger
+from autodock.core import (
+    DockingError,
+    REDocking_RMSD_THRESHOLD,
+    StructureFetchError,
+    ValidationError,
+    logger,
+)
 from autodock.utils import safe_pdb_slice
 from autodock.validation import run_redocking_validation
 
@@ -85,7 +91,10 @@ HARD_TARGET_OVERRIDES: dict[str, dict[str, Any]] = {
         "ligand_strategy": "simple",
         "auto_exhaustiveness": False,
         "timeout": 1200,
-        "_note": "HIV-1 protease: very large ligand (66 atoms), needs reduced sampling + long timeout",
+        "_note": (
+            "HIV-1 protease: very large ligand (66 atoms), "
+            "needs reduced sampling + long timeout"
+        ),
     },
     "1GWX": {
         "exhaustiveness": 16,  # prevent combinatorial explosion
@@ -125,6 +134,7 @@ def run_redocking_benchmark(
     pocket_method: str = "crystal",
     interaction_method: str = "plip",
     auto_exhaustiveness: bool = True,
+    top_n_check: int = 3,
 ) -> dict[str, Any]:
     """
     Run redocking validation on a benchmark set and compile statistics.
@@ -136,18 +146,23 @@ def run_redocking_benchmark(
         n_poses: Poses per target.
         seed: Random seed for reproducibility.
         n_workers: Parallel workers (-1 = all CPU cores).
-        skip_consensus: Skip Vinardo consensus scoring for speed (default True for benchmarks).
+        skip_consensus: Deprecated.  Consensus scoring has been removed; this
+            parameter is accepted for backward compatibility but has no effect.
         minimize: If True, run OpenMM ligand-only energy minimisation
             on each best pose before RMSD evaluation. Default False for benchmark
             speed (minimization succeeds on only ~6% of targets in practice).
         pocket_method: Box-definition strategy:
             * ``"crystal"`` (default): centre box on crystal ligand (self-docking).
             * ``"blind"``: blind pocket detection (cross-docking).
+        top_n_check: Number of top-ranked poses to evaluate for the best-RMSD
+            metric (default 3).  Measures practical success if the user
+            inspects the top-N poses and picks the best one.
 
     Returns:
         Summary dict with:
         - n_total, n_success, success_rate
         - mean_rmsd, median_rmsd, rmsd_std
+        - top_n_success, top_n_success_rate
         - results_by_family
         - per_target_results
         - output_paths (JSON, CSV)
@@ -172,6 +187,7 @@ def run_redocking_benchmark(
                 "pocket_method": pocket_method,
                 "interaction_method": interaction_method,
                 "auto_exhaustiveness": auto_exhaustiveness,
+                "top_n_check": top_n_check,
             }
         )
 
@@ -230,6 +246,15 @@ def run_redocking_benchmark(
         and r["best_rmsd"] <= REDocking_RMSD_THRESHOLD  # but a good pose exists
     ]
 
+    # Top-N metrics: practical success if user inspects top-N poses
+    top_n_successes = [
+        r
+        for r in raw_results
+        if r.get("top_n_success")
+        and r.get("top_n_best_rmsd") is not None
+    ]
+    top_n_rmsds = [r["top_n_best_rmsd"] for r in top_n_successes]
+
     summary = {
         "n_total": len(targets),
         "n_success": len(successes),
@@ -246,10 +271,20 @@ def run_redocking_benchmark(
         # Scoring-failure targets: Vina ranked a sub-optimal pose higher than a good one
         "n_scoring_failures": len(scoring_failures),
         "scoring_failure_pdb_ids": [r["pdb_id"] for r in scoring_failures],
+        # Top-N metrics (practical user-inspection scenario)
+        "top_n_check": top_n_check,
+        "n_success_top_n": len(top_n_successes),
+        "success_rate_top_n": len(top_n_successes) / len(targets) if targets else 0.0,
+        "mean_top_n_rmsd": float(np.mean(top_n_rmsds)) if top_n_rmsds else None,
+        "median_top_n_rmsd": float(np.median(top_n_rmsds)) if top_n_rmsds else None,
+        # IFP re-scoring metrics
+        "ifp_successes": [r for r in raw_results if r.get("ifp_best_rmsd") is not None and r["ifp_best_rmsd"] < REDocking_RMSD_THRESHOLD],
+        "ifp_rmsds": [r["ifp_best_rmsd"] for r in raw_results if r.get("ifp_best_rmsd") is not None],
         "parameters": {
             "exhaustiveness": exhaustiveness,
             "n_poses": n_poses,
             "seed": seed,
+            "top_n_check": top_n_check,
         },
     }
 
@@ -320,6 +355,12 @@ def run_redocking_benchmark(
                         if "best_rmsd" in r
                         else None
                     ),
+                    "top_n_best_rmsd": r.get("top_n_best_rmsd"),
+                    "top_n_success": r.get("top_n_success"),
+                    "top_n_best_pose_idx": r.get("top_n_best_pose_idx"),
+                    "ifp_best_rmsd": r.get("ifp_best_rmsd"),
+                    "ifp_best_pose_idx": r.get("ifp_best_pose_idx"),
+                    "ifp_best_score": r.get("ifp_best_score"),
                     "best_affinity": r.get("best_affinity"),
                     "error": r.get("error", ""),
                 }
@@ -336,6 +377,8 @@ def run_redocking_benchmark(
     msg = (
         f"Benchmark complete: {summary['n_success']}/{summary['n_total']} top-1 succeeded "
         f"({summary['success_rate'] * 100:.1f}%). "
+        f"Top-{top_n_check}: {summary['n_success_top_n']}/{summary['n_total']} "
+        f"({summary['success_rate_top_n'] * 100:.1f}%). "
         f"Best-RMSD: {summary['n_success_best']}/{summary['n_total']} "
         f"({summary['success_rate_best'] * 100:.1f}%). "
     )
@@ -348,6 +391,13 @@ def run_redocking_benchmark(
         msg += (
             f"Scoring failures: {summary['n_scoring_failures']} targets have best-RMSD < 2.0 Å "
             f"but top-1 > 2.0 Å ({', '.join(summary['scoring_failure_pdb_ids'])}). "
+        )
+    ifp_successes = summary.get("ifp_successes", [])
+    ifp_rmsds = summary.get("ifp_rmsds", [])
+    if ifp_rmsds:
+        msg += (
+            f"IFP-best: {len(ifp_successes)}/{summary['n_total']} "
+            f"({len(ifp_successes)/summary['n_total']*100:.1f}%). "
         )
     if summary["median_rmsd"] is not None:
         msg += f"Median RMSD: {summary['median_rmsd']:.2f} Å"
@@ -569,6 +619,7 @@ def _run_single_benchmark(item: dict[str, Any]) -> dict[str, Any]:
         "pocket_method": item.get("pocket_method", "crystal"),
         "interaction_method": item.get("interaction_method", "plip"),
         "auto_exhaustiveness": item.get("auto_exhaustiveness", True),
+        "top_n_check": item.get("top_n_check", 3),
     }
     if pdb_id in HARD_TARGET_OVERRIDES:
         overrides = HARD_TARGET_OVERRIDES[pdb_id].copy()
@@ -595,6 +646,13 @@ def _run_single_benchmark(item: dict[str, Any]) -> dict[str, Any]:
             "best_affinity": result.get("best_affinity"),
             "best_rmsd": result.get("best_rmsd"),
             "best_rmsd_pose_idx": result.get("best_rmsd_pose_idx"),
+            "top_n_check": result.get("top_n_check", 3),
+            "top_n_best_rmsd": result.get("top_n_best_rmsd"),
+            "top_n_best_pose_idx": result.get("top_n_best_pose_idx"),
+            "top_n_success": result.get("top_n_success"),
+            "ifp_best_rmsd": result.get("ifp_best_rmsd"),
+            "ifp_best_pose_idx": result.get("ifp_best_pose_idx"),
+            "ifp_best_score": result.get("ifp_best_score"),
             "threshold": result.get("threshold"),
             "pocket_method": result.get("pocket_method"),
             "pocket_source": result.get("pocket_source"),

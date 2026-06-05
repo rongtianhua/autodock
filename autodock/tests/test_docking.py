@@ -88,9 +88,8 @@ class TestRunVinaDock:
 
 
 class TestConsensusScore:
-    @patch("autodock.docking._score_pose_with_sf")
-    def test_single_score(self, mock_score):
-        mock_score.return_value = None
+    def test_returns_vina_only(self):
+        # Consensus scoring is disabled; _consensus_score returns Vina only.
         all_scores, consensus = docking._consensus_score(
             "rec.pdbqt",
             "pose.pdbqt",
@@ -101,21 +100,6 @@ class TestConsensusScore:
         )
         assert all_scores == {"vina": -8.0}
         assert consensus is None
-
-    @patch("autodock.docking._score_pose_with_sf")
-    def test_median_consensus(self, mock_score):
-        # First call returns vinardo score
-        mock_score.return_value = -7.5
-        all_scores, consensus = docking._consensus_score(
-            "rec.pdbqt",
-            "pose.pdbqt",
-            (0, 0, 0),
-            (20, 20, 20),
-            -8.0,
-            seed=42,
-        )
-        assert "vinardo" in all_scores
-        assert consensus == -7.5  # median of [-8.0, -7.5]
 
 
 class TestDockLigand:

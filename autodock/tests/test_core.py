@@ -201,12 +201,11 @@ class TestDockingResult:
         r = core.DockingResult(
             compound_name="x",
             receptor="r",
-            scoring_functions=["vina", "vinardo"],
+            scoring_functions=["vina"],
             receptor_source="PDB",
         )
         label = r.method_label
         assert "AutoDock Vina" in label
-        assert "consensus" in label
         assert "X-ray" in label
 
     def test_to_dict_serialisation(self):

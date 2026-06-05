@@ -214,3 +214,69 @@ class TestRunRedockingValidation:
     def test_no_extraction_mode_raises(self):
         with pytest.raises((ValueError, val.ValidationError)):
             val.run_redocking_validation("holo.pdb")
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Top-N RMSD
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+class TestTopNBestRMSD:
+    def test_missing_file_returns_none(self, tmp_path):
+        missing = str(tmp_path / "missing.pdbqt")
+        crystal = str(tmp_path / "crystal.pdb")
+        rmsd, idx = val.compute_top_n_best_rmsd_from_all_poses(missing, crystal, n=3)
+        assert rmsd is None
+        assert idx == -1
+
+    def test_no_rdkit_returns_none(self, tmp_path):
+        with patch.object(val, "_HAVE_RDKIT", False):
+            rmsd, idx = val.compute_top_n_best_rmsd_from_all_poses("a.pdbqt", "b.pdb", n=3)
+        assert rmsd is None
+        assert idx == -1
+
+    def test_single_model(self, tmp_path):
+        poses = tmp_path / "poses.pdbqt"
+        poses.write_text("ATOM      1  C   LIG A   1      0.000   0.000   0.000\n")
+        crystal = tmp_path / "crystal.pdb"
+        crystal.write_text("ATOM      1  C   LIG A   1      0.000   0.000   0.000\n")
+
+        with patch.object(val, "_HAVE_RDKIT", True):
+            with patch("rdkit.Chem.MolFromPDBFile") as mock_from_pdb:
+                mock_from_pdb.return_value = MagicMock()
+                with patch("rdkit.Chem.AllChem.GetBestRMS", return_value=1.5):
+                    rmsd, idx = val.compute_top_n_best_rmsd_from_all_poses(
+                        str(poses), str(crystal), n=3
+                    )
+        assert rmsd == pytest.approx(1.5)
+        assert idx == 1
+
+    def test_multi_model_limits_to_n(self, tmp_path):
+        """Only the first *n* models are evaluated."""
+        poses = tmp_path / "poses.pdbqt"
+        poses.write_text(
+            "MODEL 1\nATOM 1 C LIG A 1 0 0 0\nENDMDL\n"
+            "MODEL 2\nATOM 1 C LIG A 1 1 1 1\nENDMDL\n"
+            "MODEL 3\nATOM 1 C LIG A 1 2 2 2\nENDMDL\n"
+        )
+        crystal = tmp_path / "crystal.pdb"
+        crystal.write_text("ATOM 1 C LIG A 1 0 0 0\n")
+
+        call_count = 0
+
+        def fake_rms(a, b):
+            nonlocal call_count
+            call_count += 1
+            return float(call_count)  # 1.0, 2.0, 3.0, ...
+
+        with patch.object(val, "_HAVE_RDKIT", True):
+            with patch("rdkit.Chem.MolFromPDBFile", return_value=MagicMock()):
+                with patch("rdkit.Chem.MolFromPDBBlock", return_value=MagicMock()):
+                    with patch("rdkit.Chem.AllChem.GetBestRMS", side_effect=fake_rms):
+                        rmsd, idx = val.compute_top_n_best_rmsd_from_all_poses(
+                            str(poses), str(crystal), n=2
+                        )
+        # Only 2 calls (first 2 models), best is 1.0 from model 1
+        assert call_count == 2
+        assert rmsd == pytest.approx(1.0)
+        assert idx == 1

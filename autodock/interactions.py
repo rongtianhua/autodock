@@ -907,3 +907,117 @@ def detect_interactions(
         _generate_interaction_discrepancy_report(plip_intx, prolif_intx, output_dir=output_dir)
 
     return merged
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Interaction Fingerprint (IFP) scoring for pose re-ranking
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+def interaction_fingerprint(interactions: list[dict[str, Any]]) -> set[str]:
+    """Convert interaction list to a fingerprint set of type:residue keys.
+
+    Each key encodes the interaction type and the protein residue involved,
+    e.g. ``"H-bond:GLU117.A"`` or ``"Hydrophobic:PHE121.A"``.  This coarse
+    graining is intentionally robust to small geometric deviations between
+    docked poses and the crystal structure.
+    """
+    fp: set[str] = set()
+    for i in interactions:
+        # Normalise type to a small canonical set for cross-engine compatibility
+        itype = i.get("type", "Unknown")
+        key = f"{itype}:{i.get('resn', 'UNK')}{i.get('resi', 0)}.{i.get('chain', 'A')}"
+        fp.add(key)
+    return fp
+
+
+def ifp_tanimoto(ref_ifp: set[str], pose_ifp: set[str]) -> float:
+    """Compute Tanimoto coefficient between two interaction fingerprints.
+
+    Returns 1.0 when both fingerprints are empty (no interactions expected
+    or detected), 0.0 when one is empty and the other is not, and the
+    standard |intersection|/|union| otherwise.
+    """
+    if not ref_ifp and not pose_ifp:
+        return 1.0
+    if not ref_ifp or not pose_ifp:
+        return 0.0
+    intersection = len(ref_ifp & pose_ifp)
+    union = len(ref_ifp | pose_ifp)
+    return intersection / union if union > 0 else 0.0
+
+
+def ifp_similarity_scores(
+    receptor_pdb: str,
+    all_poses_pdbqt: str,
+    ref_ligand_pdb: str,
+    method: str = "plip",
+) -> list[tuple[int, float, float | None]]:
+    """Score each pose in a multi-MODEL PDBQT by interaction-fingerprint similarity to a reference ligand.
+
+    Args:
+        receptor_pdb: Receptor PDB file path.
+        all_poses_pdbqt: Multi-MODEL PDBQT with docked poses.
+        ref_ligand_pdb: Reference ligand PDB (crystal pose) for computing the target IFP.
+        method: Interaction detection engine (``"plip"`` | ``"prolif"`` | ``"both"``).
+
+    Returns:
+        List of ``(pose_index, tanimoto_score, vina_energy)`` tuples, sorted by
+        descending Tanimoto score.  ``pose_index`` is 1-based to match Vina output.
+        ``vina_energy`` is parsed from the PDBQT REMARK lines when available.
+    """
+    import re
+
+    # 1. Reference IFP from crystal ligand
+    ref_interactions = detect_interactions(receptor_pdb, ref_ligand_pdb, method=method)
+    ref_ifp = interaction_fingerprint(ref_interactions)
+    logger.info(f"Reference IFP: {len(ref_ifp)} interactions from crystal ligand")
+
+    # 2. Split poses
+    with open(all_poses_pdbqt) as fh:
+        content = fh.read()
+    models = re.split(r"MODEL\s+\d+\n", content)
+    if len(models) <= 1:
+        logger.warning("No poses found for IFP scoring")
+        return []
+
+    # 3. Score each pose
+    scores: list[tuple[int, float, float | None]] = []
+    for idx, model_block in enumerate(models[1:], start=1):
+        # Write temporary pose PDBQT
+        pose_path = tempfile.mktemp(suffix="_pose.pdbqt")
+        try:
+            with open(pose_path, "w") as fh:
+                fh.write(model_block)
+
+            # Parse Vina energy from REMARK
+            energy: float | None = None
+            for line in model_block.splitlines():
+                if line.startswith("REMARK VINA RESULT:"):
+                    try:
+                        parts = line.split()
+                        energy = float(parts[3])
+                    except (IndexError, ValueError):
+                        pass
+                    break
+
+            # Detect interactions
+            try:
+                pose_interactions = detect_interactions(receptor_pdb, pose_path, method=method)
+                pose_ifp = interaction_fingerprint(pose_interactions)
+                tanimoto = ifp_tanimoto(ref_ifp, pose_ifp)
+                logger.debug(
+                    f"Pose {idx}: IFP Tanimoto={tanimoto:.3f} "
+                    f"({len(pose_ifp)} interactions, ref={len(ref_ifp)})"
+                )
+                scores.append((idx, tanimoto, energy))
+            except Exception as exc:
+                logger.debug(f"Pose {idx}: interaction detection failed ({exc}), Tanimoto=0.0")
+                scores.append((idx, 0.0, energy))
+        finally:
+            with contextlib.suppress(OSError):
+                os.unlink(pose_path)
+
+    # Sort by descending Tanimoto
+    scores.sort(key=lambda x: (-x[1], x[2] if x[2] is not None else 0.0))
+    return scores

@@ -33,7 +33,7 @@ from autodock.core import (
     _get_vina_seed,
     logger,
 )
-from autodock.utils import ensure_dir, strip_model_headers, write_temp_file
+from autodock.utils import ensure_dir, strip_model_headers
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Low-level Vina wrappers
@@ -468,22 +468,12 @@ def _consensus_score(
         (all_scores_dict, consensus_affinity)
         consensus_affinity is the median of all successful scores.
     """
-    # Extensible scoring-function list.  Vina Python API currently supports
-    # "vina" and "vinardo".  Additional SFs (e.g. "ad4" via CLI, GNINA CNN
-    # scores, etc.) can be registered here or passed via config.
+    # Consensus scoring is currently disabled.  Previous Vinardo integration
+    # was removed after empirical testing showed it worsened pose selection
+    # on our benchmark set (see discussion in #78).  The function signature
+    # is preserved for backward compatibility; future consensus methods can
+    # be added here without changing callers.
     all_scores: dict[str, float] = {"vina": vina_score}
-    for sf in ("vinardo",):
-        s = _score_pose_with_sf(receptor_pdbqt, pose_pdbqt, center, box_size, sf, seed)
-        if s is not None:
-            all_scores[sf] = s
-            logger.info(f"  {sf} score: {s:.3f} kcal/mol")
-
-    if len(all_scores) > 1:
-        median_e = sorted(all_scores.values())[len(all_scores) // 2]
-        logger.info(
-            f"Consensus affinity: {median_e:.3f} kcal/mol (median of {list(all_scores.keys())})"
-        )
-        return all_scores, median_e
     return all_scores, None
 
 
@@ -528,8 +518,8 @@ def dock_ligand(
         output_dir: If provided, persist pose files here.
         compound_name: Name for result tracking.
         receptor_pdb: Original receptor PDB (for provenance).
-        skip_consensus: If True, skip the extra Vinardo consensus scoring step
-            (useful for bulk benchmarks where speed matters).
+        skip_consensus: Deprecated.  Consensus scoring has been removed; this
+            parameter is accepted for backward compatibility but has no effect.
         auto_exhaustiveness: If True, reduce exhaustiveness for very large
             ligands (>35 heavy atoms) to avoid Vina combinatorial explosion.
             Default False to preserve publication-grade sampling.
@@ -537,8 +527,8 @@ def dock_ligand(
             discards poses within this threshold (default 1.0 Å, typical
             range 0.5–1.5 Å; see Fischer et al. 2021, J. Chem. Inf. Model.).
         scoring_function: Vina scoring function name.  Supported: ``"vina"``
-            (default), ``"vinardo"``, ``"ad4"`` (AutoDock4).  Available
-            functions depend on the Vina Python package version.
+            (default), ``"ad4"`` (AutoDock4).  Available functions depend on
+            the Vina Python package version.
         ligand_smiles: SMILES of the ligand.  Required when
             ``multi_conformer=True``.
         multi_conformer: If True, pre-generate multiple 3D conformers
@@ -688,50 +678,10 @@ def dock_ligand(
                 fh.write(poses[rep_idx])
             cluster["representative_path"] = rep_path
 
-    # Consensus scoring (optional — skip for speed in bulk benchmarks)
+    # Consensus scoring is disabled (see #78).  Parameter accepted for
+    # backward compatibility but has no effect.
     all_scores = {"vina": best_affinity}
     consensus = None
-    if not skip_consensus:
-        # Score best pose with all available scoring functions
-        all_scores, consensus = _consensus_score(
-            receptor_pdbqt, best_pose_path, center, box_size, best_affinity, seed
-        )
-
-        # Multi-pose Vinardo scoring: detect scoring-rank disagreement
-        # between Vina and Vinardo across all poses.
-        if len(poses) > 1:
-            vinardo_scores: list[tuple[float, int]] = []  # (score, pose_idx)
-            for _pidx, _pose in enumerate(poses):
-                _tmp_path = write_temp_file(strip_model_headers(_pose), suffix="_pose.pdbqt")
-                try:
-                    _vs = _score_pose_with_sf(
-                        receptor_pdbqt, _tmp_path, center, box_size, "vinardo", seed
-                    )
-                    if _vs is not None:
-                        vinardo_scores.append((_vs, _pidx))
-                finally:
-                    with contextlib.suppress(OSError):
-                        os.unlink(_tmp_path)
-
-            if vinardo_scores:
-                vinardo_scores.sort(key=lambda x: x[0])  # best (lowest) first
-                best_vinardo_score, best_vinardo_idx = vinardo_scores[0]
-                vina_best_idx = 0  # Vina already sorts pose 0 = best
-                if best_vinardo_idx != vina_best_idx:
-                    logger.warning(
-                        f"Scoring bias detected: Vinardo prefers pose #{best_vinardo_idx + 1} "
-                        f"({best_vinardo_score:.3f} kcal/mol) over Vina's top pose #1 "
-                        f"({best_affinity:.3f} kcal/mol). "
-                        "Consensus considers all scores; inspect affinity-vs-RMSD plot."
-                    )
-                else:
-                    logger.debug(
-                        f"Vinardo all-poses check: best pose #{best_vinardo_idx + 1} "
-                        f"matches Vina ranking."
-                    )
-                # Store all Vinardo scores in DockingResult metadata
-                all_scores["vinardo_all_poses"] = best_vinardo_score
-                all_scores["vinardo_best_pose_idx"] = float(best_vinardo_idx)
 
     # Receptor source detection
     receptor_source = None
@@ -875,7 +825,7 @@ def dock_ligand_multi_conformer(
 
     Args:
         conformer_pdbqts: List of prepared ligand conformer PDBQT files.
-        skip_consensus: If True, skip the extra Vinardo consensus scoring step.
+        skip_consensus: Deprecated.  Accepted for backward compatibility.
         max_workers: Parallel workers for conformer docking (-1 = auto: CPU
             count capped by available memory, ~1.5 GB/worker).  When
             ``psutil`` is installed, the estimate is accurate; without it,
@@ -1056,14 +1006,9 @@ def dock_ligand_multi_conformer(
                 fh.write(all_poses[rep_idx])
             cluster["representative_path"] = rep_path
 
-    # Consensus scoring (optional)
-    if skip_consensus:
-        all_scores = {"vina": best_energy}
-        consensus = None
-    else:
-        all_scores, consensus = _consensus_score(
-            receptor_pdbqt, best_pose_path, center, box_size, best_energy, seed
-        )
+    # Consensus scoring is disabled (see #78).
+    all_scores = {"vina": best_energy}
+    consensus = None
 
     return DockingResult(
         compound_name=compound_name or Path(conformer_pdbqts[0]).stem,

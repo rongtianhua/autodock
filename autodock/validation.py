@@ -6,6 +6,7 @@ PoseBusters checks, clash detection, RMSD calculation, and redocking validation.
 
 from __future__ import annotations
 
+import contextlib
 import os
 import tempfile
 from typing import Any
@@ -522,14 +523,114 @@ def compute_best_rmsd_from_all_poses(
         if docked_mol is None:
             continue
 
-        try:
+        rms = None
+        with contextlib.suppress(RuntimeError, ValueError, TypeError):
             rms = AllChem.GetBestRMS(docked_mol, crystal_mol)
-            if rms < best_rmsd:
-                best_rmsd = rms
-                best_idx = idx
-        except (RuntimeError, ValueError, TypeError):
-            # Topology mismatch — skip this pose
+
+        if rms is None:
+            # Fallback: write pose block to temp file for coordinate-based method
+            with tempfile.NamedTemporaryFile(
+                mode="w", suffix=".pdbqt", delete=False
+            ) as tf:
+                tf.write(block)
+                tmp_pose = tf.name
+            try:
+                rms = compute_rmsd_coordinate_based(tmp_pose, crystal_ligand_pdb)
+            finally:
+                with contextlib.suppress(OSError):
+                    os.unlink(tmp_pose)
+
+        if rms is not None and rms < best_rmsd:
+            best_rmsd = rms
+            best_idx = idx
+
+    if best_idx == -1:
+        return None, -1
+    return float(best_rmsd), best_idx
+
+
+def compute_top_n_best_rmsd_from_all_poses(
+    all_poses_pdbqt: str,
+    crystal_ligand_pdb: str,
+    n: int = 3,
+) -> tuple[float | None, int]:
+    """
+    Compute the best (lowest) RMSD among the first *n* poses in a multi-MODEL PDBQT.
+
+    This is useful for evaluating top-N pose selection: Vina generates many
+    poses, but its scoring function does not always rank the most accurate
+    pose first.  CASF-2013 docking power shows Vina top-1 success ~80.5%,
+    while top-3 success ~90.8% (zero extra compute cost).
+
+    Args:
+        all_poses_pdbqt: PDBQT file containing multiple MODEL poses.
+        crystal_ligand_pdb: Crystal ligand PDB reference.
+        n: Number of top-ranked poses to evaluate (default 3).
+
+    Returns:
+        (best_rmsd, best_pose_index) where best_pose_index is 1-based.
+        Returns (None, -1) if no poses among the first *n* could be evaluated.
+    """
+    if not _HAVE_RDKIT or not os.path.isfile(all_poses_pdbqt):
+        return None, -1
+
+    if not os.path.isfile(crystal_ligand_pdb):
+        logger.warning(
+            f"Crystal ligand PDB not found: {crystal_ligand_pdb} — skipping top-N RMSD"
+        )
+        return None, -1
+
+    from rdkit import Chem
+    from rdkit.Chem import AllChem
+
+    crystal_mol = Chem.MolFromPDBFile(crystal_ligand_pdb, removeHs=True)
+    if crystal_mol is None:
+        logger.warning("Failed to parse crystal ligand for top-N RMSD search")
+        return None, -1
+
+    import re
+
+    with open(all_poses_pdbqt) as fh:
+        content = fh.read()
+
+    models = re.split(r"MODEL\s+\d+\n", content)
+    if len(models) <= 1:
+        rmsd = compute_rmsd_to_crystal(all_poses_pdbqt, crystal_ligand_pdb)
+        return (rmsd, 1) if rmsd is not None else (None, -1)
+
+    best_rmsd = float("inf")
+    best_idx = -1
+
+    # Only evaluate the first *n* poses (1-based indexing in file order)
+    for idx, model_block in enumerate(models[1 : n + 1], start=1):
+        model_block = model_block.split("ENDMDL")[0]
+        if not model_block.strip():
             continue
+
+        block = _sanitize_pdbqt_block_for_rdkit(model_block)
+        docked_mol = Chem.MolFromPDBBlock(block, removeHs=True)
+        if docked_mol is None:
+            continue
+
+        rms = None
+        with contextlib.suppress(RuntimeError, ValueError, TypeError):
+            rms = AllChem.GetBestRMS(docked_mol, crystal_mol)
+
+        if rms is None:
+            with tempfile.NamedTemporaryFile(
+                mode="w", suffix=".pdbqt", delete=False
+            ) as tf:
+                tf.write(block)
+                tmp_pose = tf.name
+            try:
+                rms = compute_rmsd_coordinate_based(tmp_pose, crystal_ligand_pdb)
+            finally:
+                with contextlib.suppress(OSError):
+                    os.unlink(tmp_pose)
+
+        if rms is not None and rms < best_rmsd:
+            best_rmsd = rms
+            best_idx = idx
 
     if best_idx == -1:
         return None, -1
@@ -558,6 +659,7 @@ def run_redocking_validation(
     interaction_method: str = "plip",
     auto_exhaustiveness: bool = False,
     timeout: int = 600,
+    top_n_check: int = 3,
 ) -> dict[str, Any]:
     """
     Validate docking protocol by redocking the co-crystallized ligand.
@@ -591,13 +693,19 @@ def run_redocking_validation(
             * ``"crystal"`` (default): centre box on crystal ligand (self-docking).
             * ``"blind"``: detect pocket blindly from apo receptor (cross-docking).
               Uses fpocket + P2Rank without the crystal ligand as a hint.
-        skip_consensus: If True, skip Vinardo consensus scoring (faster for benchmarks).
+        skip_consensus: Deprecated.  Consensus scoring has been removed; this
+            parameter is accepted for backward compatibility but has no effect.
         minimize: If True, run OpenMM ligand-only energy minimisation on the
             best pose before RMSD evaluation.  This can rescue scoring failures
             by improving local geometry and hydrogen placement.
+        top_n_check: Number of top-ranked poses to evaluate for the best-RMSD
+            metric (default 3).  This measures how well the protocol would do
+            if the user inspected the top-N poses and picked the one closest to
+            crystal.  Zero extra compute cost.
 
     Returns:
-        Dict with rmsd, success flag, pocket_center, pocket_method, and file paths.
+        Dict with rmsd, success flag, pocket_center, pocket_method, file paths,
+        and top-N metrics (top_n_best_rmsd, top_n_success).
     """
     from rdkit import Chem
 
@@ -850,6 +958,55 @@ def run_redocking_validation(
                 f"Redocking best-achievable RMSD: {best_rmsd:.2f} Å (pose #{best_rmsd_pose_idx})"
             )
 
+    # Top-N best RMSD: practical metric for user pose selection
+    top_n_best_rmsd = None
+    top_n_best_pose_idx = None
+    top_n_success = None
+    if top_n_check > 0 and result.all_poses_pdbqt and os.path.isfile(result.all_poses_pdbqt):
+        top_n_best_rmsd, top_n_best_pose_idx = compute_top_n_best_rmsd_from_all_poses(
+            result.all_poses_pdbqt, crystal_ligand_pdb, n=top_n_check
+        )
+        if top_n_best_rmsd is not None:
+            top_n_success = top_n_best_rmsd < REDocking_RMSD_THRESHOLD
+            logger.info(
+                f"Redocking top-{top_n_check} best RMSD: {top_n_best_rmsd:.2f} Å "
+                f"(pose #{top_n_best_pose_idx}) — "
+                f"{'PASS' if top_n_success else 'FAIL'}"
+            )
+
+    # ── 8. IFP-based interaction-consistency re-scoring ────────────────────
+    # Re-rank poses by how well their interaction fingerprint matches the
+    # crystal ligand.  This often rescues poses that Vina mis-ranks.
+    ifp_best_rmsd = None
+    ifp_best_pose_idx = None
+    ifp_best_score = None
+    if result.all_poses_pdbqt and os.path.isfile(result.all_poses_pdbqt):
+        from autodock.interactions import ifp_similarity_scores
+        try:
+            ifp_scores = ifp_similarity_scores(
+                apo_pdb, result.all_poses_pdbqt, crystal_ligand_pdb, method="plip"
+            )
+            if ifp_scores:
+                ifp_best_pose_idx, ifp_best_score, _ = ifp_scores[0]
+                # Compute RMSD for the IFP-best pose
+                import re
+                with open(result.all_poses_pdbqt) as fh:
+                    content = fh.read()
+                models = re.split(r"MODEL\s+\d+\n", content)
+                model_block = models[ifp_best_pose_idx].split("ENDMDL")[0]
+                pose_tmp = os.path.join(output_dir, f"ifp_best_pose_{ifp_best_pose_idx}.pdbqt")
+                with open(pose_tmp, "w") as fh:
+                    fh.write(model_block)
+                ifp_best_rmsd = compute_rmsd_to_crystal(pose_tmp, crystal_ligand_pdb)
+                ifp_success = ifp_best_rmsd is not None and ifp_best_rmsd < REDocking_RMSD_THRESHOLD
+                logger.info(
+                    f"Redocking IFP-best RMSD: {ifp_best_rmsd:.2f} Å "
+                    f"(pose #{ifp_best_pose_idx}, IFP score={ifp_best_score:.3f}) — "
+                    f"{'PASS' if ifp_success else 'FAIL'}"
+                )
+        except Exception as exc:
+            logger.warning(f"IFP re-scoring failed: {exc}")
+
     rmsd_str = f"{rmsd:.2f} Å" if rmsd is not None else "N/A"
     raw_str = f"{rmsd_raw:.2f} Å" if rmsd_raw is not None else "N/A"
     if minimize and rmsd_min is not None:
@@ -863,7 +1020,7 @@ def run_redocking_validation(
             f"(threshold: {REDocking_RMSD_THRESHOLD} Å)"
         )
 
-    # ── 8. Optional interaction detection ──────────────────────────────────
+    # ── 9. Optional interaction detection ──────────────────────────────────
     interactions = []
     if interaction_method != "none":
         from autodock.interactions import detect_interactions
@@ -899,6 +1056,13 @@ def run_redocking_validation(
         "crystal_ligand": crystal_ligand_pdb,
         "best_rmsd": best_rmsd,
         "best_rmsd_pose_idx": best_rmsd_pose_idx,
+        "top_n_check": top_n_check,
+        "top_n_best_rmsd": top_n_best_rmsd,
+        "top_n_best_pose_idx": top_n_best_pose_idx,
+        "top_n_success": top_n_success,
+        "ifp_best_rmsd": ifp_best_rmsd,
+        "ifp_best_pose_idx": ifp_best_pose_idx,
+        "ifp_best_score": ifp_best_score,
         "interactions": interactions,
         "interaction_method": interaction_method,
     }
