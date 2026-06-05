@@ -92,8 +92,7 @@ HARD_TARGET_OVERRIDES: dict[str, dict[str, Any]] = {
         "auto_exhaustiveness": False,
         "timeout": 1200,
         "_note": (
-            "HIV-1 protease: very large ligand (66 atoms), "
-            "needs reduced sampling + long timeout"
+            "HIV-1 protease: very large ligand (66 atoms), " "needs reduced sampling + long timeout"
         ),
     },
     "1GWX": {
@@ -293,10 +292,7 @@ def run_redocking_benchmark(
 
     # Top-N metrics: practical success if user inspects top-N poses
     top_n_successes = [
-        r
-        for r in raw_results
-        if r.get("top_n_success")
-        and r.get("top_n_best_rmsd") is not None
+        r for r in raw_results if r.get("top_n_success") and r.get("top_n_best_rmsd") is not None
     ]
     top_n_rmsds = [r["top_n_best_rmsd"] for r in top_n_successes]
 
@@ -323,8 +319,14 @@ def run_redocking_benchmark(
         "mean_top_n_rmsd": float(np.mean(top_n_rmsds)) if top_n_rmsds else None,
         "median_top_n_rmsd": float(np.median(top_n_rmsds)) if top_n_rmsds else None,
         # IFP re-scoring metrics
-        "ifp_successes": [r for r in raw_results if r.get("ifp_best_rmsd") is not None and r["ifp_best_rmsd"] < REDocking_RMSD_THRESHOLD],
-        "ifp_rmsds": [r["ifp_best_rmsd"] for r in raw_results if r.get("ifp_best_rmsd") is not None],
+        "ifp_successes": [
+            r
+            for r in raw_results
+            if r.get("ifp_best_rmsd") is not None and r["ifp_best_rmsd"] < REDocking_RMSD_THRESHOLD
+        ],
+        "ifp_rmsds": [
+            r["ifp_best_rmsd"] for r in raw_results if r.get("ifp_best_rmsd") is not None
+        ],
         "parameters": {
             "exhaustiveness": exhaustiveness,
             "n_poses": n_poses,

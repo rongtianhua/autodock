@@ -529,9 +529,7 @@ def compute_best_rmsd_from_all_poses(
 
         if rms is None:
             # Fallback: write pose block to temp file for coordinate-based method
-            with tempfile.NamedTemporaryFile(
-                mode="w", suffix=".pdbqt", delete=False
-            ) as tf:
+            with tempfile.NamedTemporaryFile(mode="w", suffix=".pdbqt", delete=False) as tf:
                 tf.write(block)
                 tmp_pose = tf.name
             try:
@@ -575,9 +573,7 @@ def compute_top_n_best_rmsd_from_all_poses(
         return None, -1
 
     if not os.path.isfile(crystal_ligand_pdb):
-        logger.warning(
-            f"Crystal ligand PDB not found: {crystal_ligand_pdb} — skipping top-N RMSD"
-        )
+        logger.warning(f"Crystal ligand PDB not found: {crystal_ligand_pdb} — skipping top-N RMSD")
         return None, -1
 
     from rdkit import Chem
@@ -617,9 +613,7 @@ def compute_top_n_best_rmsd_from_all_poses(
             rms = AllChem.GetBestRMS(docked_mol, crystal_mol)
 
         if rms is None:
-            with tempfile.NamedTemporaryFile(
-                mode="w", suffix=".pdbqt", delete=False
-            ) as tf:
+            with tempfile.NamedTemporaryFile(mode="w", suffix=".pdbqt", delete=False) as tf:
                 tf.write(block)
                 tmp_pose = tf.name
             try:
@@ -983,6 +977,7 @@ def run_redocking_validation(
     ifp_best_score = None
     if use_ifp and result.all_poses_pdbqt and os.path.isfile(result.all_poses_pdbqt):
         from autodock.interactions import ifp_similarity_scores
+
         try:
             ifp_scores = ifp_similarity_scores(
                 apo_pdb, result.all_poses_pdbqt, crystal_ligand_pdb, method="plip"
@@ -991,6 +986,7 @@ def run_redocking_validation(
                 ifp_best_pose_idx, ifp_best_score, _ = ifp_scores[0]
                 # Compute RMSD for the IFP-best pose
                 import re
+
                 with open(result.all_poses_pdbqt) as fh:
                     content = fh.read()
                 models = re.split(r"MODEL\s+\d+\n", content)
@@ -1030,6 +1026,7 @@ def run_redocking_validation(
     interactions = []
     if interaction_method != "none":
         from autodock.interactions import detect_interactions
+
         try:
             interactions = detect_interactions(
                 apo_pdb,
