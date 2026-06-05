@@ -119,6 +119,51 @@ HARD_TARGET_OVERRIDES: dict[str, dict[str, Any]] = {
         "timeout": 1200,
         "_note": "PDE5: alkyl chain folds in crystal; Vina prefers extended",
     },
+    # ── Sampling-failure targets (best RMSD ≥2.0 Å) ─────────────────────────
+    # These large-ligand / multimeric systems need either higher sampling or
+    # flexible-receptor treatment.  Overrides below are conservative mitigations.
+    "1B9S": {
+        "exhaustiveness": 64,
+        "auto_exhaustiveness": False,
+        "n_poses": 50,
+        "timeout": 1800,
+        "_note": "Neuraminidase: 53-atom ligand; needs deep sampling",
+    },
+    "2BR1": {
+        "exhaustiveness": 64,
+        "auto_exhaustiveness": False,
+        "n_poses": 50,
+        "timeout": 1800,
+        "_note": "CHK1 kinase: 70-atom ligand; needs deep sampling",
+    },
+    "2HU4": {
+        "exhaustiveness": 64,
+        "auto_exhaustiveness": False,
+        "n_poses": 50,
+        "timeout": 1800,
+        "_note": "Neuraminidase octamer: 50-atom ligand, 8 chains; multimeric noise",
+    },
+    "1H1P": {
+        "exhaustiveness": 64,
+        "auto_exhaustiveness": False,
+        "n_poses": 50,
+        "timeout": 1800,
+        "_note": "CDK2 dimer: 43-atom ligand, poor protonation (HIS161); structural noise",
+    },
+    "3ELJ": {
+        "exhaustiveness": 64,
+        "auto_exhaustiveness": False,
+        "n_poses": 50,
+        "timeout": 1800,
+        "_note": "JNK1 kinase: 79-atom ligand; auto-exhaustiveness drops e=32→16",
+    },
+    "4AQC": {
+        "exhaustiveness": 64,
+        "auto_exhaustiveness": False,
+        "n_poses": 50,
+        "timeout": 1800,
+        "_note": "JAK2 kinase: 77-atom ligand; needs deep sampling",
+    },
 }
 
 
@@ -620,6 +665,7 @@ def _run_single_benchmark(item: dict[str, Any]) -> dict[str, Any]:
         "interaction_method": item.get("interaction_method", "plip"),
         "auto_exhaustiveness": item.get("auto_exhaustiveness", True),
         "top_n_check": item.get("top_n_check", 3),
+        "use_ifp": item.get("use_ifp", False),
     }
     if pdb_id in HARD_TARGET_OVERRIDES:
         overrides = HARD_TARGET_OVERRIDES[pdb_id].copy()

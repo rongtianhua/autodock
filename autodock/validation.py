@@ -660,6 +660,7 @@ def run_redocking_validation(
     auto_exhaustiveness: bool = False,
     timeout: int = 600,
     top_n_check: int = 3,
+    use_ifp: bool = False,
 ) -> dict[str, Any]:
     """
     Validate docking protocol by redocking the co-crystallized ligand.
@@ -980,7 +981,7 @@ def run_redocking_validation(
     ifp_best_rmsd = None
     ifp_best_pose_idx = None
     ifp_best_score = None
-    if result.all_poses_pdbqt and os.path.isfile(result.all_poses_pdbqt):
+    if use_ifp and result.all_poses_pdbqt and os.path.isfile(result.all_poses_pdbqt):
         from autodock.interactions import ifp_similarity_scores
         try:
             ifp_scores = ifp_similarity_scores(
@@ -1006,6 +1007,11 @@ def run_redocking_validation(
                 )
         except Exception as exc:
             logger.warning(f"IFP re-scoring failed: {exc}")
+    elif not success and not use_ifp:
+        logger.info(
+            "Redocking top-1 failed. Consider re-running with use_ifp=True "
+            "to re-rank poses by interaction fingerprint similarity."
+        )
 
     rmsd_str = f"{rmsd:.2f} Å" if rmsd is not None else "N/A"
     raw_str = f"{rmsd_raw:.2f} Å" if rmsd_raw is not None else "N/A"
