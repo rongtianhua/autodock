@@ -728,11 +728,13 @@ def run_docking_workflow(
                 n_rotatable_bonds=lig_metrics["n_rotatable_bonds"],
                 molecular_weight=lig_metrics["molecular_weight"],
             )
-            result.best_result.all_scores.update({
-                f"le_{k}": v
-                for k, v in le_dict.items()
-                if v is not None and not k.startswith("n_")
-            })
+            result.best_result.all_scores.update(
+                {
+                    f"le_{k}": v
+                    for k, v in le_dict.items()
+                    if v is not None and not k.startswith("n_")
+                }
+            )
             logger.info(
                 f"  Ligand efficiency: LE={le_dict.get('le'):.3f}, "
                 f"LE_RB={le_dict.get('le_rb'):.3f}, MW={lig_metrics['molecular_weight']:.1f}"
@@ -948,9 +950,7 @@ def _hydrate_postprocess_results(result: DockingWorkflowResult, pair_root: str) 
             os.path.join(fig_dir, f) for f in os.listdir(fig_dir) if f.endswith(".pse")
         ]
         result.figures_2d = [
-            os.path.join(fig_dir, f)
-            for f in os.listdir(fig_dir)
-            if f.startswith("2d_interactions")
+            os.path.join(fig_dir, f) for f in os.listdir(fig_dir) if f.startswith("2d_interactions")
         ]
     rep_dir = os.path.join(pair_root, "04_reports")
     if os.path.isdir(rep_dir):
@@ -1073,7 +1073,9 @@ def main():
     parser.add_argument("--multi-conformer", action="store_true", help="Multi-conformer docking")
     parser.add_argument("--n-conformers", type=int, default=10)
     parser.add_argument("--timeout", type=int, default=600, help="Timeout per pocket in seconds")
-    parser.add_argument("--energy-range", type=float, default=3.0, help="Energy range above best in kcal/mol")
+    parser.add_argument(
+        "--energy-range", type=float, default=3.0, help="Energy range above best in kcal/mol"
+    )
     parser.add_argument(
         "--scoring-function",
         choices=["vina", "ad4"],
@@ -1091,7 +1093,9 @@ def main():
     parser.add_argument("--config", help="Path to YAML config file")
     parser.add_argument("--no-resume", action="store_true", help="Re-run all steps from scratch")
     parser.add_argument("--no-posebusters", action="store_true", help="Skip PoseBusters validation")
-    parser.add_argument("--minimize-pose", action="store_true", help="Energy-minimize best pose with OpenMM")
+    parser.add_argument(
+        "--minimize-pose", action="store_true", help="Energy-minimize best pose with OpenMM"
+    )
     parser.add_argument(
         "--method",
         choices=["plip", "prolif", "both"],
