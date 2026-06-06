@@ -3204,6 +3204,479 @@ def _run_dogsite3_predict(
     return pockets
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# SIENA — binding site comparison via proteins.plus
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+def compare_binding_sites(
+    query_pdb: str,
+    reference_pdb_id: str | None = None,
+    reference_pdb: str | None = None,
+    query_chain: str = "A",
+    reference_chain: str | None = None,
+    timeout: int = 300,
+) -> dict[str, Any] | None:
+    """Compare a query binding site against a reference via SIENA (proteins.plus).
+
+    SIENA (Structurally alignEd proteIN binding siteS) searches for
+    structurally similar binding sites in the PDB or aligns two provided
+    structures.  This is useful for:
+
+    - Selectivity analysis (does my target pocket resemble any off-target?)
+    - Identifying known binders for a newly characterised pocket
+    - Assessing pocket conservation across homologues
+
+    Args:
+        query_pdb: Path to query protein PDB file.
+        reference_pdb_id: PDB ID of reference structure (e.g. ``"1abc"``).
+            Mutually exclusive with *reference_pdb*.
+        reference_pdb: Path to reference protein PDB file.
+            Mutually exclusive with *reference_pdb_id*.
+        query_chain: Chain ID in query structure (default ``"A"``).
+        reference_chain: Chain ID in reference structure (default same as
+            *query_chain*).
+        timeout: Maximum seconds to wait for job completion.
+
+    Returns:
+        Dict with keys ``rmsd``, ``sequence_identity``, ``aligned_residues``,
+        ``reference_pdb_id``, ``reference_chain``, ``query_chain``,
+        ``aligned_structures`` (PDB text of superposed structures) or
+        *None* on failure.
+
+    Reference:
+        SIENA — Hoffer & Schulz-Gasch (2015) J. Chem. Inf. Model. 55:439-447.
+    """
+    if reference_pdb_id and reference_pdb:
+        raise PreparationError(
+            "Only one of reference_pdb_id or reference_pdb may be provided."
+        )
+    if not reference_pdb_id and not reference_pdb:
+        raise PreparationError(
+            "Either reference_pdb_id or reference_pdb must be provided."
+        )
+
+    try:
+        import requests
+    except ImportError:
+        logger.warning("requests not available — skipping SIENA")
+        return None
+
+    import time
+
+    base_url = "https://proteins.plus/api/v2"
+    ref_chain = reference_chain or query_chain
+
+    # Submit
+    try:
+        data: dict[str, str] = {
+            "chain_id": query_chain,
+            "reference_chain_id": ref_chain,
+        }
+        files: dict[str, Any] = {}
+        if reference_pdb_id:
+            data["reference_pdb_id"] = reference_pdb_id
+        if reference_pdb:
+            files["reference_pdb"] = open(reference_pdb, "rb")
+        with open(query_pdb, "rb") as fh:
+            files["pdb_file"] = fh
+            resp = requests.post(
+                f"{base_url}/siena/",
+                files=files,
+                data=data,
+                timeout=60,
+            )
+        resp.raise_for_status()
+        job_id = resp.json()["job_id"]
+    except (OSError, ValueError, RuntimeError, TypeError) as exc:
+        logger.warning(f"SIENA submission failed: {exc}")
+        return None
+    finally:
+        for fobj in files.values():
+            if hasattr(fobj, "close"):
+                fobj.close()
+
+    # Poll
+    start = time.time()
+    job_result = None
+    while time.time() - start < timeout:
+        try:
+            resp = requests.get(f"{base_url}/siena/{job_id}/", timeout=30)
+            resp.raise_for_status()
+            status = resp.json().get("status", "unknown")
+            if status == "completed":
+                job_result = resp.json()
+                break
+            elif status == "failed":
+                logger.warning(f"SIENA job {job_id} failed")
+                return None
+        except (OSError, ValueError, RuntimeError, TypeError) as exc:
+            logger.warning(f"SIENA poll error: {exc}")
+            return None
+        time.sleep(5)
+    else:
+        logger.warning(f"SIENA job {job_id} timed out after {timeout}s")
+        return None
+
+    if not job_result:
+        return None
+
+    # Download aligned structures
+    aligned_structures: str | None = None
+    try:
+        dl_resp = requests.get(
+            f"{base_url}/siena/{job_id}/download/", timeout=60
+        )
+        dl_resp.raise_for_status()
+        import io
+        import zipfile
+
+        with zipfile.ZipFile(io.BytesIO(dl_resp.content)) as zf:
+            # Look for PDB files containing the alignment
+            pdb_names = [n for n in zf.namelist() if n.lower().endswith(".pdb")]
+            if pdb_names:
+                with zf.open(pdb_names[0]) as pdb_fh:
+                    aligned_structures = pdb_fh.read().decode("utf-8")
+    except (OSError, ValueError, RuntimeError, TypeError) as exc:
+        logger.warning(f"SIENA download failed: {exc}")
+
+    # Build result dict from job metadata
+    result: dict[str, Any] = {
+        "reference_pdb_id": reference_pdb_id,
+        "reference_chain": ref_chain,
+        "query_chain": query_chain,
+        "aligned_structures": aligned_structures,
+    }
+
+    # Extract numeric metrics if present in job_result
+    _jr = job_result if isinstance(job_result, dict) else {}
+    result["rmsd"] = _jr.get("rmsd")
+    result["sequence_identity"] = _jr.get("sequence_identity")
+    result["aligned_residues"] = _jr.get("aligned_residues", [])
+
+    logger.info(
+        f"SIENA: alignment completed (RMSD={result.get('rmsd', 'N/A')}, "
+        f"seq_id={result.get('sequence_identity', 'N/A')})"
+    )
+    return result
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# EDIAscorer — electron density validation via proteins.plus
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# PoseView — 2D interaction diagram via proteins.plus
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+def _merge_receptor_ligand_for_poseview(
+    receptor_pdb: str,
+    ligand_pdbqt: str,
+    ligand_resname: str = "LIG",
+) -> str:
+    """Merge receptor PDB + ligand PDBQT into a single PDB for PoseView.
+
+    PoseView requires the ligand to be present as HETATM records with a
+    single residue name in the same PDB file as the receptor.
+    """
+    import tempfile
+
+    out_path = tempfile.mktemp(suffix="_complex_poseview.pdb")
+    lines: list[str] = []
+
+    # Receptor atoms
+    with open(receptor_pdb) as fh:
+        for line in fh:
+            if line.startswith(("ATOM  ", "HETATM")):
+                lines.append(line.rstrip("\n"))
+            elif line.startswith(("TER", "END")):
+                lines.append(line.rstrip("\n"))
+
+    # Ligand atoms from PDBQT — strip partial-charge / atom-type columns
+    # and rewrite as HETATM with uniform residue name.
+    atom_counter = 1
+    with open(ligand_pdbqt) as fh:
+        for line in fh:
+            if not line.startswith(("ATOM  ", "HETATM")):
+                continue
+            # PDBQT has extra columns after z (charge, atom type).
+            # We keep the standard PDB columns and rewrite residue info.
+            x = line[30:38]
+            y = line[38:46]
+            z = line[46:54]
+            elem = line[77:79].strip() if len(line) > 77 else ""
+            aname = line[12:16].strip()
+            if not elem:
+                elem = aname[0] if aname else "C"
+            hetatm = (
+                f"HETATM{atom_counter:5d}  {aname:<3s} {ligand_resname:>3s} A{1:4d}    "
+                f"{x}{y}{z}  1.00  0.00          {elem:>2s}  "
+            )
+            lines.append(hetatm)
+            atom_counter += 1
+
+    lines.append("END")
+    with open(out_path, "w") as fh:
+        fh.write("\n".join(lines) + "\n")
+    return out_path
+
+
+def render_poseview_diagram(
+    receptor_pdb: str,
+    ligand_pdbqt: str,
+    ligand_resname: str = "LIG",
+    output_svg: str | None = None,
+    output_png: str | None = None,
+    timeout: int = 300,
+) -> str | None:
+    """Generate a 2D interaction diagram via PoseView (proteins.plus).
+
+    This serves as a publication-quality fallback when the local RDKit-based
+    :func:`render_interactions_2d` fails or produces insufficient output.
+
+    Args:
+        receptor_pdb: Path to receptor PDB file.
+        ligand_pdbqt: Path to ligand PDBQT file.
+        ligand_resname: Residue name assigned to the ligand in the merged
+            complex PDB (default ``"LIG"``).
+        output_svg: Output SVG path.  If *None*, a temporary path is used.
+        output_png: Optional output PNG path (requires cairosvg or
+            ImageMagick for SVG→PNG conversion).
+        timeout: Maximum seconds to wait for job completion.
+
+    Returns:
+        Path to the SVG file, or *None* on failure.
+
+    Reference:
+        PoseView — Stierand & Rarey (2006) J. Chem. Inf. Model. 46:2366-2372.
+    """
+    try:
+        import requests
+    except ImportError:
+        logger.warning("requests not available — skipping PoseView")
+        return None
+
+    import time
+
+    # Merge receptor + ligand into a single PDB
+    complex_pdb = _merge_receptor_ligand_for_poseview(
+        receptor_pdb, ligand_pdbqt, ligand_resname
+    )
+    try:
+        base_url = "https://proteins.plus/api/v2"
+
+        # Submit
+        try:
+            with open(complex_pdb, "rb") as fh:
+                files = {"pdb_file": fh}
+                data = {"ligand_name": ligand_resname}
+                resp = requests.post(
+                    f"{base_url}/poseview/",
+                    files=files,
+                    data=data,
+                    timeout=60,
+                )
+            resp.raise_for_status()
+            job_id = resp.json()["job_id"]
+        except (OSError, ValueError, RuntimeError, TypeError) as exc:
+            logger.warning(f"PoseView submission failed: {exc}")
+            return None
+
+        # Poll
+        start = time.time()
+        job_result = None
+        while time.time() - start < timeout:
+            try:
+                resp = requests.get(
+                    f"{base_url}/poseview/{job_id}/", timeout=30
+                )
+                resp.raise_for_status()
+                status = resp.json().get("status", "unknown")
+                if status == "completed":
+                    job_result = resp.json()
+                    break
+                elif status == "failed":
+                    logger.warning(f"PoseView job {job_id} failed")
+                    return None
+            except (OSError, ValueError, RuntimeError, TypeError) as exc:
+                logger.warning(f"PoseView poll error: {exc}")
+                return None
+            time.sleep(5)
+        else:
+            logger.warning(f"PoseView job {job_id} timed out after {timeout}s")
+            return None
+
+        if not job_result:
+            return None
+
+        # Download SVG
+        svg_url = job_result.get("svg_url") or f"{base_url}/poseview/{job_id}/download/"
+        try:
+            svg_resp = requests.get(svg_url, timeout=30)
+            svg_resp.raise_for_status()
+        except (OSError, ValueError, RuntimeError, TypeError) as exc:
+            logger.warning(f"PoseView SVG download failed: {exc}")
+            return None
+
+        if output_svg is None:
+            import tempfile
+
+            output_svg = tempfile.mktemp(suffix="_poseview.svg")
+        with open(output_svg, "wb") as fh:
+            fh.write(svg_resp.content)
+
+        # Optional PNG conversion
+        if output_png:
+            try:
+                import cairosvg
+
+                cairosvg.svg2png(url=output_svg, write_to=output_png)
+            except ImportError:
+                logger.debug("cairosvg not available — PoseView PNG skipped")
+            except (OSError, ValueError, RuntimeError, TypeError) as exc:
+                logger.warning(f"PoseView PNG conversion failed: {exc}")
+
+        logger.info(f"PoseView: diagram saved to {output_svg}")
+        return output_svg
+    finally:
+        with contextlib.suppress(OSError):
+            os.remove(complex_pdb)
+
+
+def validate_electron_density(
+    receptor_pdb: str,
+    chain_id: str = "A",
+    timeout: int = 300,
+) -> dict[str, Any] | None:
+    """Validate electron density fit for a crystal structure via EDIAscorer.
+
+    EDIAscorer evaluates how well each atom in the model is supported by
+    the experimental electron density.  Low-scoring residues in the binding
+    pocket indicate regions where the model may be unreliable for docking.
+
+    This is especially valuable for:
+
+    - X-ray structures with resolution > 2.5 Å (higher uncertainty)
+    - Structures built from molecular replacement (possible model bias)
+    - Pockets containing flexible loops or unresolved side chains
+
+    Args:
+        receptor_pdb: Path to PDB file (must be an X-ray structure with
+            a corresponding PDB ID so EDIA can fetch the density data).
+        chain_id: Chain to evaluate (default ``"A"``).
+        timeout: Maximum seconds to wait for job completion.
+
+    Returns:
+        Dict with keys ``edia_scores`` (dict residue → score),
+        ``mean_edia``, ``min_edia``, ``poor_density_residues``
+        (list of residues with score < 0.3) or *None* on failure.
+
+    Reference:
+        EDIA — Meyer & Knapp (2018) J. Chem. Inf. Model. 58:1897-1906.
+    """
+    try:
+        import requests
+    except ImportError:
+        logger.warning("requests not available — skipping EDIAscorer")
+        return None
+
+    import time
+
+    base_url = "https://proteins.plus/api/v2"
+
+    # Submit
+    try:
+        with open(receptor_pdb, "rb") as fh:
+            files = {"pdb_file": fh}
+            data = {"chain_id": chain_id}
+            resp = requests.post(
+                f"{base_url}/ediascorer/",
+                files=files,
+                data=data,
+                timeout=60,
+            )
+        resp.raise_for_status()
+        job_id = resp.json()["job_id"]
+    except (OSError, ValueError, RuntimeError, TypeError) as exc:
+        logger.warning(f"EDIAscorer submission failed: {exc}")
+        return None
+
+    # Poll
+    start = time.time()
+    job_result = None
+    while time.time() - start < timeout:
+        try:
+            resp = requests.get(f"{base_url}/ediascorer/{job_id}/", timeout=30)
+            resp.raise_for_status()
+            status = resp.json().get("status", "unknown")
+            if status == "completed":
+                job_result = resp.json()
+                break
+            elif status == "failed":
+                logger.warning(f"EDIAscorer job {job_id} failed")
+                return None
+        except (OSError, ValueError, RuntimeError, TypeError) as exc:
+            logger.warning(f"EDIAscorer poll error: {exc}")
+            return None
+        time.sleep(5)
+    else:
+        logger.warning(f"EDIAscorer job {job_id} timed out after {timeout}s")
+        return None
+
+    if not job_result:
+        return None
+
+    # Download and parse EDIA JSON output
+    try:
+        dl_resp = requests.get(
+            f"{base_url}/ediascorer/{job_id}/download/", timeout=60
+        )
+        dl_resp.raise_for_status()
+        import io
+        import json
+        import zipfile
+
+        edia_data: dict[str, Any] = {}
+        with zipfile.ZipFile(io.BytesIO(dl_resp.content)) as zf:
+            json_files = [n for n in zf.namelist() if n.lower().endswith(".json")]
+            if json_files:
+                with zf.open(json_files[0]) as jfh:
+                    edia_data = json.loads(jfh.read().decode("utf-8"))
+    except (OSError, ValueError, RuntimeError, TypeError) as exc:
+        logger.warning(f"EDIAscorer parse failed: {exc}")
+        edia_data = {}
+
+    # Build structured result
+    scores: dict[str, float] = {}
+    if isinstance(edia_data, dict):
+        scores = {
+            str(k): float(v)
+            for k, v in edia_data.items()
+            if isinstance(v, (int, float))
+        }
+
+    values = list(scores.values())
+    mean_edia = sum(values) / len(values) if values else None
+    min_edia = min(values) if values else None
+    poor = [res for res, sc in scores.items() if sc < 0.3]
+
+    result: dict[str, Any] = {
+        "edia_scores": scores,
+        "mean_edia": round(mean_edia, 3) if mean_edia is not None else None,
+        "min_edia": round(min_edia, 3) if min_edia is not None else None,
+        "poor_density_residues": poor,
+        "poor_density_count": len(poor),
+    }
+
+    logger.info(
+        f"EDIAscorer: mean={result['mean_edia']}, min={result['min_edia']}, "
+        f"poor_density_residues={len(poor)}"
+    )
+    return result
+
+
 def find_top_pockets(
     receptor_pdb: str,
     ligand_pdb: str | None = None,

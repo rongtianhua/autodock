@@ -212,6 +212,7 @@ def post_process_docking(
             logger.warning(f"3D rendering unavailable: {exc}")
 
         # 2D interaction diagram — RDKit Cairo route (primary)
+        _poseview_used = False
         try:
             from autodock.rendering import render_interactions_2d
 
@@ -229,6 +230,26 @@ def post_process_docking(
             outputs["fig_2d_pdf"] = pdf_2d
         except (RuntimeError, OSError, ValueError, TypeError, ImportError) as exc:
             logger.warning(f"2D RDKit rendering skipped: {exc}")
+            # Fallback: PoseView via proteins.plus
+            try:
+                from autodock.preparation import render_poseview_diagram
+
+                svg_2d = os.path.join(fig_dir, "2d_interactions.svg")
+                png_2d = os.path.join(fig_dir, "2d_interactions.png")
+                svg_path = render_poseview_diagram(
+                    receptor_pdb,
+                    result.best_pose_pdbqt,
+                    output_svg=svg_2d,
+                    output_png=png_2d,
+                    timeout=120,
+                )
+                if svg_path:
+                    fig_paths.append(png_2d)
+                    outputs["fig_2d_svg"] = svg_path
+                    outputs["fig_2d_png"] = png_2d
+                    _poseview_used = True
+            except (RuntimeError, OSError, ValueError, TypeError, ImportError) as exc2:
+                logger.warning(f"PoseView fallback also failed: {exc2}")
 
         # Composite figure
         if len(fig_paths) >= 2:
