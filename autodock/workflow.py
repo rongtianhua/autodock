@@ -252,6 +252,10 @@ def run_docking_workflow(
     seed: int = 42,
     multi_conformer: bool = False,
     n_conformers: int = 10,
+    # ── Advanced docking ──────────────────────────────────────────────────
+    timeout: int = 600,
+    energy_range: float = 3.0,
+    scoring_function: str = "vina",
     # ── Pocket detection ─────────────────────────────────────────────────
     max_pockets: int = 5,
     pocket_padding: float = 5.0,
@@ -272,6 +276,8 @@ def run_docking_workflow(
     resume: bool = True,
     run_posebusters: bool = True,
     interaction_method: str = "plip",
+    max_postprocess_pockets: int = 2,
+    minimize_pose: bool = False,
 ) -> DockingWorkflowResult:
     """
     Run an end-to-end publication-grade molecular docking analysis.
@@ -305,6 +311,9 @@ def run_docking_workflow(
             already searches torsion space internally.  Only useful for
             macrocycles or rigid ring systems with distinct conformers.
         n_conformers: Number of conformers for multi-conformer docking (default 10).
+        timeout: Wall-clock timeout per pocket in seconds (default 600).
+        energy_range: Energy range above best pose in kcal/mol (default 3.0).
+        scoring_function: Scoring function — ``"vina"`` (default) or ``"ad4"``.
         max_pockets: Maximum pockets to detect and dock into (default 5).
         pocket_padding: Box padding around pocket dimensions (Å, default 5.0).
         ph: Target pH for protonation (default 7.4).
@@ -412,6 +421,9 @@ def run_docking_workflow(
             "seed": seed,
             "multi_conformer": multi_conformer,
             "n_conformers": n_conformers,
+            "timeout": timeout,
+            "energy_range": energy_range,
+            "scoring_function": scoring_function,
             "max_pockets": max_pockets,
             "pocket_padding": pocket_padding,
             "ph": ph,
@@ -420,6 +432,8 @@ def run_docking_workflow(
             "resume": resume,
             "run_posebusters": run_posebusters,
             "interaction_method": interaction_method,
+            "max_postprocess_pockets": max_postprocess_pockets,
+            "minimize_pose": minimize_pose,
         },
         environment=get_environment_status(),
     )
@@ -651,6 +665,10 @@ def run_docking_workflow(
                 n_poses,
                 seed,
                 multi_conformer,
+                n_conformers,
+                timeout,
+                energy_range,
+                scoring_function,
                 ligand_smiles,
                 result,
                 pocket_results,
@@ -669,6 +687,10 @@ def run_docking_workflow(
                 n_poses,
                 seed,
                 multi_conformer,
+                n_conformers,
+                timeout,
+                energy_range,
+                scoring_function,
                 ligand_smiles,
                 result,
                 pocket_results,
@@ -694,6 +716,28 @@ def run_docking_workflow(
         result.warnings.append("All pockets failed to dock")
         logger.warning("  No successful docking results")
 
+    # ── Ligand-efficiency metrics (best pocket) ───────────────────────────
+    if ligand_smiles and result.best_result and result.best_result.best_affinity is not None:
+        lig_metrics = _compute_ligand_metrics(ligand_smiles)
+        if lig_metrics:
+            from autodock.analysis import compute_ligand_efficiency
+
+            le_dict = compute_ligand_efficiency(
+                affinity=result.best_result.best_affinity,
+                n_heavy_atoms=lig_metrics["n_heavy_atoms"],
+                n_rotatable_bonds=lig_metrics["n_rotatable_bonds"],
+                molecular_weight=lig_metrics["molecular_weight"],
+            )
+            result.best_result.all_scores.update({
+                f"le_{k}": v
+                for k, v in le_dict.items()
+                if v is not None and not k.startswith("n_")
+            })
+            logger.info(
+                f"  Ligand efficiency: LE={le_dict.get('le'):.3f}, "
+                f"LE_RB={le_dict.get('le_rb'):.3f}, MW={lig_metrics['molecular_weight']:.1f}"
+            )
+
     # ═══════════════════════════════════════════════════════════════════════
     # Step 5b: PoseBusters validation (best pose)
     # ═══════════════════════════════════════════════════════════════════════
@@ -717,51 +761,102 @@ def run_docking_workflow(
             logger.warning(f"  PoseBusters validation skipped: {exc}")
 
     # ═══════════════════════════════════════════════════════════════════════
-    # Step 6: Post-processing & report
+    # Step 5c: Clash scoring (all successful pockets)
     # ═══════════════════════════════════════════════════════════════════════
-    pair_root = os.path.join(out_dir, "best_result")
-    summary_marker = os.path.join(pair_root, "summary.txt")
+    _receptor_for_clash = result.receptor_pdb or receptor_pdb_out
+    if _receptor_for_clash:
+        logger.info("=" * 60)
+        logger.info("Step 5c: Clash scoring")
+        logger.info("=" * 60)
+        for i, pr in enumerate(result.pocket_results):
+            if pr.best_pose_pdbqt and os.path.isfile(pr.best_pose_pdbqt):
+                try:
+                    from autodock.validation import compute_clash_score
 
-    if result.best_result and result.receptor_pdb:
-        if resume and _step_done(state, "step_6_complete", [summary_marker]):
-            logger.info("=" * 60)
-            logger.info("Step 6/6: Post-processing & report generation")
-            logger.info("=" * 60)
-            logger.info("  ⏩ Resumed — post-processing already complete")
-            # Re-hydrate output paths from directory
-            if os.path.isdir(pair_root):
-                fig_dir = os.path.join(pair_root, "03_figures")
-                if os.path.isdir(fig_dir):
-                    result.figures_3d = [
-                        os.path.join(fig_dir, f)
-                        for f in os.listdir(fig_dir)
-                        if f.endswith(".png") and f.startswith("3d_")
-                    ]
-                    result.pymol_sessions = [
-                        os.path.join(fig_dir, f) for f in os.listdir(fig_dir) if f.endswith(".pse")
-                    ]
-                    result.figures_2d = [
-                        os.path.join(fig_dir, f)
-                        for f in os.listdir(fig_dir)
-                        if f.startswith("2d_interactions")
-                    ]
-                rep_dir = os.path.join(pair_root, "04_reports")
-                if os.path.isdir(rep_dir):
-                    for f in os.listdir(rep_dir):
-                        if f.endswith(".pdf"):
-                            result.report_pdf = os.path.join(rep_dir, f)
-                        elif f.endswith(".csv"):
-                            result.report_csv = os.path.join(rep_dir, f)
-        else:
-            logger.info("=" * 60)
-            logger.info("Step 6/6: Post-processing & report generation")
-            logger.info("=" * 60)
+                    clash = compute_clash_score(pr.best_pose_pdbqt, _receptor_for_clash)
+                    pr.clash_score = clash.get("clash_score")
+                    pr.clash_acceptable = clash.get("is_acceptable")
+                    status = "PASS" if pr.clash_acceptable else "WARN"
+                    logger.info(
+                        f"  Pocket #{i + 1} clash: {pr.clash_score} Å "
+                        f"({clash.get('n_clashes', 0)} clashes) — {status}"
+                    )
+                except (RuntimeError, OSError, ValueError, ImportError) as exc:
+                    result.warnings.append(f"Clash scoring pocket #{i + 1} skipped: {exc}")
+                    logger.warning(f"  Pocket #{i + 1} clash scoring skipped: {exc}")
 
+    # ═══════════════════════════════════════════════════════════════════════
+    # Step 5d: Optional energy minimisation (best pose only)
+    # ═══════════════════════════════════════════════════════════════════════
+    if minimize_pose and result.best_result and result.best_result.best_pose_pdbqt:
+        logger.info("=" * 60)
+        logger.info("Step 5d: Energy minimisation (best pose)")
+        logger.info("=" * 60)
+        try:
+            from autodock.minimization import minimize_docked_pose
+
+            min_out = os.path.join(out_dir, "best_pose_minimized.pdb")
+            min_result = minimize_docked_pose(
+                receptor_pdb=result.receptor_pdb or receptor_pdb_out,
+                ligand_pdbqt=result.best_result.best_pose_pdbqt,
+                output_pdb=min_out,
+                ligand_smiles=ligand_smiles,
+                max_iterations=500,
+            )
+            if min_result.get("success"):
+                result.best_result.best_pose_pdbqt = min_out
+                logger.info(
+                    f"  Minimised: {min_result['initial_energy_kJ_mol']:.1f} → "
+                    f"{min_result['final_energy_kJ_mol']:.1f} kJ/mol"
+                )
+            else:
+                result.warnings.append(
+                    f"Pose minimisation skipped: {min_result.get('error', 'unknown')}"
+                )
+                logger.warning(f"  Minimisation skipped: {min_result.get('error', 'unknown')}")
+        except (RuntimeError, OSError, ValueError, ImportError) as exc:
+            result.warnings.append(f"Pose minimisation failed: {exc}")
+            logger.warning(f"  Minimisation failed: {exc}")
+
+    # ═══════════════════════════════════════════════════════════════════════
+    # Step 6: Post-processing & report (top-N pockets)
+    # ═══════════════════════════════════════════════════════════════════════
+    # Rank successful pockets by affinity and post-process the top N.
+    ranked_pockets = sorted(
+        [
+            (i, pr)
+            for i, pr in enumerate(result.pocket_results)
+            if pr.best_affinity is not None and pr.best_pose_pdbqt
+        ],
+        key=lambda x: x[1].best_affinity,
+    )
+    pockets_to_process = ranked_pockets[:max_postprocess_pockets]
+
+    if pockets_to_process and result.receptor_pdb:
+        logger.info("=" * 60)
+        logger.info("Step 6/6: Post-processing & report generation")
+        logger.info("=" * 60)
+
+        for rank, (pidx, pr) in enumerate(pockets_to_process):
+            pair_root = (
+                os.path.join(out_dir, "best_result")
+                if rank == 0
+                else os.path.join(out_dir, f"pocket_{pidx + 1}_analysis")
+            )
+            summary_marker = os.path.join(pair_root, "summary.txt")
+
+            if resume and _step_done(state, f"step_6_pocket_{pidx}_complete", [summary_marker]):
+                logger.info(f"  ⏩ Pocket #{pidx + 1} post-processing already complete")
+                if rank == 0:
+                    _hydrate_postprocess_results(result, pair_root)
+                continue
+
+            logger.info(f"  Post-processing pocket #{pidx + 1} (affinity: {pr.best_affinity:.2f})")
             try:
                 from autodock.post_dock_pipeline import post_process_docking
 
                 pp_out = post_process_docking(
-                    result.best_result,
+                    pr,
                     pair_root,
                     receptor_pdb=result.receptor_pdb,
                     receptor_pdb_holo=result.receptor_pdb_holo,
@@ -770,28 +865,30 @@ def run_docking_workflow(
                     do_report=do_report,
                     interaction_method=interaction_method,
                 )
-                result.report_pdf = pp_out.get("pdf")
-                result.report_csv = pp_out.get("csv")
-                result.figures_3d = pp_out.get("figures", [])
-                fig_2d_png = pp_out.get("fig_2d_png")
-                fig_2d_pdf = pp_out.get("fig_2d_pdf")
-                result.figures_2d = [p for p in (fig_2d_png, fig_2d_pdf) if p]
-                result.pymol_sessions = (
-                    [
-                        os.path.join(pair_root, "03_figures", f)
-                        for f in os.listdir(os.path.join(pair_root, "03_figures"))
-                        if f.endswith(".pse")
-                    ]
-                    if os.path.isdir(os.path.join(pair_root, "03_figures"))
-                    else []
-                )
+                if rank == 0:
+                    # Primary results from the best pocket
+                    result.report_pdf = pp_out.get("pdf")
+                    result.report_csv = pp_out.get("csv")
+                    result.figures_3d = pp_out.get("figures", [])
+                    fig_2d_png = pp_out.get("fig_2d_png")
+                    fig_2d_pdf = pp_out.get("fig_2d_pdf")
+                    result.figures_2d = [p for p in (fig_2d_png, fig_2d_pdf) if p]
+                    result.pymol_sessions = (
+                        [
+                            os.path.join(pair_root, "03_figures", f)
+                            for f in os.listdir(os.path.join(pair_root, "03_figures"))
+                            if f.endswith(".pse")
+                        ]
+                        if os.path.isdir(os.path.join(pair_root, "03_figures"))
+                        else []
+                    )
 
-                state["step_6_complete"] = True
+                state[f"step_6_pocket_{pidx}_complete"] = True
                 _save_state(out_dir, state)
 
             except (RuntimeError, OSError, ValueError, ImportError, KeyError) as exc:
-                result.errors.append(f"Post-processing failed: {exc}")
-                logger.warning(f"  Post-processing failed: {exc}")
+                result.warnings.append(f"Post-processing pocket #{pidx + 1} failed: {exc}")
+                logger.warning(f"  Pocket #{pidx + 1} post-processing failed: {exc}")
 
     # ── Write summary JSON ───────────────────────────────────────────────
     summary_path = os.path.join(out_dir, "workflow_summary.json")
@@ -818,6 +915,52 @@ def run_docking_workflow(
 # ─────────────────────────────────────────────────────────────────────────────
 
 
+def _compute_ligand_metrics(smiles: str) -> dict[str, Any] | None:
+    """Compute heavy-atom count, MW, and rotatable bonds from SMILES."""
+    try:
+        from rdkit import Chem
+        from rdkit.Chem import Descriptors
+
+        mol = Chem.MolFromSmiles(smiles)
+        if mol is None:
+            return None
+        return {
+            "n_heavy_atoms": mol.GetNumHeavyAtoms(),
+            "n_rotatable_bonds": Descriptors.NumRotatableBonds(mol),
+            "molecular_weight": Descriptors.MolWt(mol),
+        }
+    except Exception:
+        return None
+
+
+def _hydrate_postprocess_results(result: DockingWorkflowResult, pair_root: str) -> None:
+    """Re-hydrate figure/report paths from a completed pair_root directory."""
+    if not os.path.isdir(pair_root):
+        return
+    fig_dir = os.path.join(pair_root, "03_figures")
+    if os.path.isdir(fig_dir):
+        result.figures_3d = [
+            os.path.join(fig_dir, f)
+            for f in os.listdir(fig_dir)
+            if f.endswith(".png") and f.startswith("3d_")
+        ]
+        result.pymol_sessions = [
+            os.path.join(fig_dir, f) for f in os.listdir(fig_dir) if f.endswith(".pse")
+        ]
+        result.figures_2d = [
+            os.path.join(fig_dir, f)
+            for f in os.listdir(fig_dir)
+            if f.startswith("2d_interactions")
+        ]
+    rep_dir = os.path.join(pair_root, "04_reports")
+    if os.path.isdir(rep_dir):
+        for f in os.listdir(rep_dir):
+            if f.endswith(".pdf"):
+                result.report_pdf = os.path.join(rep_dir, f)
+            elif f.endswith(".csv"):
+                result.report_csv = os.path.join(rep_dir, f)
+
+
 def _dock_single_pocket(
     receptor_pdbqt: str,
     ligand_pdbqt: str,
@@ -829,6 +972,10 @@ def _dock_single_pocket(
     n_poses: int,
     seed: int,
     multi_conformer: bool,
+    n_conformers: int,
+    timeout: int,
+    energy_range: float,
+    scoring_function: str,
     ligand_smiles: str | None,
     workflow_result: DockingWorkflowResult,
     pocket_results: list[DockingResult],
@@ -854,8 +1001,14 @@ def _dock_single_pocket(
             compound_name=f"{rep_name}_pocket{pocket_idx + 1}",
             min_rmsd=1.0,
             multi_conformer=multi_conformer,
+            n_conformers=n_conformers,
+            timeout=timeout,
+            energy_range=energy_range,
+            scoring_function=scoring_function,
             ligand_smiles=ligand_smiles if multi_conformer else None,
         )
+        r.binding_pocket = pocket
+        r.pocket_source = pocket.get("pocket_source", "fpocket")
         pocket_results.append(r)
         logger.info(f"    Affinity: {r.best_affinity:.2f} kcal/mol")
         # Cache result JSON for resume
@@ -919,6 +1072,14 @@ def main():
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--multi-conformer", action="store_true", help="Multi-conformer docking")
     parser.add_argument("--n-conformers", type=int, default=10)
+    parser.add_argument("--timeout", type=int, default=600, help="Timeout per pocket in seconds")
+    parser.add_argument("--energy-range", type=float, default=3.0, help="Energy range above best in kcal/mol")
+    parser.add_argument(
+        "--scoring-function",
+        choices=["vina", "ad4"],
+        default="vina",
+        help="Scoring function (default: vina)",
+    )
     parser.add_argument("--max-pockets", type=int, default=5)
     parser.add_argument("--ph", type=float, default=7.4)
     parser.add_argument("--fix-protonation", action="store_true")
@@ -930,6 +1091,7 @@ def main():
     parser.add_argument("--config", help="Path to YAML config file")
     parser.add_argument("--no-resume", action="store_true", help="Re-run all steps from scratch")
     parser.add_argument("--no-posebusters", action="store_true", help="Skip PoseBusters validation")
+    parser.add_argument("--minimize-pose", action="store_true", help="Energy-minimize best pose with OpenMM")
     parser.add_argument(
         "--method",
         choices=["plip", "prolif", "both"],
@@ -949,6 +1111,9 @@ def main():
         seed=args.seed,
         multi_conformer=args.multi_conformer,
         n_conformers=args.n_conformers,
+        timeout=args.timeout,
+        energy_range=args.energy_range,
+        scoring_function=args.scoring_function,
         max_pockets=args.max_pockets,
         ph=args.ph,
         fix_protonation=args.fix_protonation,
@@ -961,6 +1126,7 @@ def main():
         resume=not args.no_resume,
         run_posebusters=not args.no_posebusters,
         interaction_method=args.method,
+        minimize_pose=args.minimize_pose,
     )
 
     # Print summary

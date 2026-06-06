@@ -519,6 +519,7 @@ def dock_ligand(
     scoring_function: str = "vina",
     ligand_smiles: str | None = None,
     multi_conformer: bool = False,
+    n_conformers: int = 10,
     flex_receptor_pdbqt: str | None = None,
 ) -> DockingResult:
     """
@@ -559,6 +560,8 @@ def dock_ligand(
             macrocycles or rigid ring systems where Vina cannot cross
             conformational barriers.  Requires ``ligand_smiles``.
             (default False)
+        n_conformers: Number of conformers to generate when
+            ``multi_conformer=True`` (default 10).
         flex_receptor_pdbqt: Optional flexible receptor PDBQT file.
             When provided, Vina treats the specified side chains as
             flexible during docking.  Requires a rigid receptor PDBQT
@@ -613,7 +616,7 @@ def dock_ligand(
             conf_pdbqts = prepare_ligand_conformers(
                 ligand_smiles,
                 tmp_dir,
-                n_conformers=10,
+                n_conformers=n_conformers,
                 name=name[:3] if name else "LIG",
                 molscrub_states=True,
             )
