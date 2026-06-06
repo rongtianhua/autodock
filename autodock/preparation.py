@@ -3625,6 +3625,29 @@ def find_nearby_residues(
     return [key for _, key in nearby[:max_residues]]
 
 
+def _clean_pdb_with_openbabel(input_pdb: str, output_pdb: str) -> None:
+    """Deprotonate + reprotonate a PDB file via Open Babel to fix RDKit valence issues."""
+    import subprocess
+
+    tmp_pdb = output_pdb + ".tmp"
+    # Step 1: remove hydrogens
+    subprocess.run(
+        ["obabel", "-ipdb", input_pdb, "-opdb", "-O", tmp_pdb, "-d"],
+        check=True,
+        capture_output=True,
+        timeout=60,
+    )
+    # Step 2: re-add hydrogens
+    subprocess.run(
+        ["obabel", "-ipdb", tmp_pdb, "-opdb", "-O", output_pdb, "-h"],
+        check=True,
+        capture_output=True,
+        timeout=60,
+    )
+    if os.path.isfile(tmp_pdb):
+        os.remove(tmp_pdb)
+
+
 def prepare_flexible_receptor(
     pdb_file: str,
     flexres: list[str],
@@ -3680,7 +3703,23 @@ def prepare_flexible_receptor(
 
     success, stdout, stderr = safe_subprocess(cmd, timeout=timeout)
     if not success:
-        raise PreparationError(f"mk_prepare_receptor.py failed: {stderr[:500]}")
+        # Attempt Open Babel cleanup for RDKit valence errors
+        err_lower = stderr.lower()
+        if "valence" in err_lower or "rdkit" in err_lower:
+            clean_pdb = os.path.join(output_dir, "receptor_clean.pdb")
+            logger.warning(
+                "mk_prepare_receptor.py failed with RDKit valence error — "
+                f"attempting Open Babel cleanup ({pdb_file} → {clean_pdb})"
+            )
+            try:
+                _clean_pdb_with_openbabel(pdb_file, clean_pdb)
+                if os.path.isfile(clean_pdb) and os.path.getsize(clean_pdb) > 0:
+                    cmd[cmd.index("--read_pdb") + 1] = clean_pdb
+                    success, stdout, stderr = safe_subprocess(cmd, timeout=timeout)
+            except Exception as exc:
+                logger.warning(f"Open Babel cleanup failed: {exc}")
+        if not success:
+            raise PreparationError(f"mk_prepare_receptor.py failed: {stderr[:500]}")
 
     rigid_pdbqt = prefix + "_rigid.pdbqt"
     flex_pdbqt = prefix + "_flex.pdbqt"

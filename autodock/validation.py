@@ -1073,6 +1073,61 @@ def run_redocking_validation(
             "to re-rank poses by interaction fingerprint similarity."
         )
 
+    # ── 8b. Cluster-consensus rescue (scoring failure) ────────────────────
+    # When top-1 fails but a good pose exists in another cluster,
+    # pick the cluster representative with the best geometric match.
+    consensus_best_rmsd = None
+    consensus_best_pose_idx = None
+    if (
+        not success
+        and result.pose_clusters
+        and result.all_poses_pdbqt
+        and os.path.isfile(result.all_poses_pdbqt)
+    ):
+        try:
+            import re
+
+            with open(result.all_poses_pdbqt) as fh:
+                content = fh.read()
+            models = re.split(r"MODEL\s+\d+\n", content)
+            # Skip leading empty string when file starts with MODEL (normal case)
+            if models and not models[0].strip():
+                models = models[1:]
+
+            # Gather representative indices from clusters
+            rep_indices = set()
+            for cluster in result.pose_clusters:
+                rep_idx = cluster.get("representative_index")
+                if rep_idx is not None:
+                    rep_indices.add(rep_idx)
+
+            best_consensus_rmsd = float("inf")
+            best_consensus_idx = None
+            for idx in sorted(rep_indices):
+                if idx < len(models):
+                    model_block = models[idx].split("ENDMDL")[0]
+                    pose_tmp = os.path.join(output_dir, f"consensus_pose_{idx}.pdbqt")
+                    with open(pose_tmp, "w") as fh:
+                        fh.write(model_block)
+                    pose_rmsd = compute_rmsd_to_crystal(pose_tmp, crystal_ligand_pdb)
+                    if pose_rmsd is not None and pose_rmsd < best_consensus_rmsd:
+                        best_consensus_rmsd = pose_rmsd
+                        best_consensus_idx = idx
+
+            if best_consensus_idx is not None:
+                consensus_best_rmsd = best_consensus_rmsd
+                consensus_best_pose_idx = best_consensus_idx
+                consensus_success = consensus_best_rmsd < REDocking_RMSD_THRESHOLD
+                logger.info(
+                    f"Redocking cluster-consensus RMSD: {consensus_best_rmsd:.2f} Å "
+                    f"(pose #{consensus_best_pose_idx}) — "
+                    f"{'PASS' if consensus_success else 'FAIL'}"
+                )
+                if consensus_success:
+                    logger.info("Cluster consensus rescued the scoring failure")
+        except Exception as exc:
+            logger.warning(f"Cluster-consensus rescue failed: {exc}")
+
     rmsd_str = f"{rmsd:.2f} Å" if rmsd is not None else "N/A"
     raw_str = f"{rmsd_raw:.2f} Å" if rmsd_raw is not None else "N/A"
     if minimize and rmsd_min is not None:
@@ -1130,6 +1185,8 @@ def run_redocking_validation(
         "ifp_best_rmsd": ifp_best_rmsd,
         "ifp_best_pose_idx": ifp_best_pose_idx,
         "ifp_best_score": ifp_best_score,
+        "consensus_best_rmsd": consensus_best_rmsd,
+        "consensus_best_pose_idx": consensus_best_pose_idx,
         "interactions": interactions,
         "interaction_method": interaction_method,
     }

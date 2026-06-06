@@ -1559,7 +1559,7 @@ def dock_ensemble(
     for i in range(n_paths):
         for j in range(i + 1, n_paths):
             rmsd = compute_rmsd(best_pose_paths[i], best_pose_paths[j])
-            if rmsd is None or rmsd == 0.0:
+            if rmsd is None:
                 rmsd = compute_rmsd_coordinate_based(best_pose_paths[i], best_pose_paths[j])
             if rmsd is not None:
                 rmsd_values.append(rmsd)
