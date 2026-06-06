@@ -3680,9 +3680,7 @@ def prepare_flexible_receptor(
 
     success, stdout, stderr = safe_subprocess(cmd, timeout=timeout)
     if not success:
-        raise PreparationError(
-            f"mk_prepare_receptor.py failed: {stderr[:500]}"
-        )
+        raise PreparationError(f"mk_prepare_receptor.py failed: {stderr[:500]}")
 
     rigid_pdbqt = prefix + "_rigid.pdbqt"
     flex_pdbqt = prefix + "_flex.pdbqt"
