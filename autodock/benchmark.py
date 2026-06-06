@@ -189,6 +189,8 @@ def run_redocking_benchmark(
     top_n_check: int = 3,
     use_flexible_receptor: bool = False,
     rescoring_methods: list[str] | None = None,
+    cascade: bool = False,
+    cascade_n_poses: int = 50,
 ) -> dict[str, Any]:
     """
     Run redocking validation on a benchmark set and compile statistics.
@@ -214,6 +216,9 @@ def run_redocking_benchmark(
         use_flexible_receptor: If True, targets where rigid docking fails
             automatically retry with nearby flexible side chains.
             Default False for benchmark speed.
+        cascade: If True, enable three-tier fallback rescoring (Vina → IFP
+            with more poses → OpenMM MM-GBSA) for failed targets.
+        cascade_n_poses: Number of poses in tier-2 fallback (default 50).
 
     Returns:
         Summary dict with:
@@ -247,6 +252,8 @@ def run_redocking_benchmark(
                 "top_n_check": top_n_check,
                 "use_flexible_receptor": use_flexible_receptor,
                 "rescoring_methods": rescoring_methods,
+                "cascade": cascade,
+                "cascade_n_poses": cascade_n_poses,
             }
         )
 
@@ -342,12 +349,17 @@ def run_redocking_benchmark(
         "ifp_rmsds": [
             r["ifp_best_rmsd"] for r in raw_results if r.get("ifp_best_rmsd") is not None
         ],
+        # Cascade fallback metrics
+        "cascade_ifp_successes": [r for r in raw_results if r.get("cascade_ifp_success")],
+        "cascade_mmgbsa_successes": [r for r in raw_results if r.get("cascade_mmgbsa_success")],
         # Auxiliary rescoring metrics (IFP, etc.)
         "parameters": {
             "exhaustiveness": exhaustiveness,
             "n_poses": n_poses,
             "seed": seed,
             "top_n_check": top_n_check,
+            "cascade": cascade,
+            "cascade_n_poses": cascade_n_poses,
         },
     }
 
@@ -424,6 +436,11 @@ def run_redocking_benchmark(
                     "ifp_best_rmsd": r.get("ifp_best_rmsd"),
                     "ifp_best_pose_idx": r.get("ifp_best_pose_idx"),
                     "ifp_best_score": r.get("ifp_best_score"),
+                    "cascade": r.get("cascade", False),
+                    "cascade_ifp_rmsd": r.get("cascade_ifp_rmsd"),
+                    "cascade_ifp_success": r.get("cascade_ifp_success"),
+                    "cascade_mmgbsa_rmsd": r.get("cascade_mmgbsa_rmsd"),
+                    "cascade_mmgbsa_success": r.get("cascade_mmgbsa_success"),
                     "best_affinity": r.get("best_affinity"),
                     "error": r.get("error", ""),
                 }
@@ -462,7 +479,13 @@ def run_redocking_benchmark(
             f"IFP-best: {len(ifp_successes)}/{summary['n_total']} "
             f"({len(ifp_successes)/summary['n_total']*100:.1f}%). "
         )
-    # Auxiliary rescoring summary lines (IFP, etc.) can be added here
+    # Cascade fallback summary
+    cascade_ifp = summary.get("cascade_ifp_successes", [])
+    cascade_mmgbsa = summary.get("cascade_mmgbsa_successes", [])
+    if cascade_ifp or cascade_mmgbsa:
+        msg += (
+            f"Cascade: IFP rescued {len(cascade_ifp)}, " f"MM-GBSA rescued {len(cascade_mmgbsa)}. "
+        )
     if summary["median_rmsd"] is not None:
         msg += f"Median RMSD: {summary['median_rmsd']:.2f} Å"
     logger.info(msg)
@@ -687,6 +710,8 @@ def _run_single_benchmark(item: dict[str, Any]) -> dict[str, Any]:
         "use_ifp": item.get("use_ifp", False),
         "use_flexible_receptor": item.get("use_flexible_receptor", False),
         "rescoring_methods": item.get("rescoring_methods"),
+        "cascade": item.get("cascade", False),
+        "cascade_n_poses": item.get("cascade_n_poses", 50),
     }
     if pdb_id in HARD_TARGET_OVERRIDES:
         overrides = HARD_TARGET_OVERRIDES[pdb_id].copy()
@@ -720,6 +745,15 @@ def _run_single_benchmark(item: dict[str, Any]) -> dict[str, Any]:
             "ifp_best_rmsd": result.get("ifp_best_rmsd"),
             "ifp_best_pose_idx": result.get("ifp_best_pose_idx"),
             "ifp_best_score": result.get("ifp_best_score"),
+            "cascade": result.get("cascade", False),
+            "cascade_ifp_rmsd": result.get("cascade_results", {}).get("ifp", {}).get("best_rmsd"),
+            "cascade_ifp_success": result.get("cascade_results", {}).get("ifp", {}).get("success"),
+            "cascade_mmgbsa_rmsd": result.get("cascade_results", {})
+            .get("mmgbsa", {})
+            .get("best_rmsd"),
+            "cascade_mmgbsa_success": result.get("cascade_results", {})
+            .get("mmgbsa", {})
+            .get("success"),
             "threshold": result.get("threshold"),
             "pocket_method": result.get("pocket_method"),
             "pocket_source": result.get("pocket_source"),

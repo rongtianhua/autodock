@@ -660,6 +660,8 @@ def run_redocking_validation(
     use_ifp: bool = False,
     use_flexible_receptor: bool = False,
     rescoring_methods: list[str] | None = None,
+    cascade: bool = False,
+    cascade_n_poses: int = 50,
 ) -> dict[str, Any]:
     """
     Validate docking protocol by redocking the co-crystallized ligand.
@@ -707,6 +709,13 @@ def run_redocking_validation(
             residues, prepare a flexible receptor, and re-dock.  This can rescue
             cases where rigid-receptor approximation misses induced-fit binding.
             Default False because flexible docking is ~5× slower.
+        cascade: If True, enable three-tier fallback rescoring when the primary
+            Vina top-1 pose fails the 2 Å threshold:
+            1. Vina (standard docking).
+            2. Re-dock with *cascade_n_poses* and re-rank by IFP.
+            3. Re-rank by simplified OpenMM MM-GBSA energy.
+        cascade_n_poses: Number of poses to sample in tier-2 fallback
+            (default 50).
 
     Returns:
         Dict with rmsd, success flag, pocket_center, pocket_method, file paths,
@@ -1043,7 +1052,161 @@ def run_redocking_validation(
                 f"{'PASS' if top_n_success else 'FAIL'}"
             )
 
-    # ── 8. Auxiliary rescoring (shape, strain, IFP) ────────────────────────
+    # ── 7.5 Cascade fallback rescoring ─────────────────────────────────────
+    # Three-tier fallback: Vina → IFP(+more poses) → MM-GBSA
+    cascade_results: dict[str, Any] = {}
+    if cascade and not success:
+        logger.info(
+            f"Redocking top-1 failed (RMSD={rmsd:.2f} Å). "
+            f"Triggering cascade fallback (n_poses={cascade_n_poses})..."
+        )
+
+        # ── Tier 2: re-dock with increased pose sampling + IFP ──────────────
+        tier2_all_poses: str | None = None
+        try:
+            if use_multi:
+                tier2_result = dock_ligand_multi_conformer(
+                    receptor_pdbqt,
+                    conformer_pdbqts,
+                    center,
+                    box_size,
+                    exhaustiveness=exhaustiveness,
+                    n_poses=cascade_n_poses,
+                    seed=seed,
+                    output_dir=output_dir,
+                    compound_name="redock_cascade",
+                    skip_consensus=skip_consensus,
+                    auto_exhaustiveness=auto_exhaustiveness,
+                    timeout=timeout,
+                )
+            else:
+                tier2_result = dock_ligand(
+                    receptor_pdbqt,
+                    ligand_pdbqt,
+                    center,
+                    box_size,
+                    exhaustiveness=exhaustiveness,
+                    n_poses=cascade_n_poses,
+                    seed=seed,
+                    output_dir=output_dir,
+                    compound_name="redock_cascade",
+                    skip_consensus=skip_consensus,
+                    auto_exhaustiveness=auto_exhaustiveness,
+                    timeout=timeout,
+                )
+            tier2_all_poses = tier2_result.all_poses_pdbqt
+            logger.info(
+                f"Cascade tier-2 docking complete: best affinity={tier2_result.best_affinity:.2f} kcal/mol"
+            )
+        except Exception as exc:
+            logger.warning(f"Cascade tier-2 docking failed: {exc}")
+
+        # IFP re-ranking on tier-2 poses
+        if tier2_all_poses and os.path.isfile(tier2_all_poses):
+            try:
+                from autodock.interactions import ifp_similarity_scores
+
+                ifp_scores = ifp_similarity_scores(
+                    apo_pdb, tier2_all_poses, crystal_ligand_pdb, method="plip"
+                )
+                if ifp_scores:
+                    best_idx, best_score, _ = ifp_scores[0]
+                    # Extract best IFP pose and compute RMSD
+                    import re
+
+                    with open(tier2_all_poses) as fh:
+                        content = fh.read()
+                    models = re.split(r"MODEL\s+\d+\n", content)
+                    if best_idx < len(models):
+                        model_block = models[best_idx].split("ENDMDL")[0]
+                        pose_tmp = os.path.join(output_dir, f"cascade_ifp_best_{best_idx}.pdbqt")
+                        with open(pose_tmp, "w") as fh:
+                            fh.write(model_block)
+                        ifp_rmsd = compute_rmsd_to_crystal(pose_tmp, crystal_ligand_pdb)
+                        ifp_success = ifp_rmsd is not None and ifp_rmsd < REDocking_RMSD_THRESHOLD
+                        cascade_results["ifp"] = {
+                            "best_rmsd": ifp_rmsd,
+                            "best_pose_idx": best_idx,
+                            "best_score": best_score,
+                            "success": ifp_success,
+                            "all_poses": tier2_all_poses,
+                        }
+                        logger.info(
+                            f"Cascade IFP-best RMSD: {ifp_rmsd:.2f} Å "
+                            f"(pose #{best_idx}, score={best_score:.3f}) — "
+                            f"{'PASS' if ifp_success else 'FAIL'}"
+                        )
+                        if ifp_success:
+                            logger.info("Cascade IFP rescued the docking failure")
+            except Exception as exc:
+                logger.warning(f"Cascade IFP rescoring failed: {exc}")
+
+        # ── Tier 3: MM-GBSA on tier-2 poses ─────────────────────────────────
+        if (
+            not cascade_results.get("ifp", {}).get("success")
+            and tier2_all_poses
+            and os.path.isfile(tier2_all_poses)
+        ):
+            if crystal_smiles:
+                try:
+                    from autodock.rescoring import _run_mmgbsa_rescoring
+
+                    mmgbsa_scores = _run_mmgbsa_rescoring(apo_pdb, tier2_all_poses, crystal_smiles)
+                    if mmgbsa_scores:
+                        best_idx, best_score, _ = mmgbsa_scores[0]
+                        import re
+
+                        with open(tier2_all_poses) as fh:
+                            content = fh.read()
+                        models = re.split(r"MODEL\s+\d+\n", content)
+                        if best_idx < len(models):
+                            model_block = models[best_idx].split("ENDMDL")[0]
+                            pose_tmp = os.path.join(
+                                output_dir, f"cascade_mmgbsa_best_{best_idx}.pdbqt"
+                            )
+                            with open(pose_tmp, "w") as fh:
+                                fh.write(model_block)
+                            mmgbsa_rmsd = compute_rmsd_to_crystal(pose_tmp, crystal_ligand_pdb)
+                            mmgbsa_success = (
+                                mmgbsa_rmsd is not None and mmgbsa_rmsd < REDocking_RMSD_THRESHOLD
+                            )
+                            cascade_results["mmgbsa"] = {
+                                "best_rmsd": mmgbsa_rmsd,
+                                "best_pose_idx": best_idx,
+                                "best_score": best_score,
+                                "success": mmgbsa_success,
+                            }
+                            logger.info(
+                                f"Cascade MM-GBSA-best RMSD: {mmgbsa_rmsd:.2f} Å "
+                                f"(pose #{best_idx}, ΔG={best_score:.2f} kcal/mol) — "
+                                f"{'PASS' if mmgbsa_success else 'FAIL'}"
+                            )
+                            if mmgbsa_success:
+                                logger.info("Cascade MM-GBSA rescued the docking failure")
+                except Exception as exc:
+                    logger.warning(f"Cascade MM-GBSA rescoring failed: {exc}")
+            else:
+                logger.warning("Cascade MM-GBSA skipped: no SMILES available")
+
+        # If a cascade tier rescued, update primary reported result
+        if cascade_results:
+            for tier_name, tier_key in [("IFP", "ifp"), ("MM-GBSA", "mmgbsa")]:
+                tier_result = cascade_results.get(tier_key)
+                if tier_result and tier_result.get("success"):
+                    rmsd = tier_result["best_rmsd"]
+                    success = True
+                    best_pose_tmp = os.path.join(
+                        output_dir,
+                        f"cascade_{tier_key}_best_{tier_result['best_pose_idx']}.pdbqt",
+                    )
+                    if os.path.isfile(best_pose_tmp):
+                        from dataclasses import replace
+
+                        result = replace(result, best_pose_pdbqt=best_pose_tmp)
+                    logger.info(f"Cascade {tier_name} rescued: final RMSD={rmsd:.2f} Å")
+                    break
+
+    # ── 8. Auxiliary rescoring (IFP, MM-GBSA) ──────────────────────────────
     # Re-rank poses by complementary signals that Vina's energy function may
     # miss.  Each method independently selects its best pose; RMSD is then
     # computed against the crystal for evaluation.
@@ -1216,4 +1379,6 @@ def run_redocking_validation(
         "consensus_best_pose_idx": consensus_best_pose_idx,
         "interactions": interactions,
         "interaction_method": interaction_method,
+        "cascade": cascade,
+        "cascade_results": cascade_results,
     }

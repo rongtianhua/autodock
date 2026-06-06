@@ -437,6 +437,8 @@ def cmd_benchmark_redock(args: argparse.Namespace) -> int:
         seed=args.seed,
         n_workers=args.workers,
         interaction_method=getattr(args, "method", "plip"),
+        cascade=getattr(args, "cascade", False),
+        cascade_n_poses=getattr(args, "cascade_n_poses", 50),
     )
 
     print(f"\n{'=' * 55}")
@@ -1118,6 +1120,17 @@ def build_parser() -> argparse.ArgumentParser:
         choices=["plip", "prolif", "both"],
         default="plip",
         help="Interaction detection engine for post-docking analysis",
+    )
+    p_bench.add_argument(
+        "--cascade",
+        action="store_true",
+        help="Enable three-tier fallback: Vina → IFP(+more poses) → MM-GBSA",
+    )
+    p_bench.add_argument(
+        "--cascade-n-poses",
+        type=int,
+        default=50,
+        help="Number of poses to sample in tier-2 fallback (default: 50)",
     )
     p_bench.set_defaults(func=cmd_benchmark_redock)
 
