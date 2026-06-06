@@ -484,9 +484,9 @@ def _consensus_score(
     Re-score the best pose with alternative scoring functions for reference.
 
     The primary docking score (from the scoring function used during the
-    search) is always preserved.  Additional scores from *ad4* and
-    *vinardo* are computed independently on the same best pose and
-    returned alongside for comparative analysis.
+    search) is always preserved.  An additional score from the other
+    compatible scoring function is computed independently on the same
+    best pose and returned alongside for comparative analysis.
 
     Returns:
         (all_scores_dict, consensus_affinity)
@@ -497,15 +497,10 @@ def _consensus_score(
     all_scores: dict[str, float] = {primary_sf: primary_score}
 
     # Vina and Vinardo share the same receptor format (Vina PDBQT) and
-    # can safely be used for cross-scoring.  AD4 requires pre-computed
-    # affinity maps and a different receptor preparation workflow; it
-    # cannot be used for re-scoring a pose that was docked with Vina or
-    # Vinardo.  Conversely, an AD4-prepared receptor is not guaranteed
-    # to work with Vina/Vinardo re-scoring.
+    # can safely be used for cross-scoring.
     _COMPATIBLE: dict[str, list[str]] = {
         "vina": ["vinardo"],
         "vinardo": ["vina"],
-        "ad4": [],
     }
     for sf in _COMPATIBLE.get(primary_sf, []):
         score = _score_pose_with_sf(receptor_pdbqt, pose_pdbqt, center, box_size, sf, seed=seed)
@@ -567,8 +562,8 @@ def dock_ligand(
             discards poses within this threshold (default 1.0 Å, typical
             range 0.5–1.5 Å; see Fischer et al. 2021, J. Chem. Inf. Model.).
         scoring_function: Vina scoring function name.  Supported: ``"vina"``
-            (default), ``"ad4"`` (AutoDock4), ``"vinardo"``.  Available
-            functions depend on the Vina Python package version.
+            (default) or ``"vinardo"``.  Available functions depend on the
+            Vina Python package version.
         ligand_smiles: SMILES of the ligand.  Required when
             ``multi_conformer=True``.
         multi_conformer: If True, pre-generate multiple 3D conformers
