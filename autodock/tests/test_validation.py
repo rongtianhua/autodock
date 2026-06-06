@@ -18,7 +18,7 @@ class TestPoseBusters:
     def test_not_available(self, tmp_path):
         with patch.dict("sys.modules", {"posebusters": None}):
             result = val.validate_pose_with_posebusters("pose.pdbqt", "rec.pdb")
-        assert result["available"] == False
+        assert not result["available"]
 
     def test_pass(self, tmp_path):
         mock_pb = MagicMock()
@@ -280,16 +280,6 @@ class TestTopNBestRMSD:
         assert call_count == 2
         assert rmsd == pytest.approx(1.0)
         assert idx == 1
-"""Additional tests for autodock.validation to increase coverage."""
-
-from unittest.mock import MagicMock, patch
-
-import numpy as np
-import pytest
-
-from autodock import validation as val
-
-
 class TestComputeClashScoreBranches:
     def test_clash_with_different_elements(self, tmp_path):
         rec = tmp_path / "rec.pdb"
@@ -298,7 +288,7 @@ class TestComputeClashScoreBranches:
         lig.write_text("ATOM      1  N   LIG A   1      0.000   0.000   0.000\n")
         result = val.compute_clash_score(str(lig), str(rec))
         assert result["n_clashes"] > 0
-        assert result["is_acceptable"] == False
+        assert not result["is_acceptable"]
 
     def test_mean_distance_reported(self, tmp_path):
         rec = tmp_path / "rec.pdb"

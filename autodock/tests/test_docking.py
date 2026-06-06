@@ -436,19 +436,6 @@ class TestDockEnsemble:
                 (20, 20, 20),
                 n_repeats=3,
             )
-"""Additional tests for autodock.docking to increase coverage."""
-
-import os
-import subprocess
-from unittest.mock import MagicMock, patch
-
-import numpy as np
-import pytest
-
-from autodock import docking
-from autodock.core import DockingCalculationError, DockingResult
-
-
 class TestCountPdbqtAtoms:
     def test_missing_file_raises(self):
         with pytest.raises(DockingCalculationError, match="not found"):
@@ -551,10 +538,6 @@ class TestRunVinaCli:
 
         # We need to inject the tmp_path into the TemporaryDirectory so the
         # function reads our prepared file. Use a side_effect to copy content.
-        import tempfile
-
-        original_td = tempfile.TemporaryDirectory
-
         class FakeTD:
             def __init__(self, *a, **k):
                 self.name = str(tmp_path)
@@ -586,6 +569,8 @@ class TestRunVinaCli:
     @patch("subprocess.run")
     @patch("os.path.isfile")
     def test_cli_timeout_raises(self, mock_isfile, mock_run, mock_which):
+        import subprocess
+
         mock_which.return_value = "/usr/bin/vina"
         mock_isfile.return_value = True
         mock_run.side_effect = subprocess.TimeoutExpired("vina", 300)
@@ -616,7 +601,6 @@ class TestRunVinaCli:
         result_mock.stdout = "no modes"
         mock_run.return_value = result_mock
 
-        import tempfile
 
         class FakeTD:
             def __init__(self, *a, **k):
@@ -932,7 +916,7 @@ class TestDockLigandBranches:
             np.array([[-8.0, 1.0, 2.0]]),
             ["MODEL 1\nATOM 1 C LIG\nENDMDL\n"],
         )
-        result = docking.dock_ligand(
+        docking.dock_ligand(
             str(rec), str(lig), (0, 0, 0), (20, 20, 20),
             flex_receptor_pdbqt=str(flex), seed=42,
         )

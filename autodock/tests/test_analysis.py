@@ -146,17 +146,6 @@ class TestAnalyzeScoringBias:
                 results = analysis.analyze_scoring_bias(str(out), target_ids=["1ABC"])
         assert "1ABC" in results
         assert "figure_path" not in results["1ABC"]
-"""Additional tests for autodock.analysis to increase coverage."""
-
-
-from unittest.mock import MagicMock, patch
-
-import numpy as np
-import pytest
-
-from autodock import analysis
-
-
 class TestComputeLigandEfficiency:
     def test_none_affinity_returns_none(self):
         result = analysis.compute_ligand_efficiency(None, 10)
@@ -291,7 +280,7 @@ class TestComputeInteractionFingerprint:
             interactions, interaction_types=("Custom",)
         )
         assert result["fingerprint"].shape == (1, 1)
-        assert result["fingerprint"][0, 0] == True
+        assert result["fingerprint"][0, 0]
 
 
 class TestAnalyzeScoringBiasBranches:
