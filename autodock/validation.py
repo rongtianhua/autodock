@@ -711,7 +711,7 @@ def run_redocking_validation(
     Returns:
         Dict with rmsd, success flag, pocket_center, pocket_method, file paths,
         top-N metrics (top_n_best_rmsd, top_n_success), and auxiliary rescoring
-        metrics (shape_best_rmsd, strain_best_rmsd, ifp_best_rmsd, etc.).
+        metrics (ifp_best_rmsd, etc.).
     """
     from rdkit import Chem
 
@@ -1092,20 +1092,13 @@ def run_redocking_validation(
     elif not success and not rescoring_methods:
         logger.info(
             "Redocking top-1 failed. Consider re-running with rescoring_methods "
-            "to re-rank poses by shape similarity, strain energy, or interaction "
-            "fingerprint."
+            "to re-rank poses by interaction fingerprint."
         )
 
     # Pull out individual metrics for backward compatibility
     ifp_best_rmsd = aux_results.get("ifp", {}).get("best_rmsd")
     ifp_best_pose_idx = aux_results.get("ifp", {}).get("best_pose_idx")
     ifp_best_score = aux_results.get("ifp", {}).get("best_score")
-    shape_best_rmsd = aux_results.get("shape", {}).get("best_rmsd")
-    shape_best_pose_idx = aux_results.get("shape", {}).get("best_pose_idx")
-    shape_best_score = aux_results.get("shape", {}).get("best_score")
-    strain_best_rmsd = aux_results.get("strain", {}).get("best_rmsd")
-    strain_best_pose_idx = aux_results.get("strain", {}).get("best_pose_idx")
-    strain_best_score = aux_results.get("strain", {}).get("best_score")
 
     # ── 8b. Cluster-consensus rescue (scoring failure) ────────────────────
     # When top-1 fails but a good pose exists in another cluster,
@@ -1219,12 +1212,6 @@ def run_redocking_validation(
         "ifp_best_rmsd": ifp_best_rmsd,
         "ifp_best_pose_idx": ifp_best_pose_idx,
         "ifp_best_score": ifp_best_score,
-        "shape_best_rmsd": shape_best_rmsd,
-        "shape_best_pose_idx": shape_best_pose_idx,
-        "shape_best_score": shape_best_score,
-        "strain_best_rmsd": strain_best_rmsd,
-        "strain_best_pose_idx": strain_best_pose_idx,
-        "strain_best_score": strain_best_score,
         "consensus_best_rmsd": consensus_best_rmsd,
         "consensus_best_pose_idx": consensus_best_pose_idx,
         "interactions": interactions,
