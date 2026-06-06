@@ -183,13 +183,13 @@ class TestStripFlexibleResidues:
             "TORSDOF 4\n"
         )
         result = utils._strip_flexible_residues_from_pdbqt_block(block)
-        lines = [l.strip() for l in result.splitlines() if l.strip()]
+        lines = [ln.strip() for ln in result.splitlines() if ln.strip()]
         assert "BEGIN_RES" not in result
         assert "END_RES" not in result
         assert "ROOT" in lines
         assert "TORSDOF 4" in lines
-        assert any("LIG" in l for l in lines)
-        assert not any("ASP" in l for l in lines)
+        assert any("LIG" in ln for ln in lines)
+        assert not any("ASP" in ln for ln in lines)
 
     def test_no_flex_block_unchanged(self):
         block = "ATOM      1  C   LIG A   1       0.000   0.000   0.000\n"

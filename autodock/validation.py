@@ -907,7 +907,6 @@ def run_redocking_validation(
     # ── 5b. Flexible-receptor fallback (rigid failed) ─────────────────────
     # If rigid docking doesn't achieve <2 Å, retry with nearby side chains
     # treated as flexible.  This rescues induced-fit binding sites.
-    flex_applied = False
     if (
         use_flexible_receptor
         and not use_multi
@@ -955,7 +954,6 @@ def run_redocking_validation(
                     )
                     # Replace result with flexible result for downstream evaluation
                     result = flex_result
-                    flex_applied = True
                     logger.info(
                         f"Flexible docking complete: best affinity={result.best_affinity:.2f} kcal/mol"
                     )
