@@ -3248,13 +3248,9 @@ def compare_binding_sites(
         SIENA — Hoffer & Schulz-Gasch (2015) J. Chem. Inf. Model. 55:439-447.
     """
     if reference_pdb_id and reference_pdb:
-        raise PreparationError(
-            "Only one of reference_pdb_id or reference_pdb may be provided."
-        )
+        raise PreparationError("Only one of reference_pdb_id or reference_pdb may be provided.")
     if not reference_pdb_id and not reference_pdb:
-        raise PreparationError(
-            "Either reference_pdb_id or reference_pdb must be provided."
-        )
+        raise PreparationError("Either reference_pdb_id or reference_pdb must be provided.")
 
     try:
         import requests
@@ -3324,9 +3320,7 @@ def compare_binding_sites(
     # Download aligned structures
     aligned_structures: str | None = None
     try:
-        dl_resp = requests.get(
-            f"{base_url}/siena/{job_id}/download/", timeout=60
-        )
+        dl_resp = requests.get(f"{base_url}/siena/{job_id}/download/", timeout=60)
         dl_resp.raise_for_status()
         import io
         import zipfile
@@ -3459,9 +3453,7 @@ def render_poseview_diagram(
     import time
 
     # Merge receptor + ligand into a single PDB
-    complex_pdb = _merge_receptor_ligand_for_poseview(
-        receptor_pdb, ligand_pdbqt, ligand_resname
-    )
+    complex_pdb = _merge_receptor_ligand_for_poseview(receptor_pdb, ligand_pdbqt, ligand_resname)
     try:
         base_url = "https://proteins.plus/api/v2"
 
@@ -3487,9 +3479,7 @@ def render_poseview_diagram(
         job_result = None
         while time.time() - start < timeout:
             try:
-                resp = requests.get(
-                    f"{base_url}/poseview/{job_id}/", timeout=30
-                )
+                resp = requests.get(f"{base_url}/poseview/{job_id}/", timeout=30)
                 resp.raise_for_status()
                 status = resp.json().get("status", "unknown")
                 if status == "completed":
@@ -3628,9 +3618,7 @@ def validate_electron_density(
 
     # Download and parse EDIA JSON output
     try:
-        dl_resp = requests.get(
-            f"{base_url}/ediascorer/{job_id}/download/", timeout=60
-        )
+        dl_resp = requests.get(f"{base_url}/ediascorer/{job_id}/download/", timeout=60)
         dl_resp.raise_for_status()
         import io
         import json
@@ -3649,11 +3637,7 @@ def validate_electron_density(
     # Build structured result
     scores: dict[str, float] = {}
     if isinstance(edia_data, dict):
-        scores = {
-            str(k): float(v)
-            for k, v in edia_data.items()
-            if isinstance(v, (int, float))
-        }
+        scores = {str(k): float(v) for k, v in edia_data.items() if isinstance(v, (int, float))}
 
     values = list(scores.values())
     mean_edia = sum(values) / len(values) if values else None
@@ -3827,9 +3811,7 @@ def find_top_pockets(
             # Fallback: DoGSite3 via proteins.plus REST API
             dogsite3_pockets = _run_dogsite3_predict(receptor_pdb)
             if dogsite3_pockets:
-                logger.info(
-                    f"DoGSite3 fallback: {len(dogsite3_pockets)} pocket(s) detected"
-                )
+                logger.info(f"DoGSite3 fallback: {len(dogsite3_pockets)} pocket(s) detected")
                 # Normalise DoGSite3 format to P2Rank-compatible dicts so the
                 # rest of the cross-validation / ranking pipeline works unchanged.
                 p2rank_pockets = []

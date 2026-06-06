@@ -146,6 +146,8 @@ class TestAnalyzeScoringBias:
                 results = analysis.analyze_scoring_bias(str(out), target_ids=["1ABC"])
         assert "1ABC" in results
         assert "figure_path" not in results["1ABC"]
+
+
 class TestComputeLigandEfficiency:
     def test_none_affinity_returns_none(self):
         result = analysis.compute_ligand_efficiency(None, 10)
@@ -202,7 +204,6 @@ class TestComputeSpearmanCorrelation:
         assert result["rho"] == pytest.approx(-1.0, abs=1e-6)
 
 
-
 class TestComputeEnrichmentFactor:
     def test_empty_input(self):
         result = analysis.compute_enrichment_factor([], {"A"})
@@ -210,9 +211,7 @@ class TestComputeEnrichmentFactor:
         assert result["n_total"] == 0
 
     def test_no_actives(self):
-        result = analysis.compute_enrichment_factor(
-            [("A", -8.0), ("B", -7.0)], set()
-        )
+        result = analysis.compute_enrichment_factor([("A", -8.0), ("B", -7.0)], set())
         assert result["ef"] is None
         assert result["n_total"] == 2
 
@@ -290,9 +289,7 @@ class TestAnalyzeScoringBiasBranches:
             target_dir = out / pdb_id
             target_dir.mkdir(parents=True)
             poses = target_dir / "docking_all_poses.pdbqt"
-            poses.write_text(
-                "MODEL 1\nREMARK VINA RESULT:      -8.000\nATOM 1 C\nENDMDL\n"
-            )
+            poses.write_text("MODEL 1\nREMARK VINA RESULT:      -8.000\nATOM 1 C\nENDMDL\n")
             crystal = target_dir / "crystal_ligand.pdb"
             crystal.write_text("ATOM 1 C\n")
 
@@ -318,9 +315,7 @@ class TestAnalyzeScoringBiasBranches:
         target_dir = out / "1ABC"
         target_dir.mkdir(parents=True)
         poses = target_dir / "docking_all_poses.pdbqt"
-        poses.write_text(
-            "MODEL 1\nREMARK VINA RESULT:      -8.000\nATOM 1 C\nENDMDL\n"
-        )
+        poses.write_text("MODEL 1\nREMARK VINA RESULT:      -8.000\nATOM 1 C\nENDMDL\n")
         crystal = target_dir / "crystal_ligand.pdb"
         crystal.write_text("ATOM 1 C\n")
 
@@ -333,9 +328,7 @@ class TestAnalyzeScoringBiasBranches:
         target_dir = out / "1ABC"
         target_dir.mkdir(parents=True)
         poses = target_dir / "all_poses.pdbqt"
-        poses.write_text(
-            "MODEL 1\nREMARK VINA RESULT:      -8.000\nATOM 1 C\nENDMDL\n"
-        )
+        poses.write_text("MODEL 1\nREMARK VINA RESULT:      -8.000\nATOM 1 C\nENDMDL\n")
         crystal = target_dir / "crystal_ligand.pdb"
         crystal.write_text("ATOM 1 C\n")
 

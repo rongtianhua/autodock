@@ -280,6 +280,8 @@ class TestTopNBestRMSD:
         assert call_count == 2
         assert rmsd == pytest.approx(1.0)
         assert idx == 1
+
+
 class TestComputeClashScoreBranches:
     def test_clash_with_different_elements(self, tmp_path):
         rec = tmp_path / "rec.pdb"
@@ -524,13 +526,13 @@ class TestComputeBestRmsdFromAllPosesBranches:
     def test_multi_model_with_fallback(self, tmp_path):
         poses = tmp_path / "poses.pdbqt"
         poses.write_text(
-            "MODEL 1\nATOM 1 C LIG A 1 0 0 0\nENDMDL\n"
-            "MODEL 2\nATOM 1 C LIG A 1 1 1 1\nENDMDL\n"
+            "MODEL 1\nATOM 1 C LIG A 1 0 0 0\nENDMDL\n" "MODEL 2\nATOM 1 C LIG A 1 1 1 1\nENDMDL\n"
         )
         crystal = tmp_path / "crystal.pdb"
         crystal.write_text("ATOM 1 C LIG A 1 0 0 0\n")
 
         call_count = 0
+
         def fake_best(a, b):
             nonlocal call_count
             call_count += 1
@@ -543,16 +545,16 @@ class TestComputeBestRmsdFromAllPosesBranches:
                 with patch("rdkit.Chem.MolFromPDBBlock", return_value=MagicMock()):
                     with patch("rdkit.Chem.AllChem.GetBestRMS", side_effect=fake_best):
                         with patch.object(val, "compute_rmsd_coordinate_based", return_value=0.5):
-                            rmsd, idx = val.compute_best_rmsd_from_all_poses(str(poses), str(crystal))
+                            rmsd, idx = val.compute_best_rmsd_from_all_poses(
+                                str(poses), str(crystal)
+                            )
         assert rmsd == pytest.approx(0.5)
         assert idx == 2
 
     @pytest.mark.skipif(not val._HAVE_RDKIT, reason="RDKit not available")
     def test_all_models_fail_returns_none(self, tmp_path):
         poses = tmp_path / "poses.pdbqt"
-        poses.write_text(
-            "MODEL 1\nATOM 1 C LIG A 1 0 0 0\nENDMDL\n"
-        )
+        poses.write_text("MODEL 1\nATOM 1 C LIG A 1 0 0 0\nENDMDL\n")
         crystal = tmp_path / "crystal.pdb"
         crystal.write_text("ATOM 1 C LIG A 1 0 0 0\n")
 
@@ -603,7 +605,9 @@ class TestRunRedockingValidationBranches:
             patch("autodock.utils.pdb_chain_to_smiles", return_value="CC"),
         ):
             result = val.run_redocking_validation(
-                str(holo), chain_id="A", output_dir=str(tmp_path / "out"),
+                str(holo),
+                chain_id="A",
+                output_dir=str(tmp_path / "out"),
             )
         assert result["success"] is True
 
@@ -629,7 +633,9 @@ class TestRunRedockingValidationBranches:
         mock_prep_rec.return_value = str(tmp_path / "apo.pdbqt")
         mock_prep_lig.return_value = str(tmp_path / "lig.pdbqt")
         mock_adaptive.return_value = str(tmp_path / "lig.pdbqt")
-        mock_pockets.return_value = [{"center": (1.0, 1.0, 1.0), "box_size": (20.0, 20.0, 20.0), "method": "fpocket"}]
+        mock_pockets.return_value = [
+            {"center": (1.0, 1.0, 1.0), "box_size": (20.0, 20.0, 20.0), "method": "fpocket"}
+        ]
 
         mock_result = MagicMock()
         mock_result.best_affinity = -8.0
@@ -640,12 +646,17 @@ class TestRunRedockingValidationBranches:
         mock_rmsd.return_value = 1.2
 
         with (
-            patch("autodock.validation.extract_ligand_from_pdb", return_value=(MagicMock(), str(tmp_path / "lig.sdf"))),
+            patch(
+                "autodock.validation.extract_ligand_from_pdb",
+                return_value=(MagicMock(), str(tmp_path / "lig.sdf")),
+            ),
             patch("rdkit.Chem.MolToSmiles", return_value="CC"),
             patch("rdkit.Chem.rdmolfiles.MolToPDBFile"),
         ):
             result = val.run_redocking_validation(
-                str(holo), ligand_resname="LIG", output_dir=str(tmp_path / "out"),
+                str(holo),
+                ligand_resname="LIG",
+                output_dir=str(tmp_path / "out"),
                 pocket_method="blind",
             )
         assert result["success"] is True
@@ -684,13 +695,26 @@ class TestRunRedockingValidationBranches:
         mock_rmsd.return_value = 1.2
 
         with (
-            patch("autodock.validation.extract_ligand_from_pdb", return_value=(MagicMock(), str(tmp_path / "lig.sdf"))),
+            patch(
+                "autodock.validation.extract_ligand_from_pdb",
+                return_value=(MagicMock(), str(tmp_path / "lig.sdf")),
+            ),
             patch("rdkit.Chem.MolToSmiles", return_value="CC"),
             patch("rdkit.Chem.rdmolfiles.MolToPDBFile"),
-            patch("autodock.minimization.minimize_docked_pose", return_value={"success": True, "output_pdb": str(tmp_path / "min.pdb"), "initial_energy_kJ_mol": -100.0, "final_energy_kJ_mol": -150.0}),
+            patch(
+                "autodock.minimization.minimize_docked_pose",
+                return_value={
+                    "success": True,
+                    "output_pdb": str(tmp_path / "min.pdb"),
+                    "initial_energy_kJ_mol": -100.0,
+                    "final_energy_kJ_mol": -150.0,
+                },
+            ),
         ):
             result = val.run_redocking_validation(
-                str(holo), ligand_resname="LIG", output_dir=str(tmp_path / "out"),
+                str(holo),
+                ligand_resname="LIG",
+                output_dir=str(tmp_path / "out"),
                 minimize=True,
             )
         assert result["success"] is True
@@ -722,8 +746,7 @@ class TestRunRedockingValidationBranches:
 
         all_poses = tmp_path / "all_poses.pdbqt"
         all_poses.write_text(
-            "MODEL 1\nATOM 1 C LIG A 1 0 0 0\nENDMDL\n"
-            "MODEL 2\nATOM 1 C LIG A 1 1 1 1\nENDMDL\n"
+            "MODEL 1\nATOM 1 C LIG A 1 0 0 0\nENDMDL\n" "MODEL 2\nATOM 1 C LIG A 1 1 1 1\nENDMDL\n"
         )
 
         mock_result = MagicMock()
@@ -735,13 +758,18 @@ class TestRunRedockingValidationBranches:
         mock_rmsd.return_value = 1.2
 
         with (
-            patch("autodock.validation.extract_ligand_from_pdb", return_value=(MagicMock(), str(tmp_path / "lig.sdf"))),
+            patch(
+                "autodock.validation.extract_ligand_from_pdb",
+                return_value=(MagicMock(), str(tmp_path / "lig.sdf")),
+            ),
             patch("rdkit.Chem.MolToSmiles", return_value="CC"),
             patch("rdkit.Chem.rdmolfiles.MolToPDBFile"),
             patch("autodock.interactions.ifp_similarity_scores", return_value=[(1, 0.9, None)]),
         ):
             result = val.run_redocking_validation(
-                str(holo), ligand_resname="LIG", output_dir=str(tmp_path / "out"),
+                str(holo),
+                ligand_resname="LIG",
+                output_dir=str(tmp_path / "out"),
                 use_ifp=True,
             )
         assert result["success"] is True
@@ -771,9 +799,7 @@ class TestRunRedockingValidationBranches:
         mock_pockets.return_value = [{"center": (1.0, 1.0, 1.0), "box_size": (20.0, 20.0, 20.0)}]
 
         all_poses = tmp_path / "all_poses.pdbqt"
-        all_poses.write_text(
-            "MODEL 1\nATOM 1 C LIG A 1 0 0 0\nENDMDL\n"
-        )
+        all_poses.write_text("MODEL 1\nATOM 1 C LIG A 1 0 0 0\nENDMDL\n")
 
         mock_result = MagicMock()
         mock_result.best_affinity = -8.0
@@ -783,21 +809,28 @@ class TestRunRedockingValidationBranches:
         mock_dock.return_value = mock_result
         # First call for raw RMSD returns >2.0 to trigger consensus rescue
         call_count = 0
+
         def rmsd_side(*a, **k):
             nonlocal call_count
             call_count += 1
             if call_count <= 2:
                 return 3.0
             return 0.5
+
         mock_rmsd.side_effect = rmsd_side
 
         with (
-            patch("autodock.validation.extract_ligand_from_pdb", return_value=(MagicMock(), str(tmp_path / "lig.sdf"))),
+            patch(
+                "autodock.validation.extract_ligand_from_pdb",
+                return_value=(MagicMock(), str(tmp_path / "lig.sdf")),
+            ),
             patch("rdkit.Chem.MolToSmiles", return_value="CC"),
             patch("rdkit.Chem.rdmolfiles.MolToPDBFile"),
         ):
             result = val.run_redocking_validation(
-                str(holo), ligand_resname="LIG", output_dir=str(tmp_path / "out"),
+                str(holo),
+                ligand_resname="LIG",
+                output_dir=str(tmp_path / "out"),
             )
         assert result["consensus_best_rmsd"] is not None
 
@@ -837,14 +870,22 @@ class TestRunRedockingValidationBranches:
         mock_rmsd.return_value = 1.0
 
         with (
-            patch("autodock.validation.extract_ligand_from_pdb", return_value=(MagicMock(), str(tmp_path / "lig.sdf"))),
+            patch(
+                "autodock.validation.extract_ligand_from_pdb",
+                return_value=(MagicMock(), str(tmp_path / "lig.sdf")),
+            ),
             patch("rdkit.Chem.MolToSmiles", return_value="CC"),
             patch("rdkit.Chem.rdmolfiles.MolToPDBFile"),
             patch("autodock.preparation.find_nearby_residues", return_value=["A:42"]),
-            patch("autodock.preparation.prepare_flexible_receptor", return_value=("rigid.pdbqt", "flex.pdbqt")),
+            patch(
+                "autodock.preparation.prepare_flexible_receptor",
+                return_value=("rigid.pdbqt", "flex.pdbqt"),
+            ),
         ):
             result = val.run_redocking_validation(
-                str(holo), ligand_resname="LIG", output_dir=str(tmp_path / "out"),
+                str(holo),
+                ligand_resname="LIG",
+                output_dir=str(tmp_path / "out"),
                 use_flexible_receptor=True,
             )
         assert result["success"] is True
