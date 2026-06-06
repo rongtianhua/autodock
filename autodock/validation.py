@@ -402,7 +402,10 @@ def compute_rmsd_coordinate_based(
         sub1 = c1[idx1]
         sub2 = c2[idx2]
         cost = np.linalg.norm(sub1[:, None, :] - sub2[None, :, :], axis=2)
-        row_ind, col_ind = linear_sum_assignment(cost)
+        try:
+            row_ind, col_ind = linear_sum_assignment(cost)
+        except (ValueError, IndexError):
+            continue
         matched_1.extend([idx1[i] for i in row_ind])
         matched_2.extend([idx2[j] for j in col_ind])
 
