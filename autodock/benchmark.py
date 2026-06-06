@@ -331,7 +331,7 @@ def run_redocking_benchmark(
         "success_rate_top_n": len(top_n_successes) / len(targets) if targets else 0.0,
         "mean_top_n_rmsd": float(np.mean(top_n_rmsds)) if top_n_rmsds else None,
         "median_top_n_rmsd": float(np.median(top_n_rmsds)) if top_n_rmsds else None,
-        # IFP re-scoring metrics
+        # Auxiliary rescoring metrics
         "ifp_successes": [
             r
             for r in raw_results
@@ -339,6 +339,24 @@ def run_redocking_benchmark(
         ],
         "ifp_rmsds": [
             r["ifp_best_rmsd"] for r in raw_results if r.get("ifp_best_rmsd") is not None
+        ],
+        "shape_successes": [
+            r
+            for r in raw_results
+            if r.get("shape_best_rmsd") is not None
+            and r["shape_best_rmsd"] < REDocking_RMSD_THRESHOLD
+        ],
+        "shape_rmsds": [
+            r["shape_best_rmsd"] for r in raw_results if r.get("shape_best_rmsd") is not None
+        ],
+        "strain_successes": [
+            r
+            for r in raw_results
+            if r.get("strain_best_rmsd") is not None
+            and r["strain_best_rmsd"] < REDocking_RMSD_THRESHOLD
+        ],
+        "strain_rmsds": [
+            r["strain_best_rmsd"] for r in raw_results if r.get("strain_best_rmsd") is not None
         ],
         "parameters": {
             "exhaustiveness": exhaustiveness,
@@ -421,6 +439,12 @@ def run_redocking_benchmark(
                     "ifp_best_rmsd": r.get("ifp_best_rmsd"),
                     "ifp_best_pose_idx": r.get("ifp_best_pose_idx"),
                     "ifp_best_score": r.get("ifp_best_score"),
+                    "shape_best_rmsd": r.get("shape_best_rmsd"),
+                    "shape_best_pose_idx": r.get("shape_best_pose_idx"),
+                    "shape_best_score": r.get("shape_best_score"),
+                    "strain_best_rmsd": r.get("strain_best_rmsd"),
+                    "strain_best_pose_idx": r.get("strain_best_pose_idx"),
+                    "strain_best_score": r.get("strain_best_score"),
                     "best_affinity": r.get("best_affinity"),
                     "error": r.get("error", ""),
                 }
@@ -458,6 +482,20 @@ def run_redocking_benchmark(
         msg += (
             f"IFP-best: {len(ifp_successes)}/{summary['n_total']} "
             f"({len(ifp_successes)/summary['n_total']*100:.1f}%). "
+        )
+    shape_successes = summary.get("shape_successes", [])
+    shape_rmsds = summary.get("shape_rmsds", [])
+    if shape_rmsds:
+        msg += (
+            f"Shape-best: {len(shape_successes)}/{summary['n_total']} "
+            f"({len(shape_successes)/summary['n_total']*100:.1f}%). "
+        )
+    strain_successes = summary.get("strain_successes", [])
+    strain_rmsds = summary.get("strain_rmsds", [])
+    if strain_rmsds:
+        msg += (
+            f"Strain-best: {len(strain_successes)}/{summary['n_total']} "
+            f"({len(strain_successes)/summary['n_total']*100:.1f}%). "
         )
     if summary["median_rmsd"] is not None:
         msg += f"Median RMSD: {summary['median_rmsd']:.2f} Å"
@@ -682,6 +720,7 @@ def _run_single_benchmark(item: dict[str, Any]) -> dict[str, Any]:
         "top_n_check": item.get("top_n_check", 3),
         "use_ifp": item.get("use_ifp", False),
         "use_flexible_receptor": item.get("use_flexible_receptor", False),
+        "rescoring_methods": item.get("rescoring_methods"),
     }
     if pdb_id in HARD_TARGET_OVERRIDES:
         overrides = HARD_TARGET_OVERRIDES[pdb_id].copy()
@@ -715,6 +754,12 @@ def _run_single_benchmark(item: dict[str, Any]) -> dict[str, Any]:
             "ifp_best_rmsd": result.get("ifp_best_rmsd"),
             "ifp_best_pose_idx": result.get("ifp_best_pose_idx"),
             "ifp_best_score": result.get("ifp_best_score"),
+            "shape_best_rmsd": result.get("shape_best_rmsd"),
+            "shape_best_pose_idx": result.get("shape_best_pose_idx"),
+            "shape_best_score": result.get("shape_best_score"),
+            "strain_best_rmsd": result.get("strain_best_rmsd"),
+            "strain_best_pose_idx": result.get("strain_best_pose_idx"),
+            "strain_best_score": result.get("strain_best_score"),
             "threshold": result.get("threshold"),
             "pocket_method": result.get("pocket_method"),
             "pocket_source": result.get("pocket_source"),

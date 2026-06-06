@@ -659,6 +659,7 @@ def run_redocking_validation(
     top_n_check: int = 3,
     use_ifp: bool = False,
     use_flexible_receptor: bool = False,
+    rescoring_methods: list[str] | None = None,
 ) -> dict[str, Any]:
     """
     Validate docking protocol by redocking the co-crystallized ligand.
@@ -709,7 +710,8 @@ def run_redocking_validation(
 
     Returns:
         Dict with rmsd, success flag, pocket_center, pocket_method, file paths,
-        and top-N metrics (top_n_best_rmsd, top_n_success).
+        top-N metrics (top_n_best_rmsd, top_n_success), and auxiliary rescoring
+        metrics (shape_best_rmsd, strain_best_rmsd, ifp_best_rmsd, etc.).
     """
     from rdkit import Chem
 
@@ -722,6 +724,11 @@ def run_redocking_validation(
     )
 
     ensure_dir(output_dir)
+
+    # Normalize rescoring methods: backward-compat with use_ifp flag
+    rescoring_methods = [] if rescoring_methods is None else list(rescoring_methods)
+    if use_ifp and "ifp" not in rescoring_methods:
+        rescoring_methods.append("ifp")
 
     crystal_ligand_pdb = os.path.join(output_dir, "crystal_ligand.pdb")
     crystal_mol = None
@@ -1036,45 +1043,69 @@ def run_redocking_validation(
                 f"{'PASS' if top_n_success else 'FAIL'}"
             )
 
-    # ── 8. IFP-based interaction-consistency re-scoring ────────────────────
-    # Re-rank poses by how well their interaction fingerprint matches the
-    # crystal ligand.  This often rescues poses that Vina mis-ranks.
-    ifp_best_rmsd = None
-    ifp_best_pose_idx = None
-    ifp_best_score = None
-    if use_ifp and result.all_poses_pdbqt and os.path.isfile(result.all_poses_pdbqt):
-        from autodock.interactions import ifp_similarity_scores
+    # ── 8. Auxiliary rescoring (shape, strain, IFP) ────────────────────────
+    # Re-rank poses by complementary signals that Vina's energy function may
+    # miss.  Each method independently selects its best pose; RMSD is then
+    # computed against the crystal for evaluation.
+    aux_results: dict[str, dict[str, Any]] = {}
+    if rescoring_methods and result.all_poses_pdbqt and os.path.isfile(result.all_poses_pdbqt):
+        from autodock.rescoring import combined_rescoring, select_best_by_method
 
         try:
-            ifp_scores = ifp_similarity_scores(
-                apo_pdb, result.all_poses_pdbqt, crystal_ligand_pdb, method="plip"
+            method_scores = combined_rescoring(
+                result.all_poses_pdbqt,
+                reference_pdbqt=crystal_ligand_pdb,
+                methods=rescoring_methods,
+                receptor_pdb=apo_pdb,
             )
-            if ifp_scores:
-                ifp_best_pose_idx, ifp_best_score, _ = ifp_scores[0]
-                # Compute RMSD for the IFP-best pose
+            for method, scores in method_scores.items():
+                best = select_best_by_method(scores, method="min" if method == "strain" else "max")
+                if best is None:
+                    continue
+                best_idx, best_score = best
+                # Extract pose and compute RMSD
                 import re
 
                 with open(result.all_poses_pdbqt) as fh:
                     content = fh.read()
                 models = re.split(r"MODEL\s+\d+\n", content)
-                model_block = models[ifp_best_pose_idx].split("ENDMDL")[0]
-                pose_tmp = os.path.join(output_dir, f"ifp_best_pose_{ifp_best_pose_idx}.pdbqt")
-                with open(pose_tmp, "w") as fh:
-                    fh.write(model_block)
-                ifp_best_rmsd = compute_rmsd_to_crystal(pose_tmp, crystal_ligand_pdb)
-                ifp_success = ifp_best_rmsd is not None and ifp_best_rmsd < REDocking_RMSD_THRESHOLD
-                logger.info(
-                    f"Redocking IFP-best RMSD: {ifp_best_rmsd:.2f} Å "
-                    f"(pose #{ifp_best_pose_idx}, IFP score={ifp_best_score:.3f}) — "
-                    f"{'PASS' if ifp_success else 'FAIL'}"
-                )
+                if best_idx < len(models):
+                    model_block = models[best_idx].split("ENDMDL")[0]
+                    pose_tmp = os.path.join(output_dir, f"{method}_best_pose_{best_idx}.pdbqt")
+                    with open(pose_tmp, "w") as fh:
+                        fh.write(model_block)
+                    rmsd = compute_rmsd_to_crystal(pose_tmp, crystal_ligand_pdb)
+                    success = rmsd is not None and rmsd < REDocking_RMSD_THRESHOLD
+                    aux_results[method] = {
+                        "best_rmsd": rmsd,
+                        "best_pose_idx": best_idx,
+                        "best_score": best_score,
+                        "success": success,
+                    }
+                    logger.info(
+                        f"Redocking {method.upper()}-best RMSD: {rmsd:.2f} Å "
+                        f"(pose #{best_idx}, score={best_score:.3f}) — "
+                        f"{'PASS' if success else 'FAIL'}"
+                    )
         except Exception as exc:
-            logger.warning(f"IFP re-scoring failed: {exc}")
-    elif not success and not use_ifp:
+            logger.warning(f"Auxiliary rescoring failed: {exc}")
+    elif not success and not rescoring_methods:
         logger.info(
-            "Redocking top-1 failed. Consider re-running with use_ifp=True "
-            "to re-rank poses by interaction fingerprint similarity."
+            "Redocking top-1 failed. Consider re-running with rescoring_methods "
+            "to re-rank poses by shape similarity, strain energy, or interaction "
+            "fingerprint."
         )
+
+    # Pull out individual metrics for backward compatibility
+    ifp_best_rmsd = aux_results.get("ifp", {}).get("best_rmsd")
+    ifp_best_pose_idx = aux_results.get("ifp", {}).get("best_pose_idx")
+    ifp_best_score = aux_results.get("ifp", {}).get("best_score")
+    shape_best_rmsd = aux_results.get("shape", {}).get("best_rmsd")
+    shape_best_pose_idx = aux_results.get("shape", {}).get("best_pose_idx")
+    shape_best_score = aux_results.get("shape", {}).get("best_score")
+    strain_best_rmsd = aux_results.get("strain", {}).get("best_rmsd")
+    strain_best_pose_idx = aux_results.get("strain", {}).get("best_pose_idx")
+    strain_best_score = aux_results.get("strain", {}).get("best_score")
 
     # ── 8b. Cluster-consensus rescue (scoring failure) ────────────────────
     # When top-1 fails but a good pose exists in another cluster,
@@ -1188,6 +1219,12 @@ def run_redocking_validation(
         "ifp_best_rmsd": ifp_best_rmsd,
         "ifp_best_pose_idx": ifp_best_pose_idx,
         "ifp_best_score": ifp_best_score,
+        "shape_best_rmsd": shape_best_rmsd,
+        "shape_best_pose_idx": shape_best_pose_idx,
+        "shape_best_score": shape_best_score,
+        "strain_best_rmsd": strain_best_rmsd,
+        "strain_best_pose_idx": strain_best_pose_idx,
+        "strain_best_score": strain_best_score,
         "consensus_best_rmsd": consensus_best_rmsd,
         "consensus_best_pose_idx": consensus_best_pose_idx,
         "interactions": interactions,
