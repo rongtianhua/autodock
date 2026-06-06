@@ -746,14 +746,11 @@ def _run_single_benchmark(item: dict[str, Any]) -> dict[str, Any]:
             "ifp_best_pose_idx": result.get("ifp_best_pose_idx"),
             "ifp_best_score": result.get("ifp_best_score"),
             "cascade": result.get("cascade", False),
-            "cascade_ifp_rmsd": result.get("cascade_results", {}).get("ifp", {}).get("best_rmsd"),
-            "cascade_ifp_success": result.get("cascade_results", {}).get("ifp", {}).get("success"),
-            "cascade_mmgbsa_rmsd": result.get("cascade_results", {})
-            .get("mmgbsa", {})
-            .get("best_rmsd"),
-            "cascade_mmgbsa_success": result.get("cascade_results", {})
-            .get("mmgbsa", {})
-            .get("success"),
+            "cascade_results": result.get("cascade_results", {}),
+            "cascade_ifp_rmsd": result.get("cascade_ifp_rmsd"),
+            "cascade_ifp_success": result.get("cascade_ifp_success"),
+            "cascade_mmgbsa_rmsd": result.get("cascade_mmgbsa_rmsd"),
+            "cascade_mmgbsa_success": result.get("cascade_mmgbsa_success"),
             "threshold": result.get("threshold"),
             "pocket_method": result.get("pocket_method"),
             "pocket_source": result.get("pocket_source"),

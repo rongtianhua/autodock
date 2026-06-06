@@ -1394,14 +1394,22 @@ def run_redocking_validation(
             logger.warning(f"Interaction detection failed: {exc}")
 
     # Flatten cascade results for benchmark consumption
+    # Prefer the *successful* tier; if none succeeded, report the first tried.
     cascade_ifp_success = None
     cascade_ifp_rmsd = None
     for key in ("ifp20", "ifp"):
         tier = cascade_results.get(key)
-        if tier and tier.get("success") is not None:
-            cascade_ifp_success = tier["success"]
+        if tier and tier.get("success"):
+            cascade_ifp_success = True
             cascade_ifp_rmsd = tier.get("best_rmsd")
             break
+    if cascade_ifp_success is None:
+        for key in ("ifp20", "ifp"):
+            tier = cascade_results.get(key)
+            if tier and tier.get("success") is not None:
+                cascade_ifp_success = tier["success"]
+                cascade_ifp_rmsd = tier.get("best_rmsd")
+                break
     mmgbsa_tier = cascade_results.get("mmgbsa")
     cascade_mmgbsa_success = mmgbsa_tier.get("success") if mmgbsa_tier else None
     cascade_mmgbsa_rmsd = mmgbsa_tier.get("best_rmsd") if mmgbsa_tier else None
