@@ -309,8 +309,9 @@ def prepare_receptor(
 
     1. **PDBFixer** — fills missing residues and atoms, assigns protonation
        states at the specified pH, replaces nonstandard residues.
-    2. **OpenMM energy minimization** — short L-BFGS minimisation (200 steps)
-       to relieve local strain from missing-atom reconstruction.
+    2. **OpenMM energy minimization** — L-BFGS minimisation (up to 500 steps,
+       RMS force tolerance 10 kJ/(nm·mol)) to relieve local strain from
+       missing-atom reconstruction.
     3. **Meeko Polymer** — AD4 atom typing, Gasteiger charges, PDBQT export.
        Falls back to Open Babel if Meeko fails.
 
@@ -345,7 +346,7 @@ def prepare_receptor(
         restraint_center: Optional (x, y, z) pocket centre in Å for
             **pocket-restrained minimisation**.  Atoms within
             ``restraint_radius`` of this point have their backbone
-            restrained (10 kcal/mol/Å²) while side chains move freely;
+            restrained (5 kcal/mol/Å²) while side chains move freely;
             atoms outside have all heavy atoms restrained.  If *None*
             (default), a uniform heavy-atom restraint (10 kcal/mol/Å²)
             is applied to the entire protein.  Provide the crystal-ligand
@@ -898,7 +899,7 @@ def prepare_receptor(
     _all_temps.append(tmp_min)
     try:
         import openmm
-        from openmm import CustomExternalForce, LangevinIntegrator
+        from openmm import CustomExternalForce, VerletIntegrator
         from openmm import unit as _omm_unit
         from openmm.app import ForceField, PDBFile, Simulation
 
@@ -909,14 +910,32 @@ def prepare_receptor(
         _top = _reduce_fixer.topology
         _pos = _reduce_fixer.positions  # OpenMM: units in nm
 
-        ff = ForceField(forcefield)
+        # Load force field; add TIP3P water model if waters are present
+        # (amber14-all.xml does not include water parameters).
+        _ff_files: list[str] = [forcefield]
+        try:
+            with open(tmp_pdb2pqr) as _fh:
+                _pdb_text = _fh.read()
+        except OSError:
+            _pdb_text = ""
+        if "HOH" in _pdb_text or "WAT" in _pdb_text:
+            # Match water model to force field family
+            if forcefield.startswith("amber14"):
+                _ff_files.append("amber14/tip3p.xml")
+            elif forcefield.startswith("amber19"):
+                _ff_files.append("amber19/tip3p.xml")
+            logger.info("OpenMM: explicit water detected — loading TIP3P parameters")
+        ff = ForceField(*_ff_files)
         system = ff.createSystem(_top)
 
         # ── Positional restraints ─────────────────────────────────────────
-        # Pocket region: backbone restrained (10 kcal/mol/Å²), side chains free
-        # Outside pocket: all heavy atoms restrained (10 kcal/mol/Å²)
+        # Pocket region: backbone restrained (5 kcal/mol/Å²), side chains free
+        # Outside pocket: all heavy atoms restrained (5 kcal/mol/Å²)
         # Keeps crystal structure globally while relieving local strain.
-        k_kcal = 10.0  # restraint force constant (kcal/mol/Å²)
+        # 5 kcal/mol/Å² is a standard compromise: strong enough to prevent
+        # backbone drift (~half a C–C bond stiffness), gentle enough to let
+        # side chains relax into better rotamers.
+        k_kcal = 5.0  # restraint force constant (kcal/mol/Å²)
         _K = k_kcal * _omm_unit.kilocalories_per_mole / _omm_unit.angstrom**2
         BACKBONE_NAMES = {"N", "CA", "C", "O", "OXT"}
 
@@ -960,14 +979,16 @@ def prepare_receptor(
             + (f" (pocket radius {restraint_radius} Å)" if restraint_center else " (uniform)")
         )
 
-        integrator = LangevinIntegrator(
-            300 * _omm_unit.kelvin,
-            1.0 / _omm_unit.picosecond,
-            0.002 * _omm_unit.picosecond,
-        )
+        # VerletIntegrator is used as a lightweight placeholder because
+        # Simulation() requires an integrator.  minimizeEnergy() internally
+        # uses L-BFGS, so the integrator type has no effect on minimisation.
+        integrator = VerletIntegrator(0.001 * _omm_unit.picosecond)
         simulation = Simulation(_top, system, integrator)
         simulation.context.setPositions(_pos)
-        simulation.minimizeEnergy(maxIterations=200)
+        # tolerance=10 kJ/(nm·mol) is the OpenMM default; 500 steps is a
+        # generous ceiling that lets well-behaved structures converge early
+        # while giving strained structures (e.g. AlphaFold) more room.
+        simulation.minimizeEnergy(maxIterations=500)
         min_positions = simulation.context.getState(getPositions=True).getPositions()
         # NaN guard: validate coordinates before writing
         _has_nan = False
@@ -979,7 +1000,7 @@ def prepare_receptor(
             raise RuntimeError("OpenMM minimisation produced NaN coordinates — structure diverged")
         with open(tmp_min, "w") as fh:
             PDBFile.writeFile(_top, min_positions, fh)
-        logger.info("OpenMM: receptor energy minimised (200 steps L-BFGS)")
+        logger.info("OpenMM: receptor energy minimised (L-BFGS, ≤500 steps)")
     except (
         OSError,
         ValueError,
@@ -3332,10 +3353,39 @@ def find_top_pockets(
                     p2rank_csv_path = _csv
 
         if not p2rank_pockets:
-            raise PreparationError(
-                f"P2Rank found no pockets in {receptor_pdb}. "
-                "Cannot proceed — P2Rank is the primary detection method."
-            )
+            # Fallback: DoGSite3 via proteins.plus REST API
+            dogsite3_pockets = _run_dogsite3_predict(receptor_pdb)
+            if dogsite3_pockets:
+                logger.info(
+                    f"DoGSite3 fallback: {len(dogsite3_pockets)} pocket(s) detected"
+                )
+                # Normalise DoGSite3 format to P2Rank-compatible dicts so the
+                # rest of the cross-validation / ranking pipeline works unchanged.
+                p2rank_pockets = []
+                for i, dgp in enumerate(dogsite3_pockets):
+                    vol = dgp.get("volume") or 1000.0
+                    radius = (vol ** (1 / 3)) / 2  # approximate from volume
+                    p2rank_pockets.append(
+                        {
+                            "num": i + 1,
+                            "center": dgp["center"],
+                            "radius": radius,
+                            "score": dgp.get("druggability", 0.5),
+                            "druggability": dgp.get("druggability", 0.5),
+                            "volume": vol,
+                            "depth": None,
+                            "openings": None,
+                            "n_apolar": None,
+                            "n_polar": None,
+                            "dims": (radius * 2, radius * 2, radius * 2),
+                            "pocket_source": "dogsite3",
+                        }
+                    )
+            if not p2rank_pockets:
+                raise PreparationError(
+                    f"P2Rank found no pockets in {receptor_pdb}. "
+                    "Cannot proceed — P2Rank is the primary detection method."
+                )
 
         # Step 2: fpocket geometric cross-validation ────────────────────────────
         fpocket_pockets: list[dict[str, Any]] | None = None
@@ -3494,7 +3544,7 @@ def find_top_pockets(
                 "druggability_description": drugg_class["description"],
                 "p2rank_prob": c["prob"],
                 "pocket_num": pnum,
-                "pocket_source": "fpocket" if verified else "p2rank",
+                "pocket_source": "fpocket" if verified else src.get("pocket_source", "p2rank"),
                 "fpocket_verified": verified,
                 "fpocket_match_distance": c["match_distance"],
                 "volume": volume,
