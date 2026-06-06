@@ -1053,53 +1053,95 @@ def run_redocking_validation(
             )
 
     # ── 7.5 Cascade fallback rescoring ─────────────────────────────────────
-    # Three-tier fallback: Vina → IFP(+more poses) → MM-GBSA
+    # Three-tier fallback: Vina → IFP(20 poses) → IFP(+more poses) → MM-GBSA
     cascade_results: dict[str, Any] = {}
     if cascade and not success:
         logger.info(
             f"Redocking top-1 failed (RMSD={rmsd:.2f} Å). "
-            f"Triggering cascade fallback (n_poses={cascade_n_poses})..."
+            f"Triggering cascade fallback..."
         )
 
-        # ── Tier 2: re-dock with increased pose sampling + IFP ──────────────
+        # ── Tier 2a: IFP on existing Tier-1 poses (zero extra docking cost) ──
+        if result.all_poses_pdbqt and os.path.isfile(result.all_poses_pdbqt):
+            try:
+                from autodock.interactions import ifp_similarity_scores
+
+                ifp_scores = ifp_similarity_scores(
+                    apo_pdb, result.all_poses_pdbqt, crystal_ligand_pdb, method="plip"
+                )
+                if ifp_scores:
+                    best_idx, best_score, _ = ifp_scores[0]
+                    import re
+
+                    with open(result.all_poses_pdbqt) as fh:
+                        content = fh.read()
+                    models = re.split(r"MODEL\s+\d+\n", content)
+                    if best_idx < len(models):
+                        model_block = models[best_idx].split("ENDMDL")[0]
+                        pose_tmp = os.path.join(
+                            output_dir, f"cascade_ifp20_best_{best_idx}.pdbqt"
+                        )
+                        with open(pose_tmp, "w") as fh:
+                            fh.write(model_block)
+                        ifp_rmsd = compute_rmsd_to_crystal(pose_tmp, crystal_ligand_pdb)
+                        ifp_success = ifp_rmsd is not None and ifp_rmsd < REDocking_RMSD_THRESHOLD
+                        cascade_results["ifp20"] = {
+                            "best_rmsd": ifp_rmsd,
+                            "best_pose_idx": best_idx,
+                            "best_score": best_score,
+                            "success": ifp_success,
+                        }
+                        logger.info(
+                            f"Cascade IFP(20)-best RMSD: {ifp_rmsd:.2f} Å "
+                            f"(pose #{best_idx}, score={best_score:.3f}) — "
+                            f"{'PASS' if ifp_success else 'FAIL'}"
+                        )
+                        if ifp_success:
+                            logger.info("Cascade IFP(20) rescued the docking failure")
+            except Exception as exc:
+                logger.warning(f"Cascade IFP(20) rescoring failed: {exc}")
+
+        # ── Tier 2b: re-dock with increased pose sampling + IFP ─────────────
         tier2_all_poses: str | None = None
-        try:
-            if use_multi:
-                tier2_result = dock_ligand_multi_conformer(
-                    receptor_pdbqt,
-                    conformer_pdbqts,
-                    center,
-                    box_size,
-                    exhaustiveness=exhaustiveness,
-                    n_poses=cascade_n_poses,
-                    seed=seed,
-                    output_dir=output_dir,
-                    compound_name="redock_cascade",
-                    skip_consensus=skip_consensus,
-                    auto_exhaustiveness=auto_exhaustiveness,
-                    timeout=timeout,
+        if not cascade_results.get("ifp20", {}).get("success"):
+            logger.info(f"IFP(20) failed. Re-docking with n_poses={cascade_n_poses}...")
+            try:
+                if use_multi:
+                    tier2_result = dock_ligand_multi_conformer(
+                        receptor_pdbqt,
+                        conformer_pdbqts,
+                        center,
+                        box_size,
+                        exhaustiveness=exhaustiveness,
+                        n_poses=cascade_n_poses,
+                        seed=seed,
+                        output_dir=output_dir,
+                        compound_name="redock_cascade",
+                        skip_consensus=skip_consensus,
+                        auto_exhaustiveness=auto_exhaustiveness,
+                        timeout=timeout,
+                    )
+                else:
+                    tier2_result = dock_ligand(
+                        receptor_pdbqt,
+                        ligand_pdbqt,
+                        center,
+                        box_size,
+                        exhaustiveness=exhaustiveness,
+                        n_poses=cascade_n_poses,
+                        seed=seed,
+                        output_dir=output_dir,
+                        compound_name="redock_cascade",
+                        skip_consensus=skip_consensus,
+                        auto_exhaustiveness=auto_exhaustiveness,
+                        timeout=timeout,
+                    )
+                tier2_all_poses = tier2_result.all_poses_pdbqt
+                logger.info(
+                    f"Cascade tier-2 docking complete: best affinity={tier2_result.best_affinity:.2f} kcal/mol"
                 )
-            else:
-                tier2_result = dock_ligand(
-                    receptor_pdbqt,
-                    ligand_pdbqt,
-                    center,
-                    box_size,
-                    exhaustiveness=exhaustiveness,
-                    n_poses=cascade_n_poses,
-                    seed=seed,
-                    output_dir=output_dir,
-                    compound_name="redock_cascade",
-                    skip_consensus=skip_consensus,
-                    auto_exhaustiveness=auto_exhaustiveness,
-                    timeout=timeout,
-                )
-            tier2_all_poses = tier2_result.all_poses_pdbqt
-            logger.info(
-                f"Cascade tier-2 docking complete: best affinity={tier2_result.best_affinity:.2f} kcal/mol"
-            )
-        except Exception as exc:
-            logger.warning(f"Cascade tier-2 docking failed: {exc}")
+            except Exception as exc:
+                logger.warning(f"Cascade tier-2 docking failed: {exc}")
 
         # IFP re-ranking on tier-2 poses
         if tier2_all_poses and os.path.isfile(tier2_all_poses):
@@ -1190,7 +1232,11 @@ def run_redocking_validation(
 
         # If a cascade tier rescued, update primary reported result
         if cascade_results:
-            for tier_name, tier_key in [("IFP", "ifp"), ("MM-GBSA", "mmgbsa")]:
+            for tier_name, tier_key in [
+                ("IFP(20)", "ifp20"),
+                ("IFP", "ifp"),
+                ("MM-GBSA", "mmgbsa"),
+            ]:
                 tier_result = cascade_results.get(tier_key)
                 if tier_result and tier_result.get("success"):
                     rmsd = tier_result["best_rmsd"]
