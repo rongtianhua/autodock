@@ -3389,9 +3389,7 @@ def _merge_receptor_ligand_for_poseview(
     # Receptor atoms
     with open(receptor_pdb) as fh:
         for line in fh:
-            if line.startswith(("ATOM  ", "HETATM")):
-                lines.append(line.rstrip("\n"))
-            elif line.startswith(("TER", "END")):
+            if line.startswith(("ATOM  ", "HETATM", "TER", "END")):
                 lines.append(line.rstrip("\n"))
 
     # Ligand atoms from PDBQT — strip partial-charge / atom-type columns
