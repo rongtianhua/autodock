@@ -168,6 +168,35 @@ class TestSanitizePdbqtForRdkitExtended:
         assert line[76:78].strip() == "S"
 
 
+# ── _strip_flexible_residues_from_pdbqt_block ─────────────────────────────────
+
+
+class TestStripFlexibleResidues:
+    def test_removes_begin_end_res_block(self):
+        block = (
+            "ROOT\n"
+            "ATOM      1  C   LIG A   1       0.000   0.000   0.000\n"
+            "ENDROOT\n"
+            "BEGIN_RES ASP A 149\n"
+            "ATOM      2  N   ASP A 149       1.000   1.000   1.000\n"
+            "END_RES ASP A 149\n"
+            "TORSDOF 4\n"
+        )
+        result = utils._strip_flexible_residues_from_pdbqt_block(block)
+        lines = [l.strip() for l in result.splitlines() if l.strip()]
+        assert "BEGIN_RES" not in result
+        assert "END_RES" not in result
+        assert "ROOT" in lines
+        assert "TORSDOF 4" in lines
+        assert any("LIG" in l for l in lines)
+        assert not any("ASP" in l for l in lines)
+
+    def test_no_flex_block_unchanged(self):
+        block = "ATOM      1  C   LIG A   1       0.000   0.000   0.000\n"
+        result = utils._strip_flexible_residues_from_pdbqt_block(block)
+        assert result.strip() == block.strip()
+
+
 # ── pdb_chain_to_smiles ──────────────────────────────────────────────────────
 
 

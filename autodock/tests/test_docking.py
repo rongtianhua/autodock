@@ -64,6 +64,43 @@ class TestRunVinaDock:
 
     @patch("autodock.docking._HAVE_VINA", True)
     @patch("vina.Vina")
+    def test_flex_receptor_passed_to_vina(self, mock_vina_cls, tmp_path):
+        mock_vina = MagicMock()
+        mock_vina_cls.return_value = mock_vina
+        mock_vina.energies.return_value = np.array([[-8.0, 1.0, 2.0]])
+
+        poses_content = (
+            "MODEL 1\nREMARK VINA RESULT: -8.0\n"
+            "ATOM      1  C   LIG A   1"
+            "      0.000   0.000   0.000\nENDMDL\n"
+        )
+        out_file = tmp_path / "poses.pdbqt"
+        out_file.write_text(poses_content)
+
+        def mock_write_poses(path, **kwargs):
+            with open(path, "w") as fh:
+                fh.write(poses_content)
+
+        mock_vina.write_poses.side_effect = mock_write_poses
+
+        flex_file = str(tmp_path / "flex.pdbqt")
+        open(flex_file, "w").close()
+
+        docking._run_vina_dock(
+            "rec.pdbqt",
+            "lig.pdbqt",
+            (0, 0, 0),
+            (20, 20, 20),
+            exhaustiveness=8,
+            n_poses=9,
+            seed=42,
+            flex_receptor_pdbqt=flex_file,
+            _use_subprocess=False,
+        )
+        mock_vina.set_flex.assert_called_once_with(flex_file)
+
+    @patch("autodock.docking._HAVE_VINA", True)
+    @patch("vina.Vina")
     def test_timeout_raises(self, mock_vina_cls):
         import threading
 

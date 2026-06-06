@@ -92,6 +92,7 @@ def _run_vina_cli(
     scoring_function: str,
     min_rmsd: float,
     timeout: int,
+    flex_receptor_pdbqt: str | None = None,
 ) -> tuple[np.ndarray, list[str]]:
     """Run Vina via command-line interface.
 
@@ -148,6 +149,8 @@ def _run_vina_cli(
             cmd.extend(["--seed", str(seed)])
         if scoring_function != "vina":
             cmd.extend(["--scoring", scoring_function])
+        if flex_receptor_pdbqt and os.path.isfile(flex_receptor_pdbqt):
+            cmd.extend(["--flex", flex_receptor_pdbqt])
 
         try:
             result = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
@@ -389,6 +392,7 @@ def _run_vina_dock(
             scoring_function=scoring_function,
             min_rmsd=min_rmsd,
             timeout=timeout,
+            flex_receptor_pdbqt=flex_receptor_pdbqt,
         )
 
     # Use spawn context to avoid fork-safety issues with Vina C++ extension
@@ -515,6 +519,7 @@ def dock_ligand(
     scoring_function: str = "vina",
     ligand_smiles: str | None = None,
     multi_conformer: bool = False,
+    flex_receptor_pdbqt: str | None = None,
 ) -> DockingResult:
     """
     Dock a single ligand into a protein binding site.
@@ -554,6 +559,11 @@ def dock_ligand(
             macrocycles or rigid ring systems where Vina cannot cross
             conformational barriers.  Requires ``ligand_smiles``.
             (default False)
+        flex_receptor_pdbqt: Optional flexible receptor PDBQT file.
+            When provided, Vina treats the specified side chains as
+            flexible during docking.  Requires a rigid receptor PDBQT
+            (``receptor_pdbqt``) plus the flexible portion prepared
+            with Meeko ``mk_prepare_receptor.py --flexres``.
 
     Returns:
         DockingResult with scores, file paths, and metadata.
@@ -648,6 +658,7 @@ def dock_ligand(
         auto_exhaustiveness=auto_exhaustiveness,
         scoring_function=scoring_function,
         min_rmsd=min_rmsd,
+        flex_receptor_pdbqt=flex_receptor_pdbqt,
     )
 
     if energies.size == 0 or not poses:

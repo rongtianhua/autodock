@@ -179,6 +179,7 @@ def run_redocking_benchmark(
     interaction_method: str = "plip",
     auto_exhaustiveness: bool = True,
     top_n_check: int = 3,
+    use_flexible_receptor: bool = False,
 ) -> dict[str, Any]:
     """
     Run redocking validation on a benchmark set and compile statistics.
@@ -201,6 +202,9 @@ def run_redocking_benchmark(
         top_n_check: Number of top-ranked poses to evaluate for the best-RMSD
             metric (default 3).  Measures practical success if the user
             inspects the top-N poses and picks the best one.
+        use_flexible_receptor: If True, targets where rigid docking fails
+            automatically retry with nearby flexible side chains.
+            Default False for benchmark speed.
 
     Returns:
         Summary dict with:
@@ -232,6 +236,7 @@ def run_redocking_benchmark(
                 "interaction_method": interaction_method,
                 "auto_exhaustiveness": auto_exhaustiveness,
                 "top_n_check": top_n_check,
+                "use_flexible_receptor": use_flexible_receptor,
             }
         )
 
@@ -668,6 +673,7 @@ def _run_single_benchmark(item: dict[str, Any]) -> dict[str, Any]:
         "auto_exhaustiveness": item.get("auto_exhaustiveness", True),
         "top_n_check": item.get("top_n_check", 3),
         "use_ifp": item.get("use_ifp", False),
+        "use_flexible_receptor": item.get("use_flexible_receptor", False),
     }
     if pdb_id in HARD_TARGET_OVERRIDES:
         overrides = HARD_TARGET_OVERRIDES[pdb_id].copy()

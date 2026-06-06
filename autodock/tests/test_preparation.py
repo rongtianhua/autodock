@@ -486,3 +486,83 @@ class TestPrepareLigandAdaptive:
         )
         assert isinstance(result, str)
         assert Path(result).exists()
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Flexible receptor utilities
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+class TestFindNearbyResidues:
+    def test_finds_ca_within_radius(self, tmp_path):
+        pdb = tmp_path / "rec.pdb"
+        pdb.write_text(
+            "ATOM      1  CA  ALA A   1       0.000   0.000   0.000\n"
+            "ATOM      2  CA  ALA A   2       5.000   0.000   0.000\n"
+            "ATOM      3  CA  ALA A   3      10.000   0.000   0.000\n"
+        )
+        result = prep.find_nearby_residues(str(pdb), (0, 0, 0), radius=6.0)
+        assert result == ["A:1", "A:2"]
+
+    def test_excludes_water(self, tmp_path):
+        pdb = tmp_path / "rec.pdb"
+        pdb.write_text(
+            "ATOM      1  CA  HOH A   1       0.000   0.000   0.000\n"
+            "ATOM      2  CA  ALA A   2       1.000   0.000   0.000\n"
+        )
+        result = prep.find_nearby_residues(str(pdb), (0, 0, 0), radius=2.0)
+        assert result == ["A:2"]
+
+    def test_respects_max_residues(self, tmp_path):
+        pdb = tmp_path / "rec.pdb"
+        lines = ""
+        for i in range(10):
+            lines += f"ATOM  {i+1:4d}  CA  ALA A {i+1:3d}      {i:3d}.000   0.000   0.000\n"
+        pdb.write_text(lines)
+        result = prep.find_nearby_residues(str(pdb), (0, 0, 0), radius=50.0, max_residues=3)
+        assert len(result) == 3
+
+    def test_empty_file_returns_empty(self, tmp_path):
+        pdb = tmp_path / "rec.pdb"
+        pdb.write_text("")
+        result = prep.find_nearby_residues(str(pdb), (0, 0, 0), radius=6.0)
+        assert result == []
+
+
+class TestPrepareFlexibleReceptor:
+    @patch("autodock.preparation.find_conda_tool")
+    @patch("autodock.preparation.safe_subprocess")
+    @patch("os.path.isfile")
+    def test_prepare_flexible_receptor_success(
+        self, mock_isfile, mock_subprocess, mock_find, tmp_path
+    ):
+        mock_find.return_value = "/fake/mk_prepare_receptor.py"
+        mock_subprocess.return_value = (True, "", "")
+        mock_isfile.return_value = True
+
+        out_dir = str(tmp_path / "flex")
+        rigid, flex = prep.prepare_flexible_receptor(
+            str(tmp_path / "rec.pdb"),
+            ["A:149", "A:276"],
+            out_dir,
+        )
+        assert rigid.endswith("_rigid.pdbqt")
+        assert flex.endswith("_flex.pdbqt")
+
+    @patch("autodock.preparation.find_conda_tool")
+    def test_prepare_flexible_receptor_missing_tool(self, mock_find, tmp_path):
+        mock_find.return_value = None
+        with pytest.raises(PreparationError, match="mk_prepare_receptor.py not found"):
+            prep.prepare_flexible_receptor(
+                str(tmp_path / "rec.pdb"),
+                ["A:149"],
+                str(tmp_path / "flex"),
+            )
+
+    def test_prepare_flexible_receptor_empty_flexres(self, tmp_path):
+        with pytest.raises(PreparationError, match="flexres list is empty"):
+            prep.prepare_flexible_receptor(
+                str(tmp_path / "rec.pdb"),
+                [],
+                str(tmp_path / "flex"),
+            )

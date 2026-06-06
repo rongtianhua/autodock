@@ -655,6 +655,7 @@ def run_redocking_validation(
     timeout: int = 600,
     top_n_check: int = 3,
     use_ifp: bool = False,
+    use_flexible_receptor: bool = False,
 ) -> dict[str, Any]:
     """
     Validate docking protocol by redocking the co-crystallized ligand.
@@ -697,6 +698,11 @@ def run_redocking_validation(
             metric (default 3).  This measures how well the protocol would do
             if the user inspected the top-N poses and picked the one closest to
             crystal.  Zero extra compute cost.
+        use_flexible_receptor: If True, when rigid docking fails to produce a
+            pose below the 2 Å threshold, automatically identify nearby pocket
+            residues, prepare a flexible receptor, and re-dock.  This can rescue
+            cases where rigid-receptor approximation misses induced-fit binding.
+            Default False because flexible docking is ~5× slower.
 
     Returns:
         Dict with rmsd, success flag, pocket_center, pocket_method, file paths,
@@ -897,6 +903,66 @@ def run_redocking_validation(
             auto_exhaustiveness=auto_exhaustiveness,
             timeout=timeout,
         )
+
+    # ── 5b. Flexible-receptor fallback (rigid failed) ─────────────────────
+    # If rigid docking doesn't achieve <2 Å, retry with nearby side chains
+    # treated as flexible.  This rescues induced-fit binding sites.
+    flex_applied = False
+    if (
+        use_flexible_receptor
+        and not use_multi
+        and result.all_poses_pdbqt
+        and os.path.isfile(result.all_poses_pdbqt)
+    ):
+        # Quick sampling-quality check: best-achievable RMSD among all poses
+        rigid_best_rmsd, _ = compute_best_rmsd_from_all_poses(
+            result.all_poses_pdbqt, crystal_ligand_pdb
+        )
+        if rigid_best_rmsd is None or rigid_best_rmsd >= REDocking_RMSD_THRESHOLD:
+            logger.info(
+                f"Rigid docking best RMSD: {rigid_best_rmsd or 'N/A'} Å — "
+                f"attempting flexible-receptor fallback"
+            )
+            try:
+                from autodock.preparation import (
+                    find_nearby_residues,
+                    prepare_flexible_receptor,
+                )
+
+                flexres = find_nearby_residues(apo_pdb, center, radius=6.0, max_residues=6)
+                if flexres:
+                    logger.info(f"Flexible residues selected: {flexres}")
+                    flex_dir = os.path.join(output_dir, "flex_receptor")
+                    rigid_pdbqt, flex_pdbqt = prepare_flexible_receptor(
+                        apo_pdb, flexres, flex_dir, allow_bad_res=True, timeout=300
+                    )
+                    # Reduced exhaustiveness for speed; flexible docking is expensive
+                    flex_exhaustiveness = max(8, exhaustiveness // 4)
+                    flex_result = dock_ligand(
+                        rigid_pdbqt,
+                        ligand_pdbqt,
+                        center,
+                        box_size,
+                        exhaustiveness=flex_exhaustiveness,
+                        n_poses=n_poses,
+                        seed=seed,
+                        output_dir=output_dir,
+                        compound_name="redock_flex",
+                        skip_consensus=skip_consensus,
+                        auto_exhaustiveness=False,
+                        timeout=timeout,
+                        flex_receptor_pdbqt=flex_pdbqt,
+                    )
+                    # Replace result with flexible result for downstream evaluation
+                    result = flex_result
+                    flex_applied = True
+                    logger.info(
+                        f"Flexible docking complete: best affinity={result.best_affinity:.2f} kcal/mol"
+                    )
+                else:
+                    logger.info("No nearby residues found within 6 Å — skipping flex fallback")
+            except Exception as exc:
+                logger.warning(f"Flexible-receptor fallback failed: {exc} — using rigid result")
 
     # ── 6. Optional OpenMM energy minimisation ─────────────────────────────
     minimized_pose_pdbqt = result.best_pose_pdbqt

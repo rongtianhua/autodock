@@ -3556,3 +3556,144 @@ def find_top_pockets(
                 with contextlib.suppress(OSError):
                     if os.path.exists(d):
                         shutil.rmtree(d, ignore_errors=True)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Flexible receptor preparation
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+def find_nearby_residues(
+    pdb_file: str,
+    center: tuple[float, float, float],
+    radius: float = 6.0,
+    max_residues: int = 6,
+    exclude_water: bool = True,
+) -> list[str]:
+    """Identify protein residues whose Cα atoms lie within *radius* Å of *center*.
+
+    The returned list uses the Meeko ``chain:resid`` format
+    (e.g. ``["A:149", "A:276"]``) which is accepted by
+    ``mk_prepare_receptor.py --flexres``.
+
+    Args:
+        pdb_file: Path to a PDB file (already cleaned — ligand/waters removed).
+        center: (x, y, z) reference point, typically the ligand centroid.
+        radius: Search radius in Å (default 6.0).
+        max_residues: Maximum number of residues to return (default 6).
+            Targets with very large binding pockets may have >20 nearby
+            residues; capping prevents excessive compute in flexible docking.
+        exclude_water: If True (default), skip water residues.
+
+    Returns:
+        List of ``chain:resid`` strings sorted by distance ascending.
+    """
+    cx, cy, cz = center
+    nearby: list[tuple[float, str]] = []
+    seen: set[str] = set()
+
+    try:
+        with open(pdb_file) as fh:
+            for line in fh:
+                if not line.startswith("ATOM  "):
+                    continue
+                atom_name = line[12:16].strip()
+                if atom_name != "CA":
+                    continue
+                res_name = line[17:20].strip()
+                if exclude_water and res_name in _SKIP_WATER:
+                    continue
+                chain = line[21:22].strip() or "A"
+                try:
+                    resi = int(line[22:26].strip())
+                    x = float(line[30:38])
+                    y = float(line[38:46])
+                    z = float(line[46:54])
+                except (ValueError, IndexError):
+                    continue
+                dist_sq = (x - cx) ** 2 + (y - cy) ** 2 + (z - cz) ** 2
+                if dist_sq <= radius**2:
+                    key = f"{chain}:{resi}"
+                    if key not in seen:
+                        seen.add(key)
+                        nearby.append((math.sqrt(dist_sq), key))
+    except OSError as exc:
+        logger.warning(f"Could not read {pdb_file} for nearby-residue search: {exc}")
+        return []
+
+    nearby.sort(key=lambda t: t[0])
+    return [key for _, key in nearby[:max_residues]]
+
+
+def prepare_flexible_receptor(
+    pdb_file: str,
+    flexres: list[str],
+    output_dir: str,
+    allow_bad_res: bool = True,
+    timeout: int = 300,
+) -> tuple[str, str]:
+    """Prepare rigid + flexible receptor PDBQTs using Meeko.
+
+    Wraps ``mk_prepare_receptor.py --read_pdb <pdb> -o <prefix> -p
+    --flexres <list> -a`` (``-a`` = allow_bad_res).
+
+    Args:
+        pdb_file: Path to receptor PDB file.
+        flexres: List of flexible residues in ``chain:resid`` format.
+        output_dir: Directory for output files.
+        allow_bad_res: Passed to Meeko as ``-a`` (default True).
+        timeout: Subprocess timeout in seconds.
+
+    Returns:
+        ``(rigid_pdbqt_path, flex_pdbqt_path)``.
+
+    Raises:
+        PreparationError: If Meeko fails or outputs are missing.
+    """
+    import sys
+
+    if not flexres:
+        raise PreparationError("flexres list is empty — cannot prepare flexible receptor")
+
+    ensure_dir(output_dir)
+    prefix = os.path.join(output_dir, "receptor")
+    flexres_str = ",".join(flexres)
+
+    # Build mk_prepare_receptor.py command
+    mkprep = find_conda_tool("mk_prepare_receptor.py")
+    if not mkprep:
+        raise PreparationError("mk_prepare_receptor.py not found in PATH/conda env")
+
+    cmd = [
+        sys.executable,
+        mkprep,
+        "--read_pdb",
+        pdb_file,
+        "-o",
+        prefix,
+        "-p",
+        "--flexres",
+        flexres_str,
+    ]
+    if allow_bad_res:
+        cmd.append("-a")
+
+    success, stdout, stderr = safe_subprocess(cmd, timeout=timeout)
+    if not success:
+        raise PreparationError(
+            f"mk_prepare_receptor.py failed: {stderr[:500]}"
+        )
+
+    rigid_pdbqt = prefix + "_rigid.pdbqt"
+    flex_pdbqt = prefix + "_flex.pdbqt"
+
+    if not os.path.isfile(rigid_pdbqt):
+        raise PreparationError(f"Rigid receptor PDBQT not created: {rigid_pdbqt}")
+    if not os.path.isfile(flex_pdbqt):
+        raise PreparationError(f"Flexible receptor PDBQT not created: {flex_pdbqt}")
+
+    logger.info(
+        f"Flexible receptor prepared ({len(flexres)} residues): "
+        f"rigid={rigid_pdbqt}, flex={flex_pdbqt}"
+    )
+    return os.path.abspath(rigid_pdbqt), os.path.abspath(flex_pdbqt)

@@ -413,8 +413,36 @@ _AD4_ELEMENT_MAP = {
 }
 
 
+def _strip_flexible_residues_from_pdbqt_block(pdbqt_block: str) -> str:
+    """Remove flexible receptor residue atoms from a Vina flexible-output block.
+
+    Vina's flexible-receptor output embeds ``BEGIN_RES … END_RES`` blocks
+    containing the movable side-chain atoms.  These extra atoms must be
+    stripped before the block is fed to RDKit for RMSD calculation,
+    otherwise the atom counts mismatch the crystal ligand.
+
+    Returns the block with all lines between ``BEGIN_RES`` and
+    ``END_RES`` (inclusive) removed.
+    """
+    out_lines: list[str] = []
+    in_flex = False
+    for line in pdbqt_block.splitlines(keepends=True):
+        stripped = line.strip()
+        if stripped.startswith("BEGIN_RES"):
+            in_flex = True
+            continue
+        if stripped.startswith("END_RES"):
+            in_flex = False
+            continue
+        if not in_flex:
+            out_lines.append(line)
+    return "".join(out_lines)
+
+
 def _sanitize_pdbqt_block_for_rdkit(pdbqt_block: str) -> str:
     """Process a raw PDBQT string: keep ATOM/HETATM lines and fix element symbols."""
+    # First strip any flexible receptor residues that Vina may have emitted
+    pdbqt_block = _strip_flexible_residues_from_pdbqt_block(pdbqt_block)
     out_lines = []
     for line in pdbqt_block.splitlines(keepends=True):
         if not line.startswith(("ATOM  ", "HETATM")):
