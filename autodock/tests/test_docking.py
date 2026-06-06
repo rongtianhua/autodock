@@ -1091,7 +1091,7 @@ class TestDockLigandBranches:
             seed=42,
             output_dir=str(tmp_path / "out"),
         )
-        assert result.scoring_functions == ["vina"]
+        assert "ad4" in result.scoring_functions
 
     @patch("autodock.docking._run_vina_dock")
     def test_flex_receptor_passed(self, mock_run, tmp_path):

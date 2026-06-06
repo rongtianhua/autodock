@@ -313,7 +313,8 @@ def run_docking_workflow(
         n_conformers: Number of conformers for multi-conformer docking (default 10).
         timeout: Wall-clock timeout per pocket in seconds (default 600).
         energy_range: Energy range above best pose in kcal/mol (default 3.0).
-        scoring_function: Scoring function — ``"vina"`` (default) or ``"ad4"``.
+        scoring_function: Scoring function — ``"vina"`` (default),
+            ``"ad4"`` (AutoDock4), or ``"vinardo"``.
         max_pockets: Maximum pockets to detect and dock into (default 5).
         pocket_padding: Box padding around pocket dimensions (Å, default 5.0).
         ph: Target pH for protonation (default 7.4).
@@ -1078,7 +1079,7 @@ def main():
     )
     parser.add_argument(
         "--scoring-function",
-        choices=["vina", "ad4"],
+        choices=["vina", "ad4", "vinardo"],
         default="vina",
         help="Scoring function (default: vina)",
     )

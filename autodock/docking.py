@@ -466,7 +466,7 @@ def _score_pose_with_sf(
         finally:
             with contextlib.suppress(OSError):
                 os.unlink(tmp_pose)
-    except (ImportError, RuntimeError, OSError) as exc:
+    except (ImportError, RuntimeError, OSError, TypeError) as exc:
         logger.debug(f"Re-scoring with {sf_name} failed: {exc}")
         return None
 
@@ -476,22 +476,42 @@ def _consensus_score(
     pose_pdbqt: str,
     center: tuple[float, float, float],
     box_size: tuple[float, float, float],
-    vina_score: float,
+    primary_score: float,
+    primary_sf: str = "vina",
     seed: int | None = None,
 ) -> tuple[dict[str, float], float | None]:
     """
-    Compute consensus affinity from multiple scoring functions.
+    Re-score the best pose with alternative scoring functions for reference.
+
+    The primary docking score (from the scoring function used during the
+    search) is always preserved.  Additional scores from *ad4* and
+    *vinardo* are computed independently on the same best pose and
+    returned alongside for comparative analysis.
 
     Returns:
         (all_scores_dict, consensus_affinity)
-        consensus_affinity is the median of all successful scores.
+        ``consensus_affinity`` is always ``None`` because different
+        scoring functions use incompatible energy scales; a median or
+        mean would be misleading.
     """
-    # Consensus scoring is currently disabled.  Previous Vinardo integration
-    # was removed after empirical testing showed it worsened pose selection
-    # on our benchmark set (see discussion in #78).  The function signature
-    # is preserved for backward compatibility; future consensus methods can
-    # be added here without changing callers.
-    all_scores: dict[str, float] = {"vina": vina_score}
+    all_scores: dict[str, float] = {primary_sf: primary_score}
+
+    # Vina and Vinardo share the same receptor format (Vina PDBQT) and
+    # can safely be used for cross-scoring.  AD4 requires pre-computed
+    # affinity maps and a different receptor preparation workflow; it
+    # cannot be used for re-scoring a pose that was docked with Vina or
+    # Vinardo.  Conversely, an AD4-prepared receptor is not guaranteed
+    # to work with Vina/Vinardo re-scoring.
+    _COMPATIBLE: dict[str, list[str]] = {
+        "vina": ["vinardo"],
+        "vinardo": ["vina"],
+        "ad4": [],
+    }
+    for sf in _COMPATIBLE.get(primary_sf, []):
+        score = _score_pose_with_sf(receptor_pdbqt, pose_pdbqt, center, box_size, sf, seed=seed)
+        if score is not None:
+            all_scores[sf] = score
+
     return all_scores, None
 
 
@@ -547,8 +567,8 @@ def dock_ligand(
             discards poses within this threshold (default 1.0 Å, typical
             range 0.5–1.5 Å; see Fischer et al. 2021, J. Chem. Inf. Model.).
         scoring_function: Vina scoring function name.  Supported: ``"vina"``
-            (default), ``"ad4"`` (AutoDock4).  Available functions depend on
-            the Vina Python package version.
+            (default), ``"ad4"`` (AutoDock4), ``"vinardo"``.  Available
+            functions depend on the Vina Python package version.
         ligand_smiles: SMILES of the ligand.  Required when
             ``multi_conformer=True``.
         multi_conformer: If True, pre-generate multiple 3D conformers
@@ -706,10 +726,15 @@ def dock_ligand(
                 fh.write(poses[rep_idx])
             cluster["representative_path"] = rep_path
 
-    # Consensus scoring is disabled (see #78).  Parameter accepted for
-    # backward compatibility but has no effect.
-    all_scores = {"vina": best_affinity}
-    consensus = None
+    all_scores, consensus = _consensus_score(
+        receptor_pdbqt,
+        best_pose_path,
+        center,
+        box_size,
+        primary_score=best_affinity,
+        primary_sf=scoring_function,
+        seed=seed,
+    )
 
     # Receptor source detection
     receptor_source = None
@@ -1034,9 +1059,15 @@ def dock_ligand_multi_conformer(
                 fh.write(all_poses[rep_idx])
             cluster["representative_path"] = rep_path
 
-    # Consensus scoring is disabled (see #78).
-    all_scores = {"vina": best_energy}
-    consensus = None
+    all_scores, consensus = _consensus_score(
+        receptor_pdbqt,
+        best_pose_path,
+        center,
+        box_size,
+        primary_score=best_energy,
+        primary_sf=scoring_function,
+        seed=seed,
+    )
 
     return DockingResult(
         compound_name=compound_name or Path(conformer_pdbqts[0]).stem,
