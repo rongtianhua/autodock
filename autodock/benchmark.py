@@ -191,6 +191,11 @@ def run_redocking_benchmark(
     rescoring_methods: list[str] | None = None,
     cascade: bool = False,
     cascade_n_poses: int = 50,
+    remove_water: bool = True,
+    remove_hetatms: bool = True,
+    predict_pka: bool = True,
+    fix_protonation: bool = True,
+    cache_dir: str | None = None,
 ) -> dict[str, Any]:
     """
     Run redocking validation on a benchmark set and compile statistics.
@@ -219,6 +224,12 @@ def run_redocking_benchmark(
         cascade: If True, enable three-tier fallback rescoring (Vina → IFP
             with more poses → OpenMM MM-GBSA) for failed targets.
         cascade_n_poses: Number of poses in tier-2 fallback (default 50).
+        remove_water: Remove crystallographic waters from receptor (default True).
+        remove_hetatms: Remove hetero atoms / co-factors from receptor (default True).
+        predict_pka: Run PROPKA pKa prediction (default True).
+        fix_protonation: Assign protonation states based on pH / pKa (default True).
+        cache_dir: Directory for caching prepared receptors.  Default None
+            (no cache); pass ``~/.autodock/cache`` to match the main pipeline.
 
     Returns:
         Summary dict with:
@@ -254,6 +265,11 @@ def run_redocking_benchmark(
                 "rescoring_methods": rescoring_methods,
                 "cascade": cascade,
                 "cascade_n_poses": cascade_n_poses,
+                "remove_water": remove_water,
+                "remove_hetatms": remove_hetatms,
+                "predict_pka": predict_pka,
+                "fix_protonation": fix_protonation,
+                "cache_dir": cache_dir,
             }
         )
 
@@ -712,6 +728,11 @@ def _run_single_benchmark(item: dict[str, Any]) -> dict[str, Any]:
         "rescoring_methods": item.get("rescoring_methods"),
         "cascade": item.get("cascade", False),
         "cascade_n_poses": item.get("cascade_n_poses", 50),
+        "remove_water": item.get("remove_water", True),
+        "remove_hetatms": item.get("remove_hetatms", True),
+        "predict_pka": item.get("predict_pka", True),
+        "fix_protonation": item.get("fix_protonation", True),
+        "cache_dir": item.get("cache_dir"),
     }
     if pdb_id in HARD_TARGET_OVERRIDES:
         overrides = HARD_TARGET_OVERRIDES[pdb_id].copy()

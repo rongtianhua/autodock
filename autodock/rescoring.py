@@ -118,6 +118,28 @@ def select_best_by_method(
 # ── MM-GBSA rescoring ──────────────────────────────────────────────────────
 
 
+def _perturb_zero_charges(offmol) -> None:
+    """Perturb all-zero partial charges so they are recognised as user-provided.
+
+    SMIRNOFFTemplateGenerator._molecule_has_user_charges() returns *False*
+    when every charge is ~0, causing a fallback to am1bcc which may be
+    unavailable.  This helper adds ±1e-6 e perturbations (sum conserved)
+    so the charges are accepted as user-provided.
+    """
+    from openff.units import unit as off_unit
+
+    for i, atom in enumerate(offmol.atoms):
+        sign = 1.0 if i % 2 == 0 else -1.0
+        atom.partial_charge = off_unit.Quantity(
+            atom.partial_charge.m + sign * 1e-6, off_unit.elementary_charge
+        )
+    # Re-normalise so total charge stays exact
+    total = sum(a.partial_charge.m for a in offmol.atoms)
+    offmol.atoms[0].partial_charge = off_unit.Quantity(
+        offmol.atoms[0].partial_charge.m - total, off_unit.elementary_charge
+    )
+
+
 def _run_mmgbsa_rescoring(
     receptor_pdb: str,
     all_poses_pdbqt: str,
@@ -178,6 +200,17 @@ def _run_mmgbsa_rescoring(
     try:
         offmol_base = OpenFFMolecule.from_smiles(ligand_smiles, allow_undefined_stereo=True)
         offmol_base.assign_partial_charges("gasteiger")
+        # Gasteiger can produce NaN for unusual chemotypes (e.g. phosphonates,
+        # sulfonic acids).  Detect and fall back to formal charges.
+        if any(np.isnan(a.partial_charge.m) for a in offmol_base.atoms):
+            logger.warning(
+                "MM-GBSA: Gasteiger charges contain NaN — falling back to formal charges"
+            )
+            offmol_base.assign_partial_charges("formal_charge")
+            # SMIRNOFFTemplateGenerator._molecule_has_user_charges() treats
+            # all-zero charges as "not user-provided" and re-runs am1bcc.
+            # Perturb charges by ±1e-6 e so they are recognised as user charges.
+            _perturb_zero_charges(offmol_base)
         ligand_topology = offmol_base.to_topology().to_openmm()
         ligand_n = offmol_base.n_atoms
     except Exception as exc:
@@ -206,9 +239,11 @@ def _run_mmgbsa_rescoring(
 
     # ── 6. Create systems ─────────────────────────────────────────────────
     try:
-        complex_system = system_generator.create_system(complex_topology)
+        # Pass molecules explicitly so SystemGenerator re-uses the partial
+        # charges we already assigned (including formal_charge fallback).
+        complex_system = system_generator.create_system(complex_topology, molecules=[offmol_base])
         receptor_system = system_generator.create_system(receptor_topology)
-        ligand_system = system_generator.create_system(ligand_topology)
+        ligand_system = system_generator.create_system(ligand_topology, molecules=[offmol_base])
     except Exception as exc:
         logger.warning(f"MM-GBSA system creation failed: {exc}")
         return None

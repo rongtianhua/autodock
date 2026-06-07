@@ -617,6 +617,34 @@ class TestParsePdbHeader:
         result = prep._parse_pdb_header(str(pdb))
         assert result["method"] == "NMR"
 
+    def test_quality_flag_good_with_rfree(self, tmp_path):
+        pdb = tmp_path / "rec.pdb"
+        pdb.write_text(
+            "REMARK   2 RESOLUTION.    2.30 ANGSTROMS.\n" "REMARK   3   R FREE            : 0.280\n"
+        )
+        result = prep._parse_pdb_header(str(pdb))
+        assert result["quality_flag"] == "good"
+
+    def test_quality_flag_low_with_rfree(self, tmp_path):
+        pdb = tmp_path / "rec.pdb"
+        pdb.write_text(
+            "REMARK   2 RESOLUTION.    3.50 ANGSTROMS.\n" "REMARK   3   R FREE            : 0.350\n"
+        )
+        result = prep._parse_pdb_header(str(pdb))
+        assert result["quality_flag"] == "low"
+
+    def test_quality_flag_good_only_resolution(self, tmp_path):
+        pdb = tmp_path / "rec.pdb"
+        pdb.write_text("REMARK   2 RESOLUTION.    1.50 ANGSTROMS.\n")
+        result = prep._parse_pdb_header(str(pdb))
+        assert result["quality_flag"] == "good"
+
+    def test_quality_flag_low_only_resolution(self, tmp_path):
+        pdb = tmp_path / "rec.pdb"
+        pdb.write_text("REMARK   2 RESOLUTION.    3.50 ANGSTROMS.\n")
+        result = prep._parse_pdb_header(str(pdb))
+        assert result["quality_flag"] == "low"
+
 
 class TestFindDisulfideBonds:
     def test_typical_ssbond(self, tmp_path):

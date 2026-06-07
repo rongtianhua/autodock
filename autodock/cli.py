@@ -439,6 +439,10 @@ def cmd_benchmark_redock(args: argparse.Namespace) -> int:
         interaction_method=getattr(args, "method", "plip"),
         cascade=getattr(args, "cascade", False),
         cascade_n_poses=getattr(args, "cascade_n_poses", 50),
+        remove_water=not getattr(args, "keep_waters", False),
+        remove_hetatms=not getattr(args, "keep_hetatms", False),
+        predict_pka=not getattr(args, "no_pka", False),
+        cache_dir=getattr(args, "cache_dir", None),
     )
 
     print(f"\n{'=' * 55}")
@@ -1131,6 +1135,27 @@ def build_parser() -> argparse.ArgumentParser:
         type=int,
         default=50,
         help="Number of poses to sample in tier-2 fallback (default: 50)",
+    )
+    p_bench.add_argument(
+        "--keep-waters",
+        action="store_true",
+        help="Retain crystallographic waters in receptor (default: remove)",
+    )
+    p_bench.add_argument(
+        "--keep-hetatms",
+        action="store_true",
+        help="Retain hetero atoms / co-factors in receptor (default: remove)",
+    )
+    p_bench.add_argument(
+        "--no-pka",
+        action="store_true",
+        help="Skip PROPKA pKa prediction",
+    )
+    p_bench.add_argument(
+        "--cache-dir",
+        type=str,
+        default=os.path.expanduser("~/.autodock/cache"),
+        help="Directory for caching prepared receptors (default: ~/.autodock/cache)",
     )
     p_bench.set_defaults(func=cmd_benchmark_redock)
 

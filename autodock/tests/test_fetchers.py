@@ -109,6 +109,14 @@ class TestDownloadSwissModel:
         with pytest.raises(StructureFetchError, match="No SWISS-MODEL structure"):
             fetchers.download_swissmodel("FAKE01", outdir)
 
+    @patch("autodock.fetchers._download_url")
+    @patch("autodock.fetchers.ensure_dir")
+    def test_download_url_raises_re_raises(self, mock_ensure, mock_dl, tmp_path):
+        """Cover lines 677-678: _download_url raises StructureFetchError directly."""
+        mock_dl.side_effect = StructureFetchError("fail")
+        with pytest.raises(StructureFetchError, match="fail"):
+            fetchers.download_swissmodel("P68871", str(tmp_path))
+
 
 class TestFetchUniProtFASTA:
     @patch("autodock.fetchers._http_get_text")
@@ -122,6 +130,13 @@ class TestFetchUniProtFASTA:
         mock_text.return_value = "not a fasta"
         with pytest.raises(DataSourceError, match="Invalid FASTA"):
             fetchers.fetch_uniprot_fasta("P68871")
+
+    @patch("autodock.fetchers._http_get_text")
+    def test_returns_text(self, mock_text):
+        """Cover line 712: fetch_uniprot_fasta returns string when output_path is None."""
+        mock_text.return_value = ">sp|P68871|HBB_HUMAN\nMVHLTPEEKS"
+        result = fetchers.fetch_uniprot_fasta("P68871")
+        assert result == ">sp|P68871|HBB_HUMAN\nMVHLTPEEKS"
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -150,6 +165,14 @@ class TestFetchPubChemSMILES:
             with pytest.raises(DataSourceError):
                 fetchers.fetch_pubchem_smiles("notarealcompound12345")
 
+    @patch("autodock.fetchers._http_get_json")
+    def test_empty_properties(self, mock_json):
+        """Cover line 794: PubChem returns empty properties list."""
+        mock_json.return_value = {"PropertyTable": {"Properties": []}}
+        with patch.dict("sys.modules", {"pubchempy": None}):
+            with pytest.raises(DataSourceError, match="no record"):
+                fetchers.fetch_pubchem_smiles("notarealcompound12345")
+
 
 class TestFetchChemblSMILES:
     @patch("autodock.fetchers._http_get_json")
@@ -168,6 +191,15 @@ class TestFetchChemblSMILES:
     def test_missing_smiles(self, mock_json):
         mock_json.return_value = {"molecule_structures": {}}
         with pytest.raises(DataSourceError, match="no SMILES"):
+            fetchers.fetch_chembl_smiles("CHEMBL999999")
+
+    @patch("autodock.fetchers._http_get_json")
+    def test_lookup_error(self, mock_json):
+        """Cover lines 885-891: _http_get_json raises in fetch_chembl_smiles."""
+        import urllib.error
+
+        mock_json.side_effect = urllib.error.URLError("fail")
+        with pytest.raises(DataSourceError, match="lookup failed"):
             fetchers.fetch_chembl_smiles("CHEMBL999999")
 
 
@@ -292,6 +324,16 @@ class TestHttpHelpers:
         result = fetchers._http_get_text("https://example.com/text")
         assert result == "hello"
 
+    @patch("autodock.fetchers.urllib.request.urlopen")
+    def test_http_get_text_retryable_then_fail(self, mock_urlopen):
+        import urllib.error
+
+        mock_urlopen.side_effect = urllib.error.HTTPError(
+            "url", 503, "Service Unavailable", {}, None
+        )
+        with pytest.raises(urllib.error.HTTPError):
+            fetchers._http_get_text("https://example.com/text")
+
     @patch("autodock.fetchers.urllib.request.urlretrieve")
     def test_download_url_success(self, mock_urlretrieve, tmp_path):
         out = str(tmp_path / "out.txt")
@@ -323,6 +365,220 @@ class TestHttpHelpers:
         mock_urlretrieve.side_effect = urllib.error.URLError("fail")
         with pytest.raises(StructureFetchError, match="Download failed"):
             fetchers._download_url("https://example.com/file", "/tmp/out.txt")
+
+    @patch("autodock.fetchers.urllib.request.urlretrieve")
+    def test_download_url_retryable_then_fail(self, mock_urlretrieve):
+        import urllib.error
+
+        mock_urlretrieve.side_effect = [
+            urllib.error.HTTPError("url", 503, "Service Unavailable", {}, None),
+            urllib.error.HTTPError("url", 502, "Bad Gateway", {}, None),
+            urllib.error.URLError("fail"),
+        ]
+        with pytest.raises(StructureFetchError, match="Download failed"):
+            fetchers._download_url("https://example.com/file", "/tmp/out.txt")
+        assert mock_urlretrieve.call_count == 3
+
+
+class TestIsRetryable:
+    def test_http_error_429(self):
+        import urllib.error
+
+        exc = urllib.error.HTTPError("url", 429, "Too Many", {}, None)
+        assert fetchers._is_retryable(exc) is True
+
+    def test_http_error_404(self):
+        import urllib.error
+
+        exc = urllib.error.HTTPError("url", 404, "Not Found", {}, None)
+        assert fetchers._is_retryable(exc) is False
+
+    def test_urlerror(self):
+        import urllib.error
+
+        exc = urllib.error.URLError("fail")
+        assert fetchers._is_retryable(exc) is True
+
+    def test_oserror(self):
+        exc = OSError("fail")
+        assert fetchers._is_retryable(exc) is True
+
+    def test_generic_exception(self):
+        exc = ValueError("fail")
+        assert fetchers._is_retryable(exc) is False
+
+
+class TestSafeFloat:
+    def test_none(self):
+        assert fetchers._safe_float(None) is None
+
+    def test_none_with_default(self):
+        assert fetchers._safe_float(None, default=0.0) == 0.0
+
+    def test_valid(self):
+        assert fetchers._safe_float("3.14") == 3.14
+
+    def test_value_error(self):
+        assert fetchers._safe_float("abc", default=-1.0) == -1.0
+
+    def test_type_error(self):
+        assert fetchers._safe_float([1, 2], default=-1.0) == -1.0
+
+
+class TestParseZincResults:
+    def test_valid(self):
+        results = [
+            {"zinc_id": "ZINC1", "smiles": "CCO"},
+            {"id": "ZINC2", "canonical_smiles": "CCC"},
+        ]
+        parsed = fetchers._parse_zinc_results(results, 10)
+        assert len(parsed) == 2
+        assert parsed[0] == {"zinc_id": "ZINC1", "smiles": "CCO"}
+
+    def test_missing_smiles_skipped(self):
+        results = [
+            {"zinc_id": "ZINC1", "smiles": "CCO"},
+            {"zinc_id": "ZINC2"},
+        ]
+        parsed = fetchers._parse_zinc_results(results, 10)
+        assert len(parsed) == 1
+
+    def test_not_dict_skipped(self):
+        results = ["not_a_dict", {"zinc_id": "ZINC1", "smiles": "CCO"}]
+        parsed = fetchers._parse_zinc_results(results, 10)
+        assert len(parsed) == 1
+
+    def test_max_results(self):
+        results = [
+            {"zinc_id": "ZINC1", "smiles": "CCO"},
+            {"zinc_id": "ZINC2", "smiles": "CCC"},
+        ]
+        parsed = fetchers._parse_zinc_results(results, 1)
+        assert len(parsed) == 1
+
+
+class TestParseZincTsv:
+    def test_valid(self):
+        text = "ZINC0001\tCCO\tprop1\nZINC0002\tCCC\n"
+        parsed = fetchers._parse_zinc_tsv(text, 10)
+        assert len(parsed) == 2
+
+    def test_comments_and_empty_skipped(self):
+        text = "# comment\n\nZINC0001\tCCO\n"
+        parsed = fetchers._parse_zinc_tsv(text, 10)
+        assert len(parsed) == 1
+
+    def test_non_zinc_prefix_skipped(self):
+        text = "ABC\tCCO\nZINC0001\tCCC\n"
+        parsed = fetchers._parse_zinc_tsv(text, 10)
+        assert len(parsed) == 1
+
+    def test_single_column_skipped(self):
+        text = "ZINC0001\n"
+        parsed = fetchers._parse_zinc_tsv(text, 10)
+        assert len(parsed) == 0
+
+    def test_max_results(self):
+        text = "ZINC0001\tCCO\nZINC0002\tCCC\nZINC0003\tCCN\n"
+        parsed = fetchers._parse_zinc_tsv(text, 2)
+        assert len(parsed) == 2
+
+
+class TestHttpHelpersRetry:
+    @patch("autodock.fetchers.urllib.request.urlopen")
+    def test_http_get_json_retry_then_success(self, mock_urlopen):
+        import urllib.error
+
+        mock_resp = MagicMock()
+        mock_resp.read.return_value = b'{"ok": true}'
+        mock_resp.__enter__.return_value = mock_resp
+        mock_urlopen.side_effect = [
+            urllib.error.HTTPError("url", 429, "Too Many", {}, None),
+            mock_resp,
+        ]
+        result = fetchers._http_get_json("https://example.com/api")
+        assert result == {"ok": True}
+        assert mock_urlopen.call_count == 2
+
+    @patch("autodock.fetchers.urllib.request.urlopen")
+    def test_http_get_text_retry_then_success(self, mock_urlopen):
+        import urllib.error
+
+        mock_resp = MagicMock()
+        mock_resp.read.return_value = b"hello"
+        mock_resp.__enter__.return_value = mock_resp
+        mock_urlopen.side_effect = [
+            urllib.error.HTTPError("url", 503, "Service Unavailable", {}, None),
+            mock_resp,
+        ]
+        result = fetchers._http_get_text("https://example.com/text")
+        assert result == "hello"
+        assert mock_urlopen.call_count == 2
+
+    @patch("autodock.fetchers.urllib.request.urlopen")
+    def test_http_get_json_non_retryable_raises(self, mock_urlopen):
+        import urllib.error
+
+        mock_urlopen.side_effect = urllib.error.HTTPError("url", 404, "Not Found", {}, None)
+        with pytest.raises(urllib.error.HTTPError):
+            fetchers._http_get_json("https://example.com/api")
+
+
+class TestDownloadPDBFallback:
+    @patch("autodock.fetchers._download_url")
+    @patch("autodock.fetchers.ensure_dir")
+    def test_cif_to_pdb_fallback(self, mock_ensure, mock_dl, tmp_path):
+        """When CIF download fails, fallback to PDB format."""
+
+        def _dl(url, path):
+            if url.endswith(".cif"):
+                raise StructureFetchError("cif fail")
+            # write a valid file for pdb fallback
+            with open(path, "w") as fh:
+                fh.write("x" * 100)
+
+        mock_dl.side_effect = _dl
+        out = fetchers.download_pdb("6LU7", str(tmp_path), format="cif")
+        assert out.endswith("6LU7.pdb")
+
+    @patch("autodock.fetchers._download_url")
+    @patch("autodock.fetchers.ensure_dir")
+    def test_cif_to_pdb_fallback_also_fails(self, mock_ensure, mock_dl, tmp_path):
+        """Cover lines 571-572: CIF fails and PDB fallback also fails."""
+        mock_dl.side_effect = StructureFetchError("fail")
+        with pytest.raises(StructureFetchError, match="fail"):
+            fetchers.download_pdb("6LU7", str(tmp_path), format="cif")
+
+    @patch("autodock.fetchers._download_url")
+    @patch("autodock.fetchers.ensure_dir")
+    def test_pdb_to_cif_fallback(self, mock_ensure, mock_dl, tmp_path):
+        """When PDB download fails, fallback to CIF format."""
+
+        def _dl(url, path):
+            if url.endswith(".pdb"):
+                raise StructureFetchError("pdb fail")
+            with open(path, "w") as fh:
+                fh.write("x" * 100)
+
+        mock_dl.side_effect = _dl
+        out = fetchers.download_pdb("6LU7", str(tmp_path), format="pdb")
+        assert out.endswith("6LU7.cif")
+
+    @patch("autodock.fetchers._download_url")
+    @patch("autodock.fetchers.ensure_dir")
+    def test_pdb_to_cif_fallback_also_fails(self, mock_ensure, mock_dl, tmp_path):
+        """Cover line 580: PDB fails and CIF fallback also fails."""
+        mock_dl.side_effect = StructureFetchError("fail")
+        with pytest.raises(StructureFetchError, match="fail"):
+            fetchers.download_pdb("6LU7", str(tmp_path), format="pdb")
+
+    @patch("autodock.fetchers._download_url")
+    @patch("autodock.fetchers.ensure_dir")
+    def test_bcif_fallback_raises(self, mock_ensure, mock_dl, tmp_path):
+        """Cover line 580: bcif format has no fallback."""
+        mock_dl.side_effect = StructureFetchError("fail")
+        with pytest.raises(StructureFetchError, match="fail"):
+            fetchers.download_pdb("6LU7", str(tmp_path), format="bcif")
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -486,6 +742,10 @@ class TestResolveToUniprot:
     def test_no_match(self, mock_json):
         mock_json.return_value = {"results": []}
         assert fetchers._resolve_to_uniprot("fake") is None
+
+    def test_second_regex(self):
+        # Covers line 366: second UniProt ID pattern (e.g. A1BCDEF)
+        assert fetchers._resolve_to_uniprot("A1BCDEF") == "A1BCDEF"
 
 
 class TestFetchProteinStructure:
@@ -780,6 +1040,11 @@ class TestFetchZinc:
         result = fetchers.fetch_zinc_sdf("ZINC1", out)
         assert result == out
 
+    def test_fetch_zinc_sdf_invalid_id(self):
+        """Cover lines 1277-1278: invalid ZINC ID returns None."""
+        result = fetchers.fetch_zinc_sdf("NOTZINC", "/tmp/fake.sdf")
+        assert result is None
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # File-format readers (supplemental)
@@ -792,6 +1057,24 @@ class TestReadLibraries:
         path.write_text("CCO\tethanol\nCCC\tpropane\n# comment\n\tbadline\n")
         result = fetchers.read_smi_library(str(path))
         assert result == {"ethanol": "CCO", "propane": "CCC"}
+
+    def test_read_smi_library_empty_and_whitespace(self, tmp_path):
+        path = tmp_path / "lib.smi"
+        path.write_text("\n  \nCCO\tethanol\n\n")
+        result = fetchers.read_smi_library(str(path))
+        assert result == {"ethanol": "CCO"}
+
+    def test_read_smi_library_no_tab(self, tmp_path):
+        path = tmp_path / "lib.smi"
+        path.write_text("CCO ethanol\n")
+        result = fetchers.read_smi_library(str(path))
+        assert result == {}
+
+    def test_read_smi_library_empty_name(self, tmp_path):
+        path = tmp_path / "lib.smi"
+        path.write_text("CCO\t\n")
+        result = fetchers.read_smi_library(str(path))
+        assert result == {}
 
     def test_read_sdf_3d_library(self, tmp_path):
         from rdkit import Chem
@@ -848,3 +1131,10 @@ class TestReadPDBbindIndex:
         result = fetchers.read_pdbbind_index(str(path), min_affinity=6.0)
         assert "1A30" in result
         assert "1B9S" not in result
+
+    def test_short_line_skipped(self, tmp_path):
+        """Cover line 1477: lines with fewer than 8 parts are skipped."""
+        path = tmp_path / "index.txt"
+        path.write_text("1A30  1.80\n")
+        result = fetchers.read_pdbbind_index(str(path))
+        assert result == {}

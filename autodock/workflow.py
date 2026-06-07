@@ -261,7 +261,7 @@ def run_docking_workflow(
     pocket_padding: float = 5.0,
     # ── Receptor preparation ─────────────────────────────────────────────
     ph: float = 7.4,
-    fix_protonation: bool = False,
+    fix_protonation: bool = True,
     detect_af: bool = True,
     # ── Output ────────────────────────────────────────────────────────────
     output_dir: str = "./docking_results",
@@ -583,10 +583,10 @@ def run_docking_workflow(
         result.ligand_pdbqt = ligand_pdbqt
     else:
         if ligand_source == "smiles" and ligand_smiles:
-            from autodock.preparation import prepare_ligand
+            from autodock.preparation import prepare_ligand_adaptive
 
             ligand_name_resolved = ligand_name or "LIG"
-            prepare_ligand(
+            prepare_ligand_adaptive(
                 ligand_smiles,
                 ligand_pdbqt,
                 ph=ph,
@@ -606,10 +606,13 @@ def run_docking_workflow(
                 )
             cid = ligand_smiles
             smiles = fetch_pubchem_smiles(cid)
-            from autodock.preparation import prepare_ligand
+            from autodock.preparation import prepare_ligand_adaptive
 
-            prepare_ligand(
-                smiles, ligand_pdbqt, ph=ph, cache_dir=os.path.expanduser("~/.autodock/cache")
+            prepare_ligand_adaptive(
+                smiles,
+                ligand_pdbqt,
+                ph=ph,
+                cache_dir=os.path.expanduser("~/.autodock/cache"),
             )
             logger.info(f"  Ligand from PubChem CID {cid}: {ligand_pdbqt}")
         elif ligand_source == "file" and os.path.isfile(ligand_smiles or ""):

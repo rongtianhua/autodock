@@ -295,7 +295,7 @@ def prepare_receptor(
     restraint_radius: float = 8.0,
     retain_metal_ions: bool = True,
     predict_pka: bool = True,
-    fix_protonation: bool = False,
+    fix_protonation: bool = True,
     keep_waters_near_metal: bool = True,
     output_report_json: str | None = None,
     detect_af_structure: bool = True,
@@ -372,7 +372,7 @@ def prepare_receptor(
             ``apply_pka_values()``, hydrogens are added with corrected
             tautomer/protonation states, and the H-bond network is
             optimized.  Requires ``pdb2pqr`` (conda-forge).
-            Default: False.  When True, ``predict_pka`` is implied.
+            Default: True.  When True, ``predict_pka`` is implied.
         keep_waters_near_metal: If True (default), retain crystallographic
             waters that coordinate metal ions (distance < 2.5 Å).
             Functional waters are often critical for metalloprotein
@@ -985,10 +985,40 @@ def prepare_receptor(
         integrator = VerletIntegrator(0.001 * _omm_unit.picosecond)
         simulation = Simulation(_top, system, integrator)
         simulation.context.setPositions(_pos)
-        # tolerance=10 kJ/(nm·mol) is the OpenMM default; 500 steps is a
-        # generous ceiling that lets well-behaved structures converge early
-        # while giving strained structures (e.g. AlphaFold) more room.
+
+        # Convergence-aware minimisation: 500 steps initial, extend if not
+        # converged (energy still dropping > 1 kJ/mol).
+        _E0 = (
+            simulation.context.getState(getEnergy=True)
+            .getPotentialEnergy()
+            .value_in_unit(_omm_unit.kilojoules_per_mole)
+        )
         simulation.minimizeEnergy(maxIterations=500)
+        _E1 = (
+            simulation.context.getState(getEnergy=True)
+            .getPotentialEnergy()
+            .value_in_unit(_omm_unit.kilojoules_per_mole)
+        )
+        _total_steps = 500
+        if abs(_E0 - _E1) > 10.0:
+            # Significant drop after 500 steps — likely not converged; extend
+            simulation.minimizeEnergy(maxIterations=500)
+            _E2 = (
+                simulation.context.getState(getEnergy=True)
+                .getPotentialEnergy()
+                .value_in_unit(_omm_unit.kilojoules_per_mole)
+            )
+            _total_steps = 1000
+            if abs(_E1 - _E2) > 1.0:
+                logger.warning(
+                    f"OpenMM minimisation not converged after 1000 steps "
+                    f"(ΔE {_E1 - _E2:.1f} kJ/mol) — structure may have high strain"
+                )
+            else:
+                logger.info("OpenMM minimisation converged at 1000 steps")
+        else:
+            logger.info("OpenMM minimisation converged within 500 steps")
+
         min_positions = simulation.context.getState(getPositions=True).getPositions()
         # NaN guard: validate coordinates before writing
         _has_nan = False
@@ -1000,7 +1030,7 @@ def prepare_receptor(
             raise RuntimeError("OpenMM minimisation produced NaN coordinates — structure diverged")
         with open(tmp_min, "w") as fh:
             PDBFile.writeFile(_top, min_positions, fh)
-        logger.info("OpenMM: receptor energy minimised (L-BFGS, ≤500 steps)")
+        logger.info(f"OpenMM: receptor energy minimised (L-BFGS, {_total_steps} steps)")
     except (
         OSError,
         ValueError,
@@ -2227,6 +2257,10 @@ def prepare_ligand_adaptive(
     n_conformers_complex: int = 100,
     max_reps_complex: int = 10,
     force_multi_conformer: bool = False,
+    cache_dir: str | None = None,
+    ph: float = 7.4,
+    molscrub_states: bool = True,
+    enumerate_stereo: bool = True,
 ) -> str | list[str]:
     """
     Adaptive ligand preparation: auto-selects strategy based on molecular complexity.
@@ -2236,8 +2270,12 @@ def prepare_ligand_adaptive(
         **Default behaviour (``force_multi_conformer=False``):** all ligands
         receive single-conformer preparation, because AutoDock Vina performs
         its own internal conformational search.  Multi-conformer docking is
-        only engaged automatically for macrocycles (>12-membered rings),
-        where Vina cannot cross ring-conformation barriers.
+        only engaged automatically for:
+
+        * macrocycles (>15-membered rings), where Vina's built-in macrocycle
+          handling degrades in accuracy (Holcomb et al. 2022)
+        * spiro compounds (two rings share one atom)
+        * bridged ring systems (bicyclic with bridge atoms)
 
         Set ``force_multi_conformer=True`` to override and use the legacy
         medium/complex multi-conformer strategy for all non-simple ligands.
@@ -2258,11 +2296,19 @@ def prepare_ligand_adaptive(
             (only when ``force_multi_conformer=True``).
         force_multi_conformer: If True, use legacy multi-conformer strategy
             for medium/complex ligands.  Default False (recommended for Vina).
+        cache_dir: Directory for caching single-conformer ligand outputs.
+            Passed through to ``prepare_ligand()`` when the single-conformer
+            path is taken.  No effect on multi-conformer preparation.
+        ph: pH for protonation-state enumeration (default 7.4).
+        molscrub_states: If True, run salt removal + tautomer selection
+            via molscrub before conformer generation.
+        enumerate_stereo: If True, enumerate stereoisomers.
 
     Returns:
         Single PDBQT path, or list of paths for multi-conformer mode.
     """
     from rdkit import Chem
+    from rdkit.Chem import rdMolDescriptors
 
     mol = Chem.MolFromSmiles(smiles)
     if mol is None:
@@ -2272,41 +2318,72 @@ def prepare_ligand_adaptive(
         strategy = _classify_ligand_complexity(mol)
         logger.info(f"Adaptive ligand prep: complexity='{strategy}' for '{smiles[:40]}...'")
 
-    # Auto-detect macrocycles: the one case where multi-conformer may help Vina
+    # Auto-detect structural features that Vina cannot sample internally
     ring_info = mol.GetRingInfo()
-    has_macrocycle = any(len(r) > 12 for r in ring_info.AtomRings())
+    has_macrocycle = any(len(r) > 15 for r in ring_info.AtomRings())
+    try:
+        has_spiro = rdMolDescriptors.CalcNumSpiroAtoms(mol) > 0
+        has_bridge = rdMolDescriptors.CalcNumBridgeheadAtoms(mol) > 0
+    except Exception:
+        # Fallback for non-standard mol objects (e.g. mocked in tests)
+        has_spiro = False
+        has_bridge = False
+    needs_multi = has_macrocycle or has_spiro or has_bridge
 
-    # Default (force_multi_conformer=False): single-conformer for everything.
-    # Vina performs its own torsion search; multi-conformer docking is only
-    # useful when rigid ring conformers cannot be interconverted by torsion
-    # changes (macrocycles, chair/boat cyclohexane, etc.).
-    if not force_multi_conformer and strategy in ("simple", "medium"):
+    if needs_multi and not force_multi_conformer:
+        reasons = []
+        if has_macrocycle:
+            reasons.append("macrocycle >15-membered")
+        if has_spiro:
+            reasons.append("spiro compound")
+        if has_bridge:
+            reasons.append("bridged ring system")
+        logger.info(
+            f"{' / '.join(reasons)} detected — using multi-conformer preparation "
+            "(Vina cannot sample ring geometry internally)."
+        )
+
+    # Default (force_multi_conformer=False): single-conformer for everything
+    # unless the ligand has ring-geometry variability that Vina cannot sample.
+    if not force_multi_conformer and strategy in ("simple", "medium") and not needs_multi:
         if os.path.isdir(output_pdbqt):
             output_pdbqt = os.path.join(output_pdbqt, "ligand.pdbqt")
-        return prepare_ligand(smiles, output_pdbqt, name=name, seed=seed)
+        return prepare_ligand(
+            smiles,
+            output_pdbqt,
+            name=name,
+            seed=seed,
+            ph=ph,
+            molscrub_states=molscrub_states,
+            enumerate_stereo=enumerate_stereo,
+            cache_dir=cache_dir,
+        )
 
-    if not force_multi_conformer and strategy == "complex" and not has_macrocycle:
+    if not force_multi_conformer and strategy == "complex" and not needs_multi:
         logger.info(
-            "Complex ligand without macrocycle — using single conformer "
+            "Complex ligand without macrocycle/spiro/bridge — using single conformer "
             "(Vina handles torsion search internally). "
             "Set force_multi_conformer=True to override."
         )
         if os.path.isdir(output_pdbqt):
             output_pdbqt = os.path.join(output_pdbqt, "ligand.pdbqt")
-        return prepare_ligand(smiles, output_pdbqt, name=name, seed=seed)
+        return prepare_ligand(
+            smiles,
+            output_pdbqt,
+            name=name,
+            seed=seed,
+            ph=ph,
+            molscrub_states=molscrub_states,
+            enumerate_stereo=enumerate_stereo,
+            cache_dir=cache_dir,
+        )
 
-    # Multi-conformer path (legacy behaviour, or macrocycle auto-detection)
+    # Multi-conformer path (legacy behaviour, or ring-geometry auto-detection)
     if os.path.isfile(output_pdbqt):
         output_dir = os.path.dirname(output_pdbqt) or "."
     else:
         output_dir = output_pdbqt
         ensure_dir(output_dir)
-
-    if has_macrocycle and not force_multi_conformer:
-        logger.info(
-            "Macrocycle detected — using multi-conformer preparation "
-            "(Vina cannot cross macrocycle conformational barriers)."
-        )
 
     if strategy == "medium":
         return prepare_ligand_multi(
@@ -2329,7 +2406,16 @@ def prepare_ligand_adaptive(
             " — forcing single conformer to avoid Vina hang"
         )
         single_path = os.path.join(output_dir, "ligand.pdbqt")
-        return prepare_ligand(smiles, single_path, name=name, seed=seed)
+        return prepare_ligand(
+            smiles,
+            single_path,
+            name=name,
+            seed=seed,
+            ph=ph,
+            molscrub_states=molscrub_states,
+            enumerate_stereo=enumerate_stereo,
+            cache_dir=cache_dir,
+        )
 
     if n_heavy > 45:
         effective_max_reps = min(effective_max_reps, 2)

@@ -35,26 +35,69 @@ from autodock.utils import ensure_dir
 # ─────────────────────────────────────────────────────────────────────────────
 
 
+def _is_retryable(exc: BaseException) -> bool:
+    """Return True for transient HTTP / network errors worth retrying."""
+    if isinstance(exc, urllib.error.HTTPError):
+        return exc.code in (429, 502, 503, 504)
+    return isinstance(exc, (urllib.error.URLError, TimeoutError, OSError))
+
+
 def _http_get_json(url: str, timeout: int = 30) -> Any:
-    """Perform GET and parse JSON."""
-    req = urllib.request.Request(url, headers={"Accept": "application/json"})
-    with urllib.request.urlopen(req, timeout=timeout) as resp:
-        return json.loads(resp.read().decode("utf-8"))
+    """Perform GET and parse JSON with transient-error retry."""
+    last_exc: BaseException | None = None
+    for attempt in range(3):
+        try:
+            req = urllib.request.Request(url, headers={"Accept": "application/json"})
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                return json.loads(resp.read().decode("utf-8"))
+        except Exception as exc:  # noqa: BLE001
+            last_exc = exc
+            if attempt < 2 and _is_retryable(exc):
+                import time
+
+                time.sleep(1.5**attempt)
+                continue
+            raise
+    raise last_exc  # pragma: no cover
 
 
 def _http_get_text(url: str, timeout: int = 30) -> str:
-    """Perform GET and return text."""
-    req = urllib.request.Request(url)
-    with urllib.request.urlopen(req, timeout=timeout) as resp:
-        return resp.read().decode("utf-8")
+    """Perform GET and return text with transient-error retry."""
+    last_exc: BaseException | None = None
+    for attempt in range(3):
+        try:
+            req = urllib.request.Request(url)
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                return resp.read().decode("utf-8")
+        except Exception as exc:  # noqa: BLE001
+            last_exc = exc
+            if attempt < 2 and _is_retryable(exc):
+                import time
+
+                time.sleep(1.5**attempt)
+                continue
+            raise
+    raise last_exc  # pragma: no cover
 
 
 def _download_url(url: str, out_path: str, timeout: int = 60) -> None:
     """Download a URL to disk, raising on small/empty or HTML files."""
-    try:
-        urllib.request.urlretrieve(url, out_path)
-    except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError, OSError) as exc:
-        raise StructureFetchError(f"Download failed: {url} -> {exc}")
+    last_exc: BaseException | None = None
+    for attempt in range(3):
+        try:
+            urllib.request.urlretrieve(url, out_path)
+            break
+        except Exception as exc:  # noqa: BLE001
+            last_exc = exc
+            if attempt < 2 and _is_retryable(exc):
+                import time
+
+                time.sleep(1.5**attempt)
+                continue
+            raise StructureFetchError(f"Download failed: {url} -> {exc}")
+    else:
+        raise last_exc  # pragma: no cover
+
     if os.path.getsize(out_path) < 50:
         raise StructureFetchError(f"Downloaded file too small (< 50 B): {out_path}")
     # Some servers (e.g. SWISS-MODEL) return HTML error pages with HTTP 200.

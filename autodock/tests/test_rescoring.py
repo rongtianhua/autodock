@@ -7,7 +7,7 @@ import tempfile
 
 import pytest
 
-from autodock.rescoring import combined_rescoring, select_best_by_method
+from autodock.rescoring import _parse_poses, combined_rescoring, select_best_by_method
 
 
 @pytest.fixture
@@ -77,3 +77,76 @@ class TestSelectBestByMethod:
 
     def test_empty_returns_none(self):
         assert select_best_by_method([]) is None
+
+
+class TestParsePoses:
+    def test_parses_multi_model_pdbqt(self, mini_poses_path):
+        poses = _parse_poses(mini_poses_path)
+        assert len(poses) == 2
+        assert poses[0][1] == pytest.approx(-6.5)
+        assert poses[1][1] == pytest.approx(-5.0)
+        assert "ATOM" in poses[0][0]
+
+    def test_parses_file_without_remark(self, tmp_path):
+        path = tmp_path / "poses.pdbqt"
+        content = """MODEL 1
+ATOM      1  C   UNL     1       0.000   0.000   0.000  1.00  0.00     0.000 C
+ENDMDL
+"""
+        path.write_text(content)
+        poses = _parse_poses(str(path))
+        assert len(poses) == 1
+        assert poses[0][1] is None
+
+    def test_parses_empty_file(self, tmp_path):
+        path = tmp_path / "empty.pdbqt"
+        path.write_text("")
+        poses = _parse_poses(str(path))
+        assert poses == []
+
+
+class TestCombinedRescoringIFP:
+    def test_ifp_success_path(self, mini_poses_path, ref_path, monkeypatch, tmp_path):
+        receptor_pdb = tmp_path / "receptor.pdb"
+        receptor_pdb.write_text(
+            "ATOM      1  N   ALA A   1       0.000   0.000   0.000  1.00  0.00           N\n"
+        )
+
+        def fake_ifp(receptor, poses, ref):
+            return [(1, 0.8, -6.5), (2, 0.6, -5.0)]
+
+        monkeypatch.setattr("autodock.interactions.ifp_similarity_scores", fake_ifp)
+        results = combined_rescoring(
+            mini_poses_path,
+            reference_pdbqt=ref_path,
+            methods=["ifp"],
+            receptor_pdb=str(receptor_pdb),
+        )
+        assert "ifp" in results
+        assert len(results["ifp"]) == 2
+
+    def test_mmgbsa_method_warns(self, mini_poses_path, ref_path):
+        results = combined_rescoring(
+            mini_poses_path,
+            reference_pdbqt=ref_path,
+            methods=["mmgbsa"],
+        )
+        assert "mmgbsa" not in results
+
+    def test_ifp_exception_handled(self, mini_poses_path, ref_path, monkeypatch, tmp_path):
+        receptor_pdb = tmp_path / "receptor.pdb"
+        receptor_pdb.write_text(
+            "ATOM      1  N   ALA A   1       0.000   0.000   0.000  1.00  0.00           N\n"
+        )
+
+        def fake_ifp_exc(receptor, poses, ref):
+            raise RuntimeError("ifp crash")
+
+        monkeypatch.setattr("autodock.interactions.ifp_similarity_scores", fake_ifp_exc)
+        results = combined_rescoring(
+            mini_poses_path,
+            reference_pdbqt=ref_path,
+            methods=["ifp"],
+            receptor_pdb=str(receptor_pdb),
+        )
+        assert "ifp" not in results

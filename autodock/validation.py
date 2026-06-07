@@ -662,6 +662,11 @@ def run_redocking_validation(
     rescoring_methods: list[str] | None = None,
     cascade: bool = False,
     cascade_n_poses: int = 50,
+    remove_water: bool = True,
+    remove_hetatms: bool = True,
+    predict_pka: bool = True,
+    fix_protonation: bool = True,
+    cache_dir: str | None = None,
 ) -> dict[str, Any]:
     """
     Validate docking protocol by redocking the co-crystallized ligand.
@@ -770,6 +775,8 @@ def run_redocking_validation(
         crystal_mol, _ = extract_ligand_from_pdb(holo_pdb, ligand_resname, crystal_ligand_sdf)
         if crystal_mol is None:
             raise ValidationError(f"Could not extract ligand '{ligand_resname}' from {holo_pdb}")
+        with contextlib.suppress(Exception):
+            crystal_mol = Chem.RemoveHs(crystal_mol)
         crystal_smiles = Chem.MolToSmiles(crystal_mol)
         # Write PDB for RMSD reference
         from rdkit.Chem import rdmolfiles
@@ -834,7 +841,15 @@ def run_redocking_validation(
     write_pdb_atoms(filtered_atoms, apo_pdb)
 
     receptor_pdbqt = os.path.join(output_dir, "apo_receptor.pdbqt")
-    prepare_receptor(apo_pdb, receptor_pdbqt, remove_water=False, remove_hetatms=False)
+    prepare_receptor(
+        apo_pdb,
+        receptor_pdbqt,
+        remove_water=remove_water,
+        remove_hetatms=remove_hetatms,
+        predict_pka=predict_pka,
+        fix_protonation=fix_protonation,
+        cache_dir=cache_dir,
+    )
 
     # ── 3. Prepare ligand (adaptive multi-conformer) ───────────────────────
     if crystal_smiles is None:
@@ -1057,8 +1072,7 @@ def run_redocking_validation(
     cascade_results: dict[str, Any] = {}
     if cascade and not success:
         logger.info(
-            f"Redocking top-1 failed (RMSD={rmsd:.2f} Å). "
-            f"Triggering cascade fallback..."
+            f"Redocking top-1 failed (RMSD={rmsd:.2f} Å). " f"Triggering cascade fallback..."
         )
 
         # ── Tier 2a: IFP on existing Tier-1 poses (zero extra docking cost) ──
@@ -1078,9 +1092,7 @@ def run_redocking_validation(
                     models = re.split(r"MODEL\s+\d+\n", content)
                     if best_idx < len(models):
                         model_block = models[best_idx].split("ENDMDL")[0]
-                        pose_tmp = os.path.join(
-                            output_dir, f"cascade_ifp20_best_{best_idx}.pdbqt"
-                        )
+                        pose_tmp = os.path.join(output_dir, f"cascade_ifp20_best_{best_idx}.pdbqt")
                         with open(pose_tmp, "w") as fh:
                             fh.write(model_block)
                         ifp_rmsd = compute_rmsd_to_crystal(pose_tmp, crystal_ligand_pdb)

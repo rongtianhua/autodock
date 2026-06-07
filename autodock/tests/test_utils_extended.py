@@ -702,3 +702,70 @@ class TestWriteTempFileExceptions:
         monkeypatch.setattr(tempfile, "mkstemp", bad_mkstemp)
         with pytest.raises(OSError):
             utils.write_temp_file("hello")
+
+
+class TestStripModelHeaders:
+    def test_empty_input(self):
+        assert utils.strip_model_headers("") == ""
+
+    def test_leading_digit_only_line(self):
+        result = utils.strip_model_headers("1\nATOM 1 C\nENDMDL\n")
+        assert "ATOM" in result
+        assert "ENDMDL" not in result
+
+
+class TestStructureCacheDefaults:
+    def test_default_cache_dir(self):
+        cache = utils.StructureCache()
+        assert ".autodock" in str(cache.cache_dir)
+
+    def test_put_exception_cleanup(self, tmp_path, monkeypatch):
+        cache = utils.StructureCache(cache_dir=str(tmp_path))
+        src = tmp_path / "source.pdb"
+        src.write_text("A" * 200)
+        # Force shutil.copy2 to fail after mkstemp creates the temp file
+        import shutil
+
+        def bad_copy2(*args, **kwargs):
+            raise OSError("disk full")
+
+        monkeypatch.setattr(shutil, "copy2", bad_copy2)
+        with pytest.raises(OSError):
+            cache.put("testkey", str(src))
+        # Temp file should be cleaned up
+        assert not any(p.name.endswith(".tmp") for p in tmp_path.iterdir())
+
+
+class TestDownloadPdb:
+    def test_invalid_pdb_id(self):
+        with pytest.raises(utils.StructureFetchError):
+            utils.download_pdb("INVALID", "/tmp")
+
+    def test_short_pdb_id(self):
+        with pytest.raises(utils.StructureFetchError):
+            utils.download_pdb("12", "/tmp")
+
+
+class TestExtractLigandNotFound:
+    def test_no_ligand_returns_none(self, tmp_path):
+        pdb = tmp_path / "test.pdb"
+        pdb.write_text("ATOM      1  N   SER A   1      0.000   0.000   0.000\n")
+        mol, sdf = utils.extract_ligand_from_pdb(str(pdb), "LIG")
+        assert mol is None
+        assert sdf is None
+
+
+class TestFilterPdbLinesKeepSpecific:
+    def test_keep_specific_residues(self, tmp_path):
+        inp = tmp_path / "in.pdb"
+        inp.write_text(
+            "ATOM      1  N   SER A   1      0.000   0.000   0.000\n"
+            "HETATM    2  O   HOH A   2      1.000   1.000   1.000\n"
+            "HETATM    3  C   LIG A   3      2.000   2.000   2.000\n"
+        )
+        out = tmp_path / "out.pdb"
+        utils.filter_pdb_lines(str(inp), str(out), keep_residues={"LIG"})
+        lines = out.read_text().splitlines()
+        # Only LIG should be kept; SER and HOH are filtered out
+        assert len(lines) == 1
+        assert "LIG" in lines[0]
