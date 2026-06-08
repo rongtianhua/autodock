@@ -8,6 +8,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **Three-tier cascade fallback rescoring** (`autodock/validation.py`). When Vina top-1 RMSD ≥ 2.0 Å, automatically triggers tier-2 (IFP re-ranking + re-dock with 50 poses, e=8) and tier-3 (MM-GBSA on top 5 poses). Improves top-1 success from 35% → 55% (+20 pp) on 20-target benchmark with zero degradation.
+- **Flexible receptor docking** (`autodock/preparation.py`, `autodock/docking.py`, `autodock/validation.py`). Opt-in fallback (`use_flexible_receptor=True`) that detects nearby residues, prepares flexible receptor PDBQT via Meeko, and re-docks with reduced exhaustiveness. POC on 1B9S improved best RMSD from 2.11 Å → 1.05–1.21 Å @ rank #1. Disabled by default due to runtime cost (~5 min per target).
+- **MM-GBSA rescoring** (`autodock/rescoring.py`). OpenMM + OpenFF-based MM-GBSA ΔG computation for pose re-ranking. Functional for 17/20 targets after NaN bug fix.
+- `_perturb_zero_charges()` helper in `rescoring.py` — works around OpenFF `SMIRNOFFTemplateGenerator` rejecting all-zero formal charges as "not user-provided".
+- `compute_top_n_best_rmsd_from_all_poses()` in `validation.py` — evaluates top-N poses (default N=3) for best RMSD, enabling top-N success rate reporting.
+- `find_nearby_residues()` and `prepare_flexible_receptor()` in `preparation.py` — Cα distance search and Meeko-based flexible receptor preparation.
+- `_strip_flexible_residues_from_pdbqt_block()` in `utils.py` — strips receptor side-chain atoms from Vina flex output before RMSD computation.
 - `autodock/cache.py` — Parameter-sensitive disk cache for receptor/ligand/pocket preparation.
   Three cache classes (`ReceptorCache`, `LigandCache`, `PocketCache`) using SHA-256 content
   hashing + JSON-serialized parameters for cache keys. Atomic writes via temp-file + rename
@@ -55,6 +62,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   pose index and score delta.
 
 ### Changed
+- **Removed shape similarity and strain energy rescoring** (`23fe287`). Simplified pipeline to Vina → IFP → MM-GBSA only. Shape/strain methods were unreliable on multi-MODEL PDBQT and contributed no rescues.
 - P2Rank pocket filter strategy: **removed hard probability cutoff**.
   All top-10 P2Rank pockets now enter fpocket cross-validation regardless
   of score.  The old threshold (`_P2RANK_PROB_THRESHOLD=0.3`) was redundant
@@ -77,6 +85,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   rendering logic between workflow and post-processing pipeline.
 
 ### Fixed
+- **Baseline `best_rmsd` under-reporting bug** — pre-Jun-5 code lacked coordinate-based fallback in `compute_best_rmsd_from_all_poses()` when RDKit `GetBestRMS` failed on topology mismatch. Stored `benchmark_results_current/` JSON/CSV were stale; manually recomputed all 20 targets. Corrected metrics: top-1=7/20 (35%), top-3=10/20 (50%), best-achievable=14/20 (70%).
+- **MM-GBSA NaN cascade bug** (4-layer fix in `rescoring.py` + `validation.py`):
+  1. `validation.py`: `Chem.MolToSmiles(Chem.RemoveHs(crystal_mol))` prevents `[HH]` SMILES that break RDKit re-parsing.
+  2. `rescoring.py`: Detect NaN Gasteiger charges → fallback to `formal_charge` + `_perturb_zero_charges()` (±1e-6 e) to bypass `SMIRNOFFTemplateGenerator._molecule_has_user_charges()` zero-charge rejection.
+  3. `rescoring.py`: Pass `molecules=[offmol_base]` to `create_system()` so assigned charges are reused instead of triggering unavailable `am1bcc`.
 - `test_cli.py` mock assertions updated for `cache_dir` kwarg compatibility:
   switched from exact call-signature matching to semantic assertions on
   positional args and key kwargs.
