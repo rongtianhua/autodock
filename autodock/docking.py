@@ -935,6 +935,7 @@ def dock_ligand_multi_conformer(
 
     # Derive a unique seed per conformer so that parallel searches are
     # statistically independent while remaining fully reproducible.
+    # Wrap at 2^31 to stay within Vina's 32-bit signed-int seed limit.
     base_seed = _get_vina_seed(seed)
     work_items = [
         (
@@ -945,7 +946,7 @@ def dock_ligand_multi_conformer(
             exhaustiveness,
             n_poses,
             energy_range,
-            base_seed + i,
+            (base_seed + i) % 2_147_483_648,
             timeout,
             auto_exhaustiveness,
             scoring_function,
@@ -1173,7 +1174,7 @@ def virtual_screen(
         # Serial execution
         results: list[DockingResult] = []
         for idx, (name, smiles) in enumerate(items):
-            compound_seed = (base_seed + idx) if seed is None else base_seed
+            compound_seed = ((base_seed + idx) % 2_147_483_648) if seed is None else base_seed
             args = (
                 name,
                 smiles,
@@ -1193,7 +1194,7 @@ def virtual_screen(
 
         work_items = []
         for idx, (name, smiles) in enumerate(items):
-            compound_seed = (base_seed + idx) if seed is None else base_seed
+            compound_seed = ((base_seed + idx) % 2_147_483_648) if seed is None else base_seed
             work_items.append(
                 (
                     name,
@@ -1364,7 +1365,7 @@ def batch_dock(
     pair_idx = 0
     for rec_name, rec_path in receptors.items():
         for lig_name, lig_path in ligands.items():
-            pair_seed = base_seed + pair_idx if seed is None else base_seed
+            pair_seed = ((base_seed + pair_idx) % 2_147_483_648) if seed is None else base_seed
             center = pockets[rec_name]["center"]
             box_size = pockets[rec_name]["box_size"]
             job_out = os.path.join(output_dir, rec_name, lig_name)
@@ -1509,7 +1510,7 @@ def dock_ensemble(
 
     repeats: list[DockingResult] = []
     for i in range(n_repeats):
-        repeat_seed = base_seed + i
+        repeat_seed = (base_seed + i) % 2_147_483_648
         repeat_out = None
         if output_dir:
             repeat_out = os.path.join(output_dir, f"repeat_{i + 1}")

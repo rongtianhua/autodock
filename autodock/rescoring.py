@@ -192,7 +192,7 @@ def _run_mmgbsa_rescoring(
         fixer.addMissingHydrogens(7.0)
         receptor_topology = fixer.topology
         receptor_positions = fixer.positions
-    except Exception as exc:
+    except (OSError, ValueError, ImportError) as exc:
         logger.warning(f"MM-GBSA receptor preparation failed: {exc}")
         return None
 
@@ -213,7 +213,7 @@ def _run_mmgbsa_rescoring(
             _perturb_zero_charges(offmol_base)
         ligand_topology = offmol_base.to_topology().to_openmm()
         ligand_n = offmol_base.n_atoms
-    except Exception as exc:
+    except (ValueError, TypeError, RuntimeError, ImportError) as exc:
         logger.warning(f"MM-GBSA ligand build failed: {exc}")
         return None
 
@@ -224,7 +224,7 @@ def _run_mmgbsa_rescoring(
             small_molecule_forcefield="openff-2.2.0",
         )
         system_generator.add_molecules([offmol_base])
-    except Exception as exc:
+    except (ValueError, TypeError, RuntimeError, ImportError) as exc:
         logger.warning(f"MM-GBSA system generator failed: {exc}")
         return None
 
@@ -233,7 +233,7 @@ def _run_mmgbsa_rescoring(
         modeller = app.Modeller(receptor_topology, receptor_positions)
         modeller.add(ligand_topology, [Vec3(0, 0, 0) * unit.angstrom] * ligand_n)
         complex_topology = modeller.topology
-    except Exception as exc:
+    except (ValueError, TypeError, RuntimeError) as exc:
         logger.warning(f"MM-GBSA complex topology failed: {exc}")
         return None
 
@@ -244,7 +244,7 @@ def _run_mmgbsa_rescoring(
         complex_system = system_generator.create_system(complex_topology, molecules=[offmol_base])
         receptor_system = system_generator.create_system(receptor_topology)
         ligand_system = system_generator.create_system(ligand_topology, molecules=[offmol_base])
-    except Exception as exc:
+    except (ValueError, TypeError, RuntimeError, ImportError) as exc:
         logger.warning(f"MM-GBSA system creation failed: {exc}")
         return None
 
@@ -253,7 +253,7 @@ def _run_mmgbsa_rescoring(
         complex_sim = app.Simulation(complex_topology, complex_system, VerletIntegrator(0.001))
         receptor_sim = app.Simulation(receptor_topology, receptor_system, VerletIntegrator(0.001))
         ligand_sim = app.Simulation(ligand_topology, ligand_system, VerletIntegrator(0.001))
-    except Exception as exc:
+    except (ValueError, TypeError, RuntimeError) as exc:
         logger.warning(f"MM-GBSA simulation creation failed: {exc}")
         return None
 
@@ -265,7 +265,7 @@ def _run_mmgbsa_rescoring(
             .getPotentialEnergy()
             .value_in_unit(unit.kilocalorie_per_mole)
         )
-    except Exception as exc:
+    except (ValueError, TypeError, RuntimeError) as exc:
         logger.warning(f"MM-GBSA receptor energy failed: {exc}")
         return None
 
@@ -298,7 +298,7 @@ def _run_mmgbsa_rescoring(
 
             binding_energy = e_complex - e_receptor - e_ligand
             scores.append((pose_idx, binding_energy, vina_energy))
-        except Exception as exc:
+        except (ValueError, TypeError, RuntimeError) as exc:
             logger.debug(f"MM-GBSA pose {pose_idx} energy failed: {exc}")
             continue
 

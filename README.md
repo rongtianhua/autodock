@@ -15,7 +15,7 @@
 
 ```bash
 # Clone the repository
-git clone https://github.com/yourorg/autodock.git
+git clone https://github.com/rongtianhua/autodock.git
 cd autodock
 
 # Create conda environment (recommended)
@@ -310,7 +310,7 @@ mypy autodock
 ## 📚 Documentation
 
 - **API Reference**: See `autodock/__init__.py` for full public API exports
-- **Tutorials**: See `docs/agents/domain.md` for development domain documentation
+- **Tutorials**: See `docs/tutorials/` for step-by-step guides
 - **Changelog**: See `CHANGELOG.md` for version history
 
 ---
@@ -324,7 +324,7 @@ If you use Autodock in your research, please cite:
   title = {Autodock: A Publication-Grade Molecular Docking Pipeline},
   author = {Autodock Contributors},
   year = {2024},
-  url = {https://github.com/yourorg/autodock}
+  url = {https://github.com/rongtianhua/autodock}
 }
 ```
 

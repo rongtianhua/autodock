@@ -442,7 +442,10 @@ def run_redocking_benchmark(
                     "rmsd_raw": r.get("rmsd_raw"),
                     "best_rmsd": r.get("best_rmsd"),
                     "best_rmsd_success": (
-                        (r.get("best_rmsd") is not None and r["best_rmsd"] <= 2.0)
+                        (
+                            r.get("best_rmsd") is not None
+                            and r["best_rmsd"] <= REDocking_RMSD_THRESHOLD
+                        )
                         if "best_rmsd" in r
                         else None
                     ),
@@ -485,8 +488,8 @@ def run_redocking_benchmark(
         )
     if summary["n_scoring_failures"] > 0:
         msg += (
-            f"Scoring failures: {summary['n_scoring_failures']} targets have best-RMSD < 2.0 Å "
-            f"but top-1 > 2.0 Å ({', '.join(summary['scoring_failure_pdb_ids'])}). "
+            f"Scoring failures: {summary['n_scoring_failures']} targets have best-RMSD < {REDocking_RMSD_THRESHOLD} Å "
+            f"but top-1 > {REDocking_RMSD_THRESHOLD} Å ({', '.join(summary['scoring_failure_pdb_ids'])}). "
         )
     ifp_successes = summary.get("ifp_successes", [])
     ifp_rmsds = summary.get("ifp_rmsds", [])

@@ -3463,7 +3463,8 @@ def _merge_receptor_ligand_for_poseview(
     """
     import tempfile
 
-    out_path = tempfile.mktemp(suffix="_complex_poseview.pdb")
+    fd, out_path = tempfile.mkstemp(suffix="_complex_poseview.pdb")
+    os.close(fd)
     lines: list[str] = []
 
     # Receptor atoms
@@ -3597,7 +3598,8 @@ def render_poseview_diagram(
         if output_svg is None:
             import tempfile
 
-            output_svg = tempfile.mktemp(suffix="_poseview.svg")
+            fd, output_svg = tempfile.mkstemp(suffix="_poseview.svg")
+            os.close(fd)
         with open(output_svg, "wb") as fh:
             fh.write(svg_resp.content)
 

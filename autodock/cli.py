@@ -268,7 +268,7 @@ def cmd_dock(args: argparse.Namespace) -> int:
         print(f"📊  Full report: {outputs.get('pdf', 'N/A')}")
         print(f"🖼️   Figures:    {outputs['dirs']['figures']}")
         print(f"📁  Output tree: {pair_root}")
-    except (OSError, RuntimeError, ValueError, TypeError, ImportError) as exc:
+    except (OSError, RuntimeError, ValueError, ImportError) as exc:
         logger.warning(f"Post-processing skipped: {exc}")
         print("  (Install PLIP + PyMOL for full figures and reports)")
 
@@ -381,7 +381,7 @@ def cmd_report(args: argparse.Namespace) -> int:
                 copy_structures=False,
             )
             print(f"  [{i + 1}/{len(results)}] {result.compound_name}: {outputs.get('pdf', 'N/A')}")
-        except (OSError, RuntimeError, ValueError, TypeError, ImportError) as exc:
+        except (OSError, RuntimeError, ValueError, ImportError) as exc:
             logger.warning(f"Report generation failed for {result.compound_name}: {exc}")
 
     print(f"✅  Reports generated: {out_root}")
@@ -564,7 +564,7 @@ def cmd_batch_dock(args: argparse.Namespace) -> int:
                 )
                 processed_count += 1
                 print(f"  ✓ {rec_name} × {lig_name}")
-            except (OSError, RuntimeError, ValueError, TypeError, ImportError) as exc:
+            except (OSError, RuntimeError, ValueError, ImportError) as exc:
                 logger.warning(f"Post-processing failed for {rec_name}×{lig_name}: {exc}")
                 print(f"  ⚠ {rec_name} × {lig_name}: {exc}")
 
@@ -586,7 +586,7 @@ def cmd_batch_dock(args: argparse.Namespace) -> int:
             )
             print(f"  PNG: {heatmap_out['png']}")
             print(f"  PDF: {heatmap_out['pdf']}")
-        except (OSError, RuntimeError, ValueError, TypeError, ImportError) as exc:
+        except (OSError, RuntimeError, ValueError, ImportError) as exc:
             logger.warning(f"Heatmap generation failed: {exc}")
             print(f"  ⚠ Heatmap skipped: {exc}")
 

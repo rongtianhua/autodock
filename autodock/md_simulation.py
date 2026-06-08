@@ -446,7 +446,7 @@ def analyze_md_trajectory(
     if len(ca) > 0:
         try:
             align.AlignTraj(u, u, select="protein and name CA", in_memory=True).run()
-        except Exception as exc:
+        except (ImportError, ValueError) as exc:
             logger.debug(f"Trajectory alignment failed: {exc}")
 
     # Ligand RMSD
@@ -456,7 +456,7 @@ def analyze_md_trajectory(
             results["ligand_rmsd_mean"] = round(float(np.mean(lig_rmsd.results.rmsd[:, 2])), 3)
             results["ligand_rmsd_max"] = round(float(np.max(lig_rmsd.results.rmsd[:, 2])), 3)
             results["ligand_rmsd_std"] = round(float(np.std(lig_rmsd.results.rmsd[:, 2])), 3)
-        except Exception as exc:
+        except (ImportError, ValueError) as exc:
             logger.warning(f"Ligand RMSD analysis failed: {exc}")
 
     # Ligand RMSF (per-atom)
@@ -465,7 +465,7 @@ def analyze_md_trajectory(
             lig_rmsf = rms.RMSF(ligand).run()
             results["ligand_rmsf_mean"] = round(float(np.mean(lig_rmsf.results.rmsf)), 3)
             results["ligand_rmsf_max"] = round(float(np.max(lig_rmsf.results.rmsf)), 3)
-        except Exception as exc:
+        except (ImportError, ValueError) as exc:
             logger.warning(f"Ligand RMSF analysis failed: {exc}")
 
     # Ligand COM drift
@@ -475,7 +475,7 @@ def analyze_md_trajectory(
             com_drift = np.linalg.norm(com_traj - com_traj[0], axis=1)
             results["ligand_com_drift_mean"] = round(float(np.mean(com_drift)), 3)
             results["ligand_com_drift_max"] = round(float(np.max(com_drift)), 3)
-        except Exception as exc:
+        except (ValueError, TypeError, IndexError) as exc:
             logger.warning(f"Ligand COM drift analysis failed: {exc}")
 
     # Receptor Cα RMSD
@@ -484,7 +484,7 @@ def analyze_md_trajectory(
             rec_rmsd = rms.RMSD(ca, ca, ref_frame=0).run()
             results["receptor_ca_rmsd_mean"] = round(float(np.mean(rec_rmsd.results.rmsd[:, 2])), 3)
             results["receptor_ca_rmsd_max"] = round(float(np.max(rec_rmsd.results.rmsd[:, 2])), 3)
-        except Exception as exc:
+        except (ImportError, ValueError) as exc:
             logger.warning(f"Receptor RMSD analysis failed: {exc}")
 
     # Receptor Cα RMSF
@@ -493,7 +493,7 @@ def analyze_md_trajectory(
             rmsf = rms.RMSF(ca).run()
             results["receptor_ca_rmsf_mean"] = round(float(np.mean(rmsf.results.rmsf)), 3)
             results["receptor_ca_rmsf_max"] = round(float(np.max(rmsf.results.rmsf)), 3)
-        except Exception as exc:
+        except (ImportError, ValueError) as exc:
             logger.warning(f"Receptor RMSF analysis failed: {exc}")
 
     # Contact map: protein residues within 4.5 Å of ligand (mean over trajectory)
@@ -520,7 +520,7 @@ def analyze_md_trajectory(
             }
             results["contact_map"] = contact_freq
             results["n_contacting_residues"] = len(contact_freq)
-        except Exception as exc:
+        except (ValueError, TypeError) as exc:
             logger.warning(f"Contact map analysis failed: {exc}")
 
     # H-bond analysis
@@ -540,7 +540,7 @@ def analyze_md_trajectory(
             n_per_frame = [len(f) for f in hbonds.results.hbonds]
             results["n_hbonds_mean"] = round(float(np.mean(n_per_frame)), 2)
             results["n_hbonds_max"] = int(np.max(n_per_frame))
-        except Exception as exc:
+        except (ImportError, ValueError) as exc:
             logger.warning(f"H-bond analysis failed: {exc}")
 
     # PCA on ligand conformations (optional — requires scipy)
@@ -552,7 +552,7 @@ def analyze_md_trajectory(
             variance = pca.results.variance
             results["pca_explained_variance_pc1"] = round(float(variance[0]), 3)
             results["pca_explained_variance_pc2"] = round(float(variance[1]), 3)
-        except Exception as exc:
+        except (ImportError, ValueError) as exc:
             logger.debug(f"PCA analysis failed: {exc}")
 
     # Clustering: hierarchical clustering on ligand RMSD matrix
@@ -577,7 +577,7 @@ def analyze_md_trajectory(
             clusters = fcluster(Z, t=2.0, criterion="distance")
             results["n_clusters"] = int(len(set(clusters)))
             results["cluster_sizes"] = [int(np.sum(clusters == c)) for c in sorted(set(clusters))]
-        except Exception as exc:
+        except (ImportError, ValueError) as exc:
             logger.debug(f"Clustering analysis failed: {exc}")
 
     logger.info(f"MD analysis: {results}")

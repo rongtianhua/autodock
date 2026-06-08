@@ -107,7 +107,7 @@ def _generate_conect_from_pdbqt(pdbqt_path: str, atom_offset: int) -> list[str]:
         mol = Chem.MolFromPDBBlock(pdb_block, removeHs=False)
         if mol is None or mol.GetNumAtoms() == 0:
             return []
-    except Exception:
+    except (ValueError, TypeError, RuntimeError, ImportError):
         return []
 
     conect_lines: list[str] = []
@@ -163,8 +163,30 @@ def _build_complex_pdb(receptor_pdb: str, ligand_pdbqt: str, output_pdb: str) ->
             stripped_tail = line[71:].strip() if len(line) > 71 else ""
             ad_type = stripped_tail.split()[-1] if stripped_tail else ""
             elem = _AD4_ELEMENT_MAP.get(ad_type, ad_type)
-            if not elem:
-                elem = atom_name[0] if atom_name else "C"
+            if not elem or len(elem) > 2 or not elem[0].isalpha():
+                # ad_type is not a valid element symbol — try to infer from atom name
+                # Handle two-letter elements (Cl, Br, Fe, etc.)
+                if len(atom_name) >= 2 and atom_name[:2] in (
+                    "Cl",
+                    "Br",
+                    "Fe",
+                    "Zn",
+                    "Ca",
+                    "Mg",
+                    "Na",
+                    "Cu",
+                    "Co",
+                    "Ni",
+                    "Se",
+                    "Mn",
+                    "Si",
+                    "As",
+                ):
+                    elem = atom_name[:2]
+                elif atom_name:
+                    elem = atom_name[0]
+                else:
+                    elem = "C"
             new_line = (
                 f"HETATM{atom_num:5d} {atom_name:>4s} LIG A   1    "
                 f"{x:8.3f}{y:8.3f}{z:8.3f}  1.00  0.00          {elem:>2s}\n"
@@ -223,20 +245,34 @@ def detect_interactions_plip(
         complex_pdb = os.path.join(tmp_dir, "complex.pdb")
         _build_complex_pdb(receptor_pdb, ligand_pdbqt, complex_pdb)
 
+        # Validate complex PDB was created and has content
+        if not os.path.exists(complex_pdb) or os.path.getsize(complex_pdb) < 100:
+            raise VisualizationError(
+                f"Complex PDB is empty or missing: {complex_pdb}. "
+                "Ligand may have zero atoms or receptor PDB is invalid."
+            )
+
         try:
             my_mol = PDBComplex()
             my_mol.load_pdb(complex_pdb)
             my_mol.analyze()
-        except (RuntimeError, OSError, ValueError, TypeError, ImportError) as exc:
-            raise VisualizationError(f"PLIP analysis failed: {exc}")
+        except (RuntimeError, OSError, ValueError, ImportError) as exc:
+            raise VisualizationError(f"PLIP analysis failed for {complex_pdb}: {exc}")
 
         interactions: list[dict[str, Any]] = []
+
+        if not my_mol.ligands:
+            logger.warning(
+                f"PLIP found no ligands in {complex_pdb}. "
+                "Check that ligand is written as HETATM with resname LIG."
+            )
 
         for ligand in my_mol.ligands:
             if ligand.hetid != "LIG":
                 continue
             key = f"{ligand.hetid}:{ligand.chain}:{ligand.position}"
             if key not in my_mol.interaction_sets:
+                logger.debug(f"No interaction set for ligand key: {key}")
                 continue
 
             interaction_set = my_mol.interaction_sets[key]
@@ -980,7 +1016,8 @@ def ifp_similarity_scores(
     scores: list[tuple[int, float, float | None]] = []
     for idx, model_block in enumerate(models[1:], start=1):
         # Write temporary pose PDBQT
-        pose_path = tempfile.mktemp(suffix="_pose.pdbqt")
+        fd, pose_path = tempfile.mkstemp(suffix="_pose.pdbqt")
+        os.close(fd)
         try:
             with open(pose_path, "w") as fh:
                 fh.write(model_block)
@@ -1006,8 +1043,8 @@ def ifp_similarity_scores(
                     f"({len(pose_ifp)} interactions, ref={len(ref_ifp)})"
                 )
                 scores.append((idx, tanimoto, energy))
-            except Exception as exc:
-                logger.debug(f"Pose {idx}: interaction detection failed ({exc}), Tanimoto=0.0")
+            except (OSError, ValueError, TypeError, ImportError, VisualizationError) as exc:
+                logger.warning(f"Pose {idx}: interaction detection failed ({exc}), Tanimoto=0.0")
                 scores.append((idx, 0.0, energy))
         finally:
             with contextlib.suppress(OSError):
