@@ -893,3 +893,220 @@ class TestRunRedockingValidationBranches:
     def test_no_extraction_mode_raises(self):
         with pytest.raises((ValueError, val.ValidationError)):
             val.run_redocking_validation("holo.pdb")
+
+
+class TestCascadeFallback:
+    """Direct tests for the three-tier cascade fallback (Vina → IFP → MM-GBSA)."""
+
+    @patch("autodock.docking.dock_ligand")
+    @patch("autodock.preparation.prepare_receptor")
+    @patch("autodock.preparation.prepare_ligand")
+    @patch("autodock.preparation.find_top_pockets")
+    @patch("autodock.validation.compute_rmsd_to_crystal")
+    @patch("autodock.preparation.prepare_ligand_adaptive")
+    def test_cascade_tier2a_ifp20_rescue(
+        self,
+        mock_adaptive,
+        mock_rmsd,
+        mock_pockets,
+        mock_prep_lig,
+        mock_prep_rec,
+        mock_dock,
+        tmp_path,
+    ):
+        """Tier 1 fails (RMSD 3.0); Tier 2a IFP(20) rescues with RMSD 1.0."""
+        holo = tmp_path / "holo.pdb"
+        holo.write_text("ATOM 1 N SER A 1 0 0 0\nHETATM 2 C LIG A 2 1 1 1\n")
+
+        mock_prep_rec.return_value = str(tmp_path / "apo.pdbqt")
+        mock_prep_lig.return_value = str(tmp_path / "lig.pdbqt")
+        mock_adaptive.return_value = str(tmp_path / "lig.pdbqt")
+        mock_pockets.return_value = [{"center": (1.0, 1.0, 1.0), "box_size": (20.0, 20.0, 20.0)}]
+
+        all_poses = tmp_path / "all_poses.pdbqt"
+        all_poses.write_text(
+            "MODEL 1\nATOM 1 C LIG A 1 0 0 0\nENDMDL\n"
+            "MODEL 2\nATOM 1 C LIG A 1 1 1 1\nENDMDL\n"
+        )
+
+        mock_result = MagicMock()
+        mock_result.best_affinity = -8.0
+        mock_result.best_pose_pdbqt = str(tmp_path / "pose.pdbqt")
+        mock_result.all_poses_pdbqt = str(all_poses)
+        mock_result.pose_clusters = None
+        mock_dock.return_value = mock_result
+
+        # Tier 1 RMSD 3.0 (fail), Tier 2a IFP pose RMSD 1.0 (success)
+        mock_rmsd.side_effect = [3.0, 1.0]
+
+        with (
+            patch(
+                "autodock.validation.extract_ligand_from_pdb",
+                return_value=(MagicMock(), str(tmp_path / "lig.sdf")),
+            ),
+            patch("rdkit.Chem.MolToSmiles", return_value="CC"),
+            patch("rdkit.Chem.rdmolfiles.MolToPDBFile"),
+            patch(
+                "autodock.interactions.ifp_similarity_scores",
+                return_value=[(1, 0.9, None)],
+            ),
+        ):
+            result = val.run_redocking_validation(
+                str(holo),
+                ligand_resname="LIG",
+                output_dir=str(tmp_path / "out"),
+                cascade=True,
+            )
+        assert result["success"] is True
+        assert result["cascade_ifp_success"] is True
+        assert result["cascade_ifp_rmsd"] == pytest.approx(1.0, abs=1e-6)
+        assert result["cascade_mmgbsa_success"] is None
+
+    @patch("autodock.docking.dock_ligand")
+    @patch("autodock.preparation.prepare_receptor")
+    @patch("autodock.preparation.prepare_ligand")
+    @patch("autodock.preparation.find_top_pockets")
+    @patch("autodock.validation.compute_rmsd_to_crystal")
+    @patch("autodock.preparation.prepare_ligand_adaptive")
+    def test_cascade_tier2b_redock_ifp_rescue(
+        self,
+        mock_adaptive,
+        mock_rmsd,
+        mock_pockets,
+        mock_prep_lig,
+        mock_prep_rec,
+        mock_dock,
+        tmp_path,
+    ):
+        """Tier 1 fails; Tier 2a IFP(20) fails (empty); Tier 2b re-dock + IFP rescues."""
+        holo = tmp_path / "holo.pdb"
+        holo.write_text("ATOM 1 N SER A 1 0 0 0\nHETATM 2 C LIG A 2 1 1 1\n")
+
+        mock_prep_rec.return_value = str(tmp_path / "apo.pdbqt")
+        mock_prep_lig.return_value = str(tmp_path / "lig.pdbqt")
+        mock_adaptive.return_value = str(tmp_path / "lig.pdbqt")
+        mock_pockets.return_value = [{"center": (1.0, 1.0, 1.0), "box_size": (20.0, 20.0, 20.0)}]
+
+        all_poses = tmp_path / "all_poses.pdbqt"
+        all_poses.write_text(
+            "MODEL 1\nATOM 1 C LIG A 1 0 0 0\nENDMDL\n"
+        )
+        tier2_poses = tmp_path / "tier2_poses.pdbqt"
+        tier2_poses.write_text("MODEL 1\nATOM 1 C LIG A 1 0 0 0\nENDMDL\n")
+
+        mock_result_tier1 = MagicMock()
+        mock_result_tier1.best_affinity = -8.0
+        mock_result_tier1.best_pose_pdbqt = str(tmp_path / "pose.pdbqt")
+        mock_result_tier1.all_poses_pdbqt = str(all_poses)
+        mock_result_tier1.pose_clusters = None
+
+        mock_result_tier2 = MagicMock()
+        mock_result_tier2.best_affinity = -8.0
+        mock_result_tier2.best_pose_pdbqt = str(tmp_path / "tier2_pose.pdbqt")
+        mock_result_tier2.all_poses_pdbqt = str(tier2_poses)
+        mock_result_tier2.pose_clusters = None
+
+        mock_dock.side_effect = [mock_result_tier1, mock_result_tier2]
+
+        # Tier 1 = 3.0, Tier 2b IFP pose = 1.0 (Tier 2a skipped because IFP empty)
+        mock_rmsd.side_effect = [3.0, 1.0]
+
+        with (
+            patch(
+                "autodock.validation.extract_ligand_from_pdb",
+                return_value=(MagicMock(), str(tmp_path / "lig.sdf")),
+            ),
+            patch("rdkit.Chem.MolToSmiles", return_value="CC"),
+            patch("rdkit.Chem.rdmolfiles.MolToPDBFile"),
+            patch("autodock.interactions.ifp_similarity_scores") as mock_ifp,
+        ):
+            # Tier 2a returns empty → no pose extracted; Tier 2b returns good pose
+            mock_ifp.side_effect = [
+                [],  # tier 2a: empty
+                [(1, 0.9, None)],  # tier 2b: success
+            ]
+            result = val.run_redocking_validation(
+                str(holo),
+                ligand_resname="LIG",
+                output_dir=str(tmp_path / "out"),
+                cascade=True,
+                cascade_n_poses=50,
+            )
+        assert result["success"] is True
+        assert result["cascade_ifp_success"] is True
+        assert result["cascade_ifp_rmsd"] == pytest.approx(1.0, abs=1e-6)
+
+    @patch("autodock.docking.dock_ligand")
+    @patch("autodock.preparation.prepare_receptor")
+    @patch("autodock.preparation.prepare_ligand")
+    @patch("autodock.preparation.find_top_pockets")
+    @patch("autodock.validation.compute_rmsd_to_crystal")
+    @patch("autodock.preparation.prepare_ligand_adaptive")
+    def test_cascade_tier3_mmgbsa_rescue(
+        self,
+        mock_adaptive,
+        mock_rmsd,
+        mock_pockets,
+        mock_prep_lig,
+        mock_prep_rec,
+        mock_dock,
+        tmp_path,
+    ):
+        """Tier 1 & 2 both fail; Tier 3 MM-GBSA rescues the docking failure."""
+        holo = tmp_path / "holo.pdb"
+        holo.write_text("ATOM 1 N SER A 1 0 0 0\nHETATM 2 C LIG A 2 1 1 1\n")
+
+        mock_prep_rec.return_value = str(tmp_path / "apo.pdbqt")
+        mock_prep_lig.return_value = str(tmp_path / "lig.pdbqt")
+        mock_adaptive.return_value = str(tmp_path / "lig.pdbqt")
+        mock_pockets.return_value = [{"center": (1.0, 1.0, 1.0), "box_size": (20.0, 20.0, 20.0)}]
+
+        all_poses = tmp_path / "all_poses.pdbqt"
+        all_poses.write_text("MODEL 1\nATOM 1 C LIG A 1 0 0 0\nENDMDL\n")
+        tier2_poses = tmp_path / "tier2_poses.pdbqt"
+        tier2_poses.write_text("MODEL 1\nATOM 1 C LIG A 1 0 0 0\nENDMDL\n")
+
+        mock_result_tier1 = MagicMock()
+        mock_result_tier1.best_affinity = -8.0
+        mock_result_tier1.best_pose_pdbqt = str(tmp_path / "pose.pdbqt")
+        mock_result_tier1.all_poses_pdbqt = str(all_poses)
+        mock_result_tier1.pose_clusters = None
+
+        mock_result_tier2 = MagicMock()
+        mock_result_tier2.best_affinity = -8.0
+        mock_result_tier2.best_pose_pdbqt = str(tmp_path / "tier2_pose.pdbqt")
+        mock_result_tier2.all_poses_pdbqt = str(tier2_poses)
+        mock_result_tier2.pose_clusters = None
+
+        mock_dock.side_effect = [mock_result_tier1, mock_result_tier2]
+
+        # Tier 1 = 3.0, Tier 2a IFP = 3.0, Tier 2b IFP = 3.0, Tier 3 MM-GBSA = 1.0
+        mock_rmsd.side_effect = [3.0, 3.0, 3.0, 1.0]
+
+        with (
+            patch(
+                "autodock.validation.extract_ligand_from_pdb",
+                return_value=(MagicMock(), str(tmp_path / "lig.sdf")),
+            ),
+            patch("rdkit.Chem.MolToSmiles", return_value="CC"),
+            patch("rdkit.Chem.rdmolfiles.MolToPDBFile"),
+            patch("autodock.interactions.ifp_similarity_scores") as mock_ifp,
+            patch(
+                "autodock.rescoring._run_mmgbsa_rescoring",
+                return_value=[(1, -50.0, None)],
+            ),
+        ):
+            mock_ifp.side_effect = [
+                [(1, 0.3, None)],  # tier 2a: low score, RMSD 3.0
+                [(1, 0.3, None)],  # tier 2b: low score, RMSD 3.0
+            ]
+            result = val.run_redocking_validation(
+                str(holo),
+                ligand_resname="LIG",
+                output_dir=str(tmp_path / "out"),
+                cascade=True,
+                cascade_n_poses=50,
+            )
+        assert result["success"] is True
+        assert result["cascade_mmgbsa_success"] is True
+        assert result["cascade_mmgbsa_rmsd"] == pytest.approx(1.0, abs=1e-6)

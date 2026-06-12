@@ -841,6 +841,7 @@ def run_redocking_validation(
     write_pdb_atoms(filtered_atoms, apo_pdb)
 
     receptor_pdbqt = os.path.join(output_dir, "apo_receptor.pdbqt")
+    prepared_receptor_pdb = os.path.join(output_dir, "apo_receptor_prepared.pdb")
     prepare_receptor(
         apo_pdb,
         receptor_pdbqt,
@@ -848,8 +849,13 @@ def run_redocking_validation(
         remove_hetatms=remove_hetatms,
         predict_pka=predict_pka,
         fix_protonation=fix_protonation,
+        output_pdb=prepared_receptor_pdb,
         cache_dir=cache_dir,
     )
+    # MM-GBSA and downstream OpenMM calculations need a fully-prepared receptor
+    # with correct hydrogen placement, His naming (HID/HIE/HIP), and resolved
+    # non-standard residues.  Fall back to the raw apo_pdb only if preparation
+    # failed to produce the output file.
 
     # ── 3. Prepare ligand (adaptive multi-conformer) ───────────────────────
     if crystal_smiles is None:
@@ -1205,7 +1211,14 @@ def run_redocking_validation(
                 try:
                     from autodock.rescoring import _run_mmgbsa_rescoring
 
-                    mmgbsa_scores = _run_mmgbsa_rescoring(apo_pdb, tier2_all_poses, crystal_smiles)
+                    mmgbsa_receptor = (
+                        prepared_receptor_pdb
+                        if os.path.isfile(prepared_receptor_pdb)
+                        else apo_pdb
+                    )
+                    mmgbsa_scores = _run_mmgbsa_rescoring(
+                        mmgbsa_receptor, tier2_all_poses, crystal_smiles
+                    )
                     if mmgbsa_scores:
                         best_idx, best_score, _ = mmgbsa_scores[0]
                         import re

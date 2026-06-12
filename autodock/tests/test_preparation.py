@@ -208,6 +208,93 @@ class TestPrepareReceptor:
         assert cleaned.count("CA  CYS") == 2
 
 
+class TestRestoreHisAmberNames:
+    """Tests for _restore_his_amber_names — OpenBabel side-effect fix."""
+
+    def test_his_with_hd1_becomes_hid(self):
+        pdb = (
+            "ATOM      1  N   HIS A   1      0.000   0.000   0.000  1.00 20.00\n"
+            "ATOM      2  CA  HIS A   1      0.000   0.000   0.000  1.00 20.00\n"
+            "ATOM      3  ND1 HIS A   1      0.000   0.000   0.000  1.00 20.00\n"
+            "ATOM      4  HD1 HIS A   1      0.000   0.000   0.000  1.00 20.00\n"
+        )
+        result = prep._restore_his_amber_names(pdb)
+        assert " HID" in result
+        assert " HIS" not in result
+        assert result.count("HID") == 4
+
+    def test_his_with_he2_becomes_hie(self):
+        pdb = (
+            "ATOM      1  N   HIS A   1      0.000   0.000   0.000  1.00 20.00\n"
+            "ATOM      2  CA  HIS A   1      0.000   0.000   0.000  1.00 20.00\n"
+            "ATOM      3  NE2 HIS A   1      0.000   0.000   0.000  1.00 20.00\n"
+            "ATOM      4  HE2 HIS A   1      0.000   0.000   0.000  1.00 20.00\n"
+        )
+        result = prep._restore_his_amber_names(pdb)
+        assert " HIE" in result
+        assert " HIS" not in result
+        assert result.count("HIE") == 4
+
+    def test_his_with_both_becomes_hip(self):
+        pdb = (
+            "ATOM      1  N   HIS A   1      0.000   0.000   0.000  1.00 20.00\n"
+            "ATOM      2  CA  HIS A   1      0.000   0.000   0.000  1.00 20.00\n"
+            "ATOM      3  ND1 HIS A   1      0.000   0.000   0.000  1.00 20.00\n"
+            "ATOM      4  HD1 HIS A   1      0.000   0.000   0.000  1.00 20.00\n"
+            "ATOM      5  NE2 HIS A   1      0.000   0.000   0.000  1.00 20.00\n"
+            "ATOM      6  HE2 HIS A   1      0.000   0.000   0.000  1.00 20.00\n"
+        )
+        result = prep._restore_his_amber_names(pdb)
+        assert " HIP" in result
+        assert " HIS" not in result
+        assert result.count("HIP") == 6
+
+    def test_his_no_diagnostic_hydrogens_defaults_hie(self):
+        pdb = (
+            "ATOM      1  N   HIS A   1      0.000   0.000   0.000  1.00 20.00\n"
+            "ATOM      2  CA  HIS A   1      0.000   0.000   0.000  1.00 20.00\n"
+        )
+        result = prep._restore_his_amber_names(pdb)
+        assert " HIE" in result
+        assert " HIS" not in result
+        assert result.count("HIE") == 2
+
+    def test_non_his_unchanged(self):
+        pdb = (
+            "ATOM      1  N   ALA A   1      0.000   0.000   0.000  1.00 20.00\n"
+            "ATOM      2  CA  ALA A   1      0.000   0.000   0.000  1.00 20.00\n"
+        )
+        result = prep._restore_his_amber_names(pdb)
+        assert "ALA" in result
+        assert "HIS" not in result
+
+    def test_multiple_his_residues_independent(self):
+        pdb = (
+            "ATOM      1  N   HIS A   1      0.000   0.000   0.000  1.00 20.00\n"
+            "ATOM      2  HD1 HIS A   1      0.000   0.000   0.000  1.00 20.00\n"
+            "ATOM      3  N   HIS A   2      0.000   0.000   0.000  1.00 20.00\n"
+            "ATOM      4  HE2 HIS A   2      0.000   0.000   0.000  1.00 20.00\n"
+        )
+        result = prep._restore_his_amber_names(pdb)
+        # Residue A:1 should be HID (HD1 present)
+        assert result.count("HID") == 2
+        # Residue A:2 should be HIE (HE2 present)
+        assert result.count("HIE") == 2
+        assert " HIS" not in result
+
+    def test_already_amber_names_unchanged(self):
+        """If input already has AMBER names, no false positives."""
+        pdb = (
+            "ATOM      1  N   HID A   1      0.000   0.000   0.000  1.00 20.00\n"
+            "ATOM      2  CA  HIE A   2      0.000   0.000   0.000  1.00 20.00\n"
+        )
+        result = prep._restore_his_amber_names(pdb)
+        # HID and HIE lines should be untouched because they are not HIS
+        assert "HID" in result
+        assert "HIE" in result
+        assert "HIS" not in result
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Ligand Preparation
 # ─────────────────────────────────────────────────────────────────────────────

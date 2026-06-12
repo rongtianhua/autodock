@@ -276,6 +276,115 @@ def _write_prep_report(
     return output_path
 
 
+def _strip_all_hydrogens(pdb_content: str) -> str:
+    """Remove all hydrogen atoms from PDB content to let Reduce re-add them cleanly.
+
+    Reduce's ``-FLIP`` mode optimises the H-bond network and handles ASN/GLN flips
+    and HIS tautomers more reliably when it has full control over hydrogen
+    placement.  PDBFixer's ``addMissingHydrogens()`` produces approximate
+    coordinates that may conflict with Reduce's geometric heuristics.
+
+    Returns:
+        PDB content string with all H atoms removed.
+    """
+    cleaned: list[str] = []
+    for line in pdb_content.splitlines(keepends=True):
+        if line.startswith(("ATOM  ", "HETATM")):
+            _aname = safe_pdb_slice(line, 12, 16)
+            _elem = safe_pdb_slice(line, 76, 78)
+            if (_aname and _aname.strip().startswith("H")) or (
+                _elem and _elem.strip().upper() == "H"
+            ):
+                continue
+        cleaned.append(line)
+    return "".join(cleaned)
+
+
+def _restore_his_amber_names(pdb_content: str) -> str:
+    """Restore AMBER His names (HID/HIE/HIP) after OpenBabel standardization.
+
+    OpenBabel's ``-opdb`` converts AMBER-specific residue names (HID/HIE/HIP)
+    back to standard PDB ``HIS``.  Meeko's default ``ResidueChemTemplates``
+    do not recognize ``HIS`` (forlilab/Meeko issue #82), which causes the
+    residue to be skipped or to fail template matching.  This function
+    detects the protonation state from histidine-specific hydrogen atom
+    names and restores the AMBER name so that Meeko can match it.
+
+    Detection rules (based on hydrogen atom names in the PDB file):
+      - HD1 present (H on ND1) → HID
+      - HE2 present (H on NE2) → HIE
+      - Both HD1 and HE2       → HIP
+      - Neither               → HIE (default, matches PDBFixer convention)
+
+    References:
+        - Meeko issue #82: "residue HIS not in residue_params"
+        - AMBER force field naming: HID=ND1-protonated, HIE=NE2-protonated,
+          HIP=doubly-protonated (charged).
+    """
+    # Pass 1: scan all lines and record all HIS residues + diagnostic hydrogens
+    all_his: set[tuple[str, int]] = set()
+    his_hydrogens: dict[tuple[str, int], set[str]] = {}
+
+    for line in pdb_content.splitlines():
+        if not line.startswith(("ATOM  ", "HETATM")):
+            continue
+
+        resn = safe_pdb_slice(line, 17, 20)
+        if resn != "HIS":
+            continue
+
+        chain = safe_pdb_slice(line, 21, 22) or "A"
+        try:
+            resi = int(safe_pdb_slice(line, 22, 26))
+        except ValueError:
+            continue
+
+        key = (chain, resi)
+        all_his.add(key)
+
+        aname = safe_pdb_slice(line, 12, 16)
+        if aname and aname.strip() in ("HD1", "HE2"):
+            his_hydrogens.setdefault(key, set()).add(aname.strip())
+
+    if not all_his:
+        return pdb_content
+
+    def _decide_name(h_set: set[str]) -> str:
+        has_hd1 = "HD1" in h_set
+        has_he2 = "HE2" in h_set
+        if has_hd1 and has_he2:
+            return "HIP"
+        if has_hd1:
+            return "HID"
+        if has_he2:
+            return "HIE"
+        return "HIE"  # default when no diagnostic hydrogens are present
+
+    replacements = {k: _decide_name(his_hydrogens.get(k, set())) for k in all_his}
+
+    # Pass 2: rewrite residue name in-place for all HIS atoms
+    lines: list[str] = []
+    for line in pdb_content.splitlines(keepends=True):
+        if line.startswith(("ATOM  ", "HETATM")):
+            resn = safe_pdb_slice(line, 17, 20)
+            if resn == "HIS":
+                chain = safe_pdb_slice(line, 21, 22) or "A"
+                try:
+                    resi = int(safe_pdb_slice(line, 22, 26))
+                except ValueError:
+                    pass
+                else:
+                    key = (chain, resi)
+                    if key in replacements:
+                        new_name = replacements[key]
+                        # Replace columns 17-20 (0-based: 16-19) with the
+                        # 4-character field, right-aligned 3-letter name.
+                        line = line[:16] + f"{new_name:>3}" + line[20:]
+        lines.append(line)
+
+    return "".join(lines)
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Receptor Preparation
 # ─────────────────────────────────────────────────────────────────────────────
@@ -722,6 +831,23 @@ def prepare_receptor(
             with open(tmp_fixed, "w") as fh:
                 fh.write(_fixed_cleaned)
 
+    # ── Step 3c: Strip all hydrogens before Reduce (if Reduce is available) ──
+    # PDBFixer adds hydrogens by rigid geometric rules (e.g., HIS defaults to HIE).
+    # Reduce's -FLIP mode re-adds hydrogens by analysing the full H-bond network,
+    # which gives correct HIS tautomers and ASN/GLN flips.
+    # If Reduce sees existing hydrogens it may skip re-optimisation.
+    # Stripping all H's gives Reduce full control; the H-bearing PDBFixer output
+    # (tmp_fixed) is kept as fallback if Reduce fails later.
+    tmp_fixed_for_reduce = tmp_fixed
+    _reduce_bin = find_conda_tool("reduce")
+    if _reduce_bin and tmp_fixed != tmp_raw:
+        with open(tmp_fixed) as fh:
+            _fixed_pdb_str = fh.read()
+        _fixed_no_h = _strip_all_hydrogens(_fixed_pdb_str)
+        tmp_fixed_for_reduce = write_temp_file(_fixed_no_h, suffix="_fixed_noh.pdb")
+        _all_temps.append(tmp_fixed_for_reduce)
+        logger.info("Hydrogens stripped before Reduce — Reduce will re-add with H-bond optimisation")
+
     # ── Step 4: Reduce — ASN/GLN flip detection + HIS tautomer assignment ────
     tmp_reduced = write_temp_file("", suffix="_reduced.pdb")
     try:
@@ -730,7 +856,7 @@ def prepare_receptor(
             raise RuntimeError("reduce binary not found")
         # -FLIP: add hydrogens, detect/correct ASN/GLN flips, assign HIS tautomers
         success, stdout, stderr = safe_subprocess(
-            [reduce_bin, "-FLIP", tmp_fixed],
+            [reduce_bin, "-FLIP", tmp_fixed_for_reduce],
             timeout=120,
         )
         if not success or not stdout.strip():
@@ -860,20 +986,24 @@ def prepare_receptor(
             tmp_pdb2pqr_pdb = write_temp_file("", suffix="_pdb2pqr.pdb")
             _all_temps.append(tmp_pdb2pqr_pdb)
             try:
+                # Build command; avoid --drop-water when functional waters must survive
+                _pdb2pqr_cmd = [
+                    pdb2pqr_bin,
+                    "--ff=AMBER",
+                    f"--with-ph={ph}",
+                    "--pdb-output",
+                    tmp_pdb2pqr_pdb,
+                    "--titration-state-method=propka",
+                    "--noopt",  # reduce already did H-bond opt (Step 4)
+                    "--keep-chain",
+                ]
+                # Only drop water when user explicitly wants all water removed
+                # and no functional-water retention is requested.
+                if not keep_waters_near_metal and remove_water:
+                    _pdb2pqr_cmd.append("--drop-water")
+                _pdb2pqr_cmd.extend([tmp_reduced, os.devnull])
                 success, _stdout, stderr = safe_subprocess(
-                    [
-                        pdb2pqr_bin,
-                        "--ff=AMBER",
-                        f"--with-ph={ph}",
-                        "--pdb-output",
-                        tmp_pdb2pqr_pdb,
-                        "--titration-state-method=propka",
-                        "--noopt",  # reduce already did H-bond opt (Step 4)
-                        "--keep-chain",
-                        "--drop-water",  # will be filtered in Step 6 anyway
-                        tmp_reduced,
-                        os.devnull,  # discard .pqr output (not needed)
-                    ],
+                    _pdb2pqr_cmd,
                     timeout=300,
                 )
                 if success and os.path.getsize(tmp_pdb2pqr_pdb) > 100:
@@ -1193,6 +1323,9 @@ def prepare_receptor(
             if norm_success:
                 with open(tmp_norm) as _fh:
                     pdb_content = _fh.read()
+                # OpenBabel converts AMBER His names (HID/HIE/HIP) to standard
+                # PDB "HIS", but Meeko only recognises AMBER names.
+                pdb_content = _restore_his_amber_names(pdb_content)
                 logger.debug("OpenBabel: PDB atom naming normalised for Meeko")
             else:
                 logger.debug(f"OpenBabel normalisation skipped ({norm_err[:100]})")
