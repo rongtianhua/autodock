@@ -749,7 +749,9 @@ class TestRunRedockingValidationBranches:
             "MODEL 1\nATOM 1 C LIG A 1 0 0 0\nENDMDL\n" "MODEL 2\nATOM 1 C LIG A 1 1 1 1\nENDMDL\n"
         )
 
-        mock_result = MagicMock()
+        from autodock.core import DockingResult
+
+        mock_result = MagicMock(spec=DockingResult)
         mock_result.best_affinity = -8.0
         mock_result.best_pose_pdbqt = str(tmp_path / "pose.pdbqt")
         mock_result.all_poses_pdbqt = str(all_poses)
@@ -861,7 +863,9 @@ class TestRunRedockingValidationBranches:
         all_poses = tmp_path / "all_poses.pdbqt"
         all_poses.write_text("MODEL 1\nATOM 1 C LIG A 1 0 0 0\nENDMDL\n")
 
-        mock_result = MagicMock()
+        from autodock.core import DockingResult
+
+        mock_result = MagicMock(spec=DockingResult)
         mock_result.best_affinity = -8.0
         mock_result.best_pose_pdbqt = str(tmp_path / "pose.pdbqt")
         mock_result.all_poses_pdbqt = str(all_poses)
@@ -928,7 +932,9 @@ class TestCascadeFallback:
             "MODEL 1\nATOM 1 C LIG A 1 0 0 0\nENDMDL\n" "MODEL 2\nATOM 1 C LIG A 1 1 1 1\nENDMDL\n"
         )
 
-        mock_result = MagicMock()
+        from autodock.core import DockingResult
+
+        mock_result = MagicMock(spec=DockingResult)
         mock_result.best_affinity = -8.0
         mock_result.best_pose_pdbqt = str(tmp_path / "pose.pdbqt")
         mock_result.all_poses_pdbqt = str(all_poses)

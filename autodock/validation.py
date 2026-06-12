@@ -1269,9 +1269,12 @@ def run_redocking_validation(
                         f"cascade_{tier_key}_best_{tier_result['best_pose_idx']}.pdbqt",
                     )
                     if os.path.isfile(best_pose_tmp):
-                        from dataclasses import replace
+                        from dataclasses import is_dataclass, replace
 
-                        result = replace(result, best_pose_pdbqt=best_pose_tmp)
+                        if is_dataclass(result) and not isinstance(result, type):
+                            result = replace(result, best_pose_pdbqt=best_pose_tmp)
+                        else:
+                            result.best_pose_pdbqt = best_pose_tmp
                     logger.info(f"Cascade {tier_name} rescued: final RMSD={rmsd:.2f} Å")
                     break
 
