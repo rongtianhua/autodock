@@ -891,17 +891,23 @@ class TestFetchCompoundSDF:
 
     @patch("autodock.fetchers.fetch_pubchem_smiles")
     def test_fallback_gen3d(self, mock_smiles, tmp_path):
-        mock_smiles.return_value = "CCO"
-        out = str(tmp_path / "out.sdf")
-        result = fetchers.fetch_compound_sdf_by_name("ethanol", out)
-        assert result == out
+        mock_pcp = MagicMock()
+        mock_pcp.get_compounds.return_value = []  # empty → triggers fallback
+        with patch.dict("sys.modules", {"pubchempy": mock_pcp}):
+            mock_smiles.return_value = "CCO"
+            out = str(tmp_path / "out.sdf")
+            result = fetchers.fetch_compound_sdf_by_name("ethanol", out)
+            assert result == out
 
     @patch("autodock.fetchers.fetch_pubchem_smiles")
     def test_invalid_smiles(self, mock_smiles, tmp_path):
-        mock_smiles.return_value = "invalid_smiles"
-        out = str(tmp_path / "out.sdf")
-        with pytest.raises(DataSourceError, match="Could not generate 3D"):
-            fetchers.fetch_compound_sdf_by_name("fake", out)
+        mock_pcp = MagicMock()
+        mock_pcp.get_compounds.return_value = []  # empty → triggers fallback
+        with patch.dict("sys.modules", {"pubchempy": mock_pcp}):
+            mock_smiles.return_value = "invalid_smiles"
+            out = str(tmp_path / "out.sdf")
+            with pytest.raises(DataSourceError, match="Could not generate 3D"):
+                fetchers.fetch_compound_sdf_by_name("fake", out)
 
 
 class TestFetchChembl:
