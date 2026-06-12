@@ -1212,9 +1212,7 @@ def run_redocking_validation(
                     from autodock.rescoring import _run_mmgbsa_rescoring
 
                     mmgbsa_receptor = (
-                        prepared_receptor_pdb
-                        if os.path.isfile(prepared_receptor_pdb)
-                        else apo_pdb
+                        prepared_receptor_pdb if os.path.isfile(prepared_receptor_pdb) else apo_pdb
                     )
                     mmgbsa_scores = _run_mmgbsa_rescoring(
                         mmgbsa_receptor, tier2_all_poses, crystal_smiles

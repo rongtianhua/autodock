@@ -925,8 +925,7 @@ class TestCascadeFallback:
 
         all_poses = tmp_path / "all_poses.pdbqt"
         all_poses.write_text(
-            "MODEL 1\nATOM 1 C LIG A 1 0 0 0\nENDMDL\n"
-            "MODEL 2\nATOM 1 C LIG A 1 1 1 1\nENDMDL\n"
+            "MODEL 1\nATOM 1 C LIG A 1 0 0 0\nENDMDL\n" "MODEL 2\nATOM 1 C LIG A 1 1 1 1\nENDMDL\n"
         )
 
         mock_result = MagicMock()
@@ -988,9 +987,7 @@ class TestCascadeFallback:
         mock_pockets.return_value = [{"center": (1.0, 1.0, 1.0), "box_size": (20.0, 20.0, 20.0)}]
 
         all_poses = tmp_path / "all_poses.pdbqt"
-        all_poses.write_text(
-            "MODEL 1\nATOM 1 C LIG A 1 0 0 0\nENDMDL\n"
-        )
+        all_poses.write_text("MODEL 1\nATOM 1 C LIG A 1 0 0 0\nENDMDL\n")
         tier2_poses = tmp_path / "tier2_poses.pdbqt"
         tier2_poses.write_text("MODEL 1\nATOM 1 C LIG A 1 0 0 0\nENDMDL\n")
 

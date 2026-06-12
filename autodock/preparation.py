@@ -846,7 +846,9 @@ def prepare_receptor(
         _fixed_no_h = _strip_all_hydrogens(_fixed_pdb_str)
         tmp_fixed_for_reduce = write_temp_file(_fixed_no_h, suffix="_fixed_noh.pdb")
         _all_temps.append(tmp_fixed_for_reduce)
-        logger.info("Hydrogens stripped before Reduce — Reduce will re-add with H-bond optimisation")
+        logger.info(
+            "Hydrogens stripped before Reduce — Reduce will re-add with H-bond optimisation"
+        )
 
     # ── Step 4: Reduce — ASN/GLN flip detection + HIS tautomer assignment ────
     tmp_reduced = write_temp_file("", suffix="_reduced.pdb")
