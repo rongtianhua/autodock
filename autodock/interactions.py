@@ -246,6 +246,7 @@ def detect_interactions_plip(
     if _receptor_pdb.lower().endswith((".cif", ".mmcif")):
         try:
             from autodock.utils import obabel_convert
+
             converted = os.path.join(tmp_dir, "receptor_from_cif.pdb")
             ok = obabel_convert(_receptor_pdb, converted, out_format="pdb")
             if ok and os.path.isfile(converted) and os.path.getsize(converted) > 100:

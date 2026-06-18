@@ -384,7 +384,6 @@ def _resolve_to_uniprot(query: str) -> str | None:
         ):
             return q
 
-
     encoded = urllib.parse.quote(query.strip())
     query_str = f"({encoded}) AND (reviewed:true)"
     url = (
@@ -1527,7 +1526,6 @@ def read_pdbbind_index(
     return results
 
 
-
 def get_pdb_assembly_info(pdb_id: str) -> dict:
     """
     Query RCSB PDB for biological assembly information.
@@ -1546,36 +1544,26 @@ def get_pdb_assembly_info(pdb_id: str) -> dict:
         return {}
 
     try:
-        entry = _http_get_json(
-            f"https://data.rcsb.org/rest/v1/core/entry/{pdb_id}"
-        )
+        entry = _http_get_json(f"https://data.rcsb.org/rest/v1/core/entry/{pdb_id}")
     except Exception as exc:
         logger.debug(f"RCSB entry query failed for {pdb_id}: {exc}")
         return {}
 
     # Get polymer chains in asymmetric unit
-    asym_ids = (
-        entry.get("rcsb_entry_container_identifiers", {})
-        .get("polymer_entity_ids", [])
-    )
+    asym_ids = entry.get("rcsb_entry_container_identifiers", {}).get("polymer_entity_ids", [])
     asymmetric_chains: list[str] = []
     for eid in asym_ids:
         try:
             entity = _http_get_json(
                 f"https://data.rcsb.org/rest/v1/core/polymer_entity/{pdb_id}/{eid}"
             )
-            ids = entity.get("rcsb_polymer_entity_container_identifiers", {}).get(
-                "asym_ids", []
-            )
+            ids = entity.get("rcsb_polymer_entity_container_identifiers", {}).get("asym_ids", [])
             asymmetric_chains.extend(ids)
         except Exception:
             pass
 
     # Get assembly information
-    assembly_ids = (
-        entry.get("rcsb_entry_container_identifiers", {})
-        .get("assembly_ids", [])
-    )
+    assembly_ids = entry.get("rcsb_entry_container_identifiers", {}).get("assembly_ids", [])
 
     chains_per_assembly: list[list[str]] = []
     oligomeric_counts: list[int] = []
@@ -1583,9 +1571,7 @@ def get_pdb_assembly_info(pdb_id: str) -> dict:
 
     for aid in assembly_ids:
         try:
-            assembly = _http_get_json(
-                f"https://data.rcsb.org/rest/v1/core/assembly/{pdb_id}/{aid}"
-            )
+            assembly = _http_get_json(f"https://data.rcsb.org/rest/v1/core/assembly/{pdb_id}/{aid}")
             a_info = assembly.get("pdbx_struct_assembly", {})
             count = a_info.get("oligomeric_count", 0)
             details = a_info.get("oligomeric_details", "")
@@ -1622,7 +1608,10 @@ def extract_single_chain_from_mmcif(
     If *chain_id* is None, the longest chain is selected.
     Returns the path to the saved PDB file.
     """
-    from Bio.PDB import MMCIFParser, PDBIO
+    from Bio.PDB import MMCIFParser, PDBIO  # noqa: I001
+    from Bio.PDB.Structure import Structure  # noqa: I001
+    from Bio.PDB.Model import Model  # noqa: I001
+    from Bio.PDB.Chain import Chain  # noqa: I001
 
     parser = MMCIFParser(QUIET=True)
     structure = parser.get_structure(os.path.basename(cif_path), cif_path)
@@ -1639,9 +1628,7 @@ def extract_single_chain_from_mmcif(
                 continue
             break
         else:
-            raise StructureFetchError(
-                f"No chain found in {cif_path} (requested: {chain_id})"
-            )
+            raise StructureFetchError(f"No chain found in {cif_path} (requested: {chain_id})")
     else:
         # Phase 2: auto-select longest chain
         best_chain = None
@@ -1654,19 +1641,13 @@ def extract_single_chain_from_mmcif(
                     best_len = n
 
     if best_chain is None:
-        raise StructureFetchError(
-            f"No chain found in {cif_path} (requested: {chain_id})"
-        )
+        raise StructureFetchError(f"No chain found in {cif_path} (requested: {chain_id})")
 
     if output_path is None:
         base = os.path.splitext(cif_path)[0]
         output_path = f"{base}_chain_{best_chain.id}.pdb"
 
     # Build a minimal structure with only the selected chain
-    from Bio.PDB.Structure import Structure
-    from Bio.PDB.Model import Model
-    from Bio.PDB.Chain import Chain
-
     new_struct = Structure("extracted")
     new_model = Model(0)
     new_struct.add(new_model)

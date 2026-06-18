@@ -747,4 +747,8 @@ class TestAssessAlphaFoldQualityWarning:
         assert result["low_conf_pct"] == pytest.approx(30.0, abs=0.1)
         assert result["warning"] is not None
         assert "low-confidence regions" in result["warning"]
-        assert "A:8-10" in result["warning"] or "A:9-10" in result["warning"] or "A:7-10" in result["warning"]
+        assert (
+            "A:8-10" in result["warning"]
+            or "A:9-10" in result["warning"]
+            or "A:7-10" in result["warning"]
+        )

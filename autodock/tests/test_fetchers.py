@@ -1166,20 +1166,14 @@ class TestGetPdbAssemblyInfo:
                 }
             },
             # polymer entity 1
-            {
-                "rcsb_polymer_entity_container_identifiers": {
-                    "asym_ids": ["A", "B", "C", "D", "E"]
-                }
-            },
+            {"rcsb_polymer_entity_container_identifiers": {"asym_ids": ["A", "B", "C", "D", "E"]}},
             # assembly 1
             {
                 "pdbx_struct_assembly": {
                     "oligomeric_count": 1,
                     "oligomeric_details": "monomeric",
                 },
-                "pdbx_struct_assembly_gen": [
-                    {"asym_id_list": ["A", "B", "C", "D", "E"]}
-                ],
+                "pdbx_struct_assembly_gen": [{"asym_id_list": ["A", "B", "C", "D", "E"]}],
             },
         ]
         result = fetchers.get_pdb_assembly_info("4F9Z")
@@ -1198,19 +1192,13 @@ class TestGetPdbAssemblyInfo:
                     "assembly_ids": ["1"],
                 }
             },
-            {
-                "rcsb_polymer_entity_container_identifiers": {
-                    "asym_ids": ["A", "B"]
-                }
-            },
+            {"rcsb_polymer_entity_container_identifiers": {"asym_ids": ["A", "B"]}},
             {
                 "pdbx_struct_assembly": {
                     "oligomeric_count": 2,
                     "oligomeric_details": "homodimeric",
                 },
-                "pdbx_struct_assembly_gen": [
-                    {"asym_id_list": ["A", "B"]}
-                ],
+                "pdbx_struct_assembly_gen": [{"asym_id_list": ["A", "B"]}],
             },
         ]
         result = fetchers.get_pdb_assembly_info("1ABC")
@@ -1238,6 +1226,7 @@ class TestExtractSingleChainFromMmcif:
 
     def test_extract_by_chain_id(self, tmp_path):
         from autodock.fetchers import extract_single_chain_from_mmcif
+
         # Use the real 4F9Z CIF we already downloaded for validation
         cif_path = "/tmp/4F9Z.cif"
         if not os.path.exists(cif_path):
@@ -1248,12 +1237,13 @@ class TestExtractSingleChainFromMmcif:
         assert out.exists()
         content = out.read_text()
         assert "ATOM" in content
-        lines = [l for l in content.splitlines() if l.startswith("ATOM")]
+        lines = [line for line in content.splitlines() if line.startswith("ATOM")]
         assert len(lines) > 0
         assert lines[0][21:22] == "A"
 
     def test_auto_select_longest_chain(self, tmp_path):
         from autodock.fetchers import extract_single_chain_from_mmcif
+
         cif_path = "/tmp/4F9Z.cif"
         if not os.path.exists(cif_path):
             pytest.skip("4F9Z.cif not available for testing")
@@ -1261,14 +1251,15 @@ class TestExtractSingleChainFromMmcif:
         result = extract_single_chain_from_mmcif(cif_path, output_path=str(out))
         assert result == str(out)
         content = out.read_text()
-        lines = [l for l in content.splitlines() if l.startswith("ATOM")]
+        lines = [line for line in content.splitlines() if line.startswith("ATOM")]
         assert len(lines) > 0
         # All lines should have the same chain ID (auto-selected longest)
-        chain_ids = set(l[21:22] for l in lines)
+        chain_ids = {line[21:22] for line in lines}
         assert len(chain_ids) == 1
 
     def test_missing_chain_raises(self, tmp_path):
         from autodock.fetchers import extract_single_chain_from_mmcif
+
         cif_path = "/tmp/4F9Z.cif"
         if not os.path.exists(cif_path):
             pytest.skip("4F9Z.cif not available for testing")

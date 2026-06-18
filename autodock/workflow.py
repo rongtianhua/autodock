@@ -531,7 +531,10 @@ def run_docking_workflow(
 
     # ── Biological assembly check (multi-chain monomer) ──────────────────
     if result.receptor_source == "PDB" and len(receptor_id) == 4:
-        from autodock.fetchers import get_pdb_assembly_info, extract_single_chain_from_mmcif
+        from autodock.fetchers import (
+            extract_single_chain_from_mmcif,
+            get_pdb_assembly_info,
+        )
 
         asm_info = get_pdb_assembly_info(receptor_id)
         asymmetric_chains = asm_info.get("asymmetric_chains", [])
@@ -584,15 +587,15 @@ def run_docking_workflow(
 
                 elif strategy == "alphafold":
                     try:
-                        from autodock.fetchers import download_alphafold
-                        from autodock.fetchers import _resolve_to_uniprot
+                        from autodock.fetchers import (
+                            _resolve_to_uniprot,
+                            download_alphafold,
+                        )
 
                         uniprot_id = _resolve_to_uniprot(receptor_id)
                         if uniprot_id:
                             af_file = download_alphafold(uniprot_id, out_dir, format="cif")
-                            logger.info(
-                                f"  Strategy '{strategy}': AlphaFold monomer -> {af_file}"
-                            )
+                            logger.info(f"  Strategy '{strategy}': AlphaFold monomer -> {af_file}")
                             receptor_file = af_file
                             result.receptor_source = "AlphaFold"
                             result.receptor_name = os.path.basename(receptor_file)
@@ -875,8 +878,8 @@ def run_docking_workflow(
                     if v is not None and not k.startswith("n_")
                 }
             )
-            _le = le_dict.get('le')
-            _le_rb = le_dict.get('le_rb')
+            _le = le_dict.get("le")
+            _le_rb = le_dict.get("le_rb")
             _le_str = f"{_le:.3f}" if _le is not None else "N/A"
             _le_rb_str = f"{_le_rb:.3f}" if _le_rb is not None else "N/A"
             logger.info(
