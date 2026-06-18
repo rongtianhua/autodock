@@ -1144,3 +1144,133 @@ class TestReadPDBbindIndex:
         path.write_text("1A30  1.80\n")
         result = fetchers.read_pdbbind_index(str(path))
         assert result == {}
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# PDB biological assembly info (mocked)
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+class TestGetPdbAssemblyInfo:
+    """Tests for get_pdb_assembly_info — RCSB biological assembly detection."""
+
+    @patch("autodock.fetchers._http_get_json")
+    def test_monomeric_multi_chain(self, mock_json):
+        """4F9Z-like: 5 chains in asymmetric unit, monomeric assembly."""
+        mock_json.side_effect = [
+            # entry
+            {
+                "rcsb_entry_container_identifiers": {
+                    "polymer_entity_ids": ["1"],
+                    "assembly_ids": ["1"],
+                }
+            },
+            # polymer entity 1
+            {
+                "rcsb_polymer_entity_container_identifiers": {
+                    "asym_ids": ["A", "B", "C", "D", "E"]
+                }
+            },
+            # assembly 1
+            {
+                "pdbx_struct_assembly": {
+                    "oligomeric_count": 1,
+                    "oligomeric_details": "monomeric",
+                },
+                "pdbx_struct_assembly_gen": [
+                    {"asym_id_list": ["A", "B", "C", "D", "E"]}
+                ],
+            },
+        ]
+        result = fetchers.get_pdb_assembly_info("4F9Z")
+        assert result["is_monomeric"] is True
+        assert result["oligomeric_count"] == 1
+        assert result["asymmetric_chains"] == ["A", "B", "C", "D", "E"]
+        assert result["chains_per_assembly"] == [["A", "B", "C", "D", "E"]]
+
+    @patch("autodock.fetchers._http_get_json")
+    def test_homodimeric(self, mock_json):
+        """True homodimer: 2 chains per assembly, not monomeric."""
+        mock_json.side_effect = [
+            {
+                "rcsb_entry_container_identifiers": {
+                    "polymer_entity_ids": ["1"],
+                    "assembly_ids": ["1"],
+                }
+            },
+            {
+                "rcsb_polymer_entity_container_identifiers": {
+                    "asym_ids": ["A", "B"]
+                }
+            },
+            {
+                "pdbx_struct_assembly": {
+                    "oligomeric_count": 2,
+                    "oligomeric_details": "homodimeric",
+                },
+                "pdbx_struct_assembly_gen": [
+                    {"asym_id_list": ["A", "B"]}
+                ],
+            },
+        ]
+        result = fetchers.get_pdb_assembly_info("1ABC")
+        assert result["is_monomeric"] is False
+        assert result["oligomeric_count"] == 2
+
+    @patch("autodock.fetchers._http_get_json")
+    def test_api_failure_returns_empty(self, mock_json):
+        mock_json.side_effect = Exception("timeout")
+        result = fetchers.get_pdb_assembly_info("4F9Z")
+        assert result == {}
+
+    def test_invalid_pdb_id_returns_empty(self):
+        result = fetchers.get_pdb_assembly_info("TOOLONG")
+        assert result == {}
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Single-chain extraction from mmCIF
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+class TestExtractSingleChainFromMmcif:
+    """Tests for extract_single_chain_from_mmcif."""
+
+    def test_extract_by_chain_id(self, tmp_path):
+        from autodock.fetchers import extract_single_chain_from_mmcif
+        # Use the real 4F9Z CIF we already downloaded for validation
+        cif_path = "/tmp/4F9Z.cif"
+        if not os.path.exists(cif_path):
+            pytest.skip("4F9Z.cif not available for testing")
+        out = tmp_path / "chain_A.pdb"
+        result = extract_single_chain_from_mmcif(cif_path, chain_id="A", output_path=str(out))
+        assert result == str(out)
+        assert out.exists()
+        content = out.read_text()
+        assert "ATOM" in content
+        lines = [l for l in content.splitlines() if l.startswith("ATOM")]
+        assert len(lines) > 0
+        assert lines[0][21:22] == "A"
+
+    def test_auto_select_longest_chain(self, tmp_path):
+        from autodock.fetchers import extract_single_chain_from_mmcif
+        cif_path = "/tmp/4F9Z.cif"
+        if not os.path.exists(cif_path):
+            pytest.skip("4F9Z.cif not available for testing")
+        out = tmp_path / "chain_auto.pdb"
+        result = extract_single_chain_from_mmcif(cif_path, output_path=str(out))
+        assert result == str(out)
+        content = out.read_text()
+        lines = [l for l in content.splitlines() if l.startswith("ATOM")]
+        assert len(lines) > 0
+        # All lines should have the same chain ID (auto-selected longest)
+        chain_ids = set(l[21:22] for l in lines)
+        assert len(chain_ids) == 1
+
+    def test_missing_chain_raises(self, tmp_path):
+        from autodock.fetchers import extract_single_chain_from_mmcif
+        cif_path = "/tmp/4F9Z.cif"
+        if not os.path.exists(cif_path):
+            pytest.skip("4F9Z.cif not available for testing")
+        with pytest.raises(StructureFetchError, match="No chain found"):
+            extract_single_chain_from_mmcif(cif_path, chain_id="Z")

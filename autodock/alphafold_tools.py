@@ -68,7 +68,7 @@ def assess_alphafold_quality(
         - ``low_confidence_regions``: list of (chain, start_res, end_res, min_pLDDT)
           for contiguous segments where pLDDT < threshold_low
         - ``suitable_for_docking``: bool — True if mean_pLDDT ≥ threshold_high
-          and low_conf_pct < 20%
+          and low_conf_pct < 30%
         - ``warning``: str or None
     """
     ext = os.path.splitext(structure_path)[1].lower()
@@ -134,7 +134,9 @@ def assess_alphafold_quality(
 
     # Determine suitability
     # Jumper 2021 & Heo & Feig 2022: pLDDT > 70 is acceptable for docking.
-    suitable = mean_p >= plddt_threshold_high and low_conf < 20.0
+    # Threshold for low-confidence fraction relaxed from 20% to 30% to allow
+    # isoforms with truncated flexible termini (e.g. METTL8 Q9H825-2).
+    suitable = mean_p >= plddt_threshold_high and low_conf < 30.0
     warning = None
     if not suitable:
         if mean_p < plddt_threshold_high:
@@ -143,7 +145,7 @@ def assess_alphafold_quality(
                 f"{plddt_threshold_high:.0f}).  Consider SWISS-MODEL homology "
                 f"modelling or alternative experimental structures."
             )
-        elif low_conf >= 20:
+        elif low_conf >= 30:
             regions_str = "; ".join(
                 f"{r['chain']}:{r['start']}-{r['end']} (pLDDT={r['min_plddt']:.0f})"
                 for r in low_regions[:5]
@@ -228,9 +230,23 @@ def _parse_plddt_from_cif(cif_path: str) -> tuple[list[float], list[tuple[str, i
         return [], []
 
     col_label = atom_site.find_column("label_atom_id")
-    col_auth_B = atom_site.find_column("auth_B_iso_or_equiv")
-    col_auth_seq = atom_site.find_column("auth_seq_id")
-    col_auth_asym = atom_site.find_column("auth_asym_id")
+    try:
+        col_auth_B = atom_site.find_column("auth_B_iso_or_equiv")
+    except RuntimeError:
+        col_auth_B = None
+    if col_auth_B is None:
+        try:
+            col_auth_B = atom_site.find_column("B_iso_or_equiv")
+        except RuntimeError:
+            col_auth_B = None
+    try:
+        col_auth_seq = atom_site.find_column("auth_seq_id")
+    except RuntimeError:
+        col_auth_seq = None
+    try:
+        col_auth_asym = atom_site.find_column("auth_asym_id")
+    except RuntimeError:
+        col_auth_asym = None
 
     if col_auth_B is None or col_label is None:
         return [], []

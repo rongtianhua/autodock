@@ -241,9 +241,27 @@ def detect_interactions_plip(
     tmp_dir = output_dir or tempfile.mkdtemp(prefix="plip_")
     os.makedirs(tmp_dir, exist_ok=True)
 
+    # Robust fallback: if upstream passes a CIF file, convert it to PDB
+    _receptor_pdb = receptor_pdb
+    if _receptor_pdb.lower().endswith((".cif", ".mmcif")):
+        try:
+            from autodock.utils import obabel_convert
+            converted = os.path.join(tmp_dir, "receptor_from_cif.pdb")
+            ok = obabel_convert(_receptor_pdb, converted, out_format="pdb")
+            if ok and os.path.isfile(converted) and os.path.getsize(converted) > 100:
+                _receptor_pdb = converted
+                logger.info(f"PLIP: converted CIF receptor → {_receptor_pdb}")
+            else:
+                logger.warning(
+                    f"PLIP: CIF→PDB conversion failed for {_receptor_pdb}, "
+                    "proceeding with raw CIF (will likely fail)."
+                )
+        except Exception as exc:
+            logger.warning(f"PLIP: CIF→PDB conversion error: {exc}")
+
     try:
         complex_pdb = os.path.join(tmp_dir, "complex.pdb")
-        _build_complex_pdb(receptor_pdb, ligand_pdbqt, complex_pdb)
+        _build_complex_pdb(_receptor_pdb, ligand_pdbqt, complex_pdb)
 
         # Validate complex PDB was created and has content
         if not os.path.exists(complex_pdb) or os.path.getsize(complex_pdb) < 100:

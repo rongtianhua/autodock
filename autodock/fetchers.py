@@ -338,13 +338,19 @@ def find_best_pdb_structure(
         logger.info(f"Query '{query}' detected as PDB ID — returning directly")
         return q
 
-    ranked = search_pdb_by_name(
-        query,
-        max_resolution=max_resolution,
-        require_ligand=require_ligand,
-        method=method,
-    )
-    return ranked[0] if ranked else None
+    try:
+        ranked = search_pdb_by_name(
+            query,
+            max_resolution=max_resolution,
+            require_ligand=require_ligand,
+            method=method,
+        )
+        return ranked[0] if ranked else None
+    except StructureFetchError:
+        return None
+    except Exception as exc:
+        logger.warning(f"PDB search failed for '{query}': {exc}")
+        return None
 
 
 def _resolve_to_uniprot(query: str) -> str | None:
@@ -357,16 +363,33 @@ def _resolve_to_uniprot(query: str) -> str | None:
     import urllib.parse
 
     # If it already looks like a UniProt ID (e.g. P15056, Q9Y6K9), return directly
+    # Also support isoform IDs (e.g. Q9H825-1, Q9H825-2) used by AlphaFold DB
     q = query.strip().upper()
+    # Standard accession: 6-10 chars, starts with letter, rest alphanumeric
+    # e.g. P15056, Q9Y6K9, Q9H825, A0A0B4J2D5
     if len(q) >= 6 and q[0].isalpha() and q[1:].isdigit():
         return q
-    if len(q) >= 6 and q[:1].isalpha() and q[1].isdigit() and q[2:].isalpha():
+    if len(q) >= 6 and q[0].isalpha() and q[1].isdigit() and q[2:].isalpha():
         return q
+    # Isoform format: e.g. Q9H825-1, Q9H825-2
+    if "-" in q:
+        parts = q.split("-", 1)
+        base = parts[0]
+        suffix = parts[1]
+        if (
+            len(base) >= 6
+            and base[0].isalpha()
+            and suffix.isdigit()
+            and (base[1:].isdigit() or (base[1].isdigit() and base[2:].isalnum()))
+        ):
+            return q
+
 
     encoded = urllib.parse.quote(query.strip())
+    query_str = f"({encoded}) AND (reviewed:true)"
     url = (
         f"https://rest.uniprot.org/uniprotkb/search?"
-        f"query=({encoded}) AND (reviewed:true)&format=json&size=5"
+        f"query={urllib.parse.quote(query_str)}&format=json&size=5"
     )
     try:
         data = _http_get_json(url, timeout=15)
@@ -379,7 +402,7 @@ def _resolve_to_uniprot(query: str) -> str | None:
         pass
 
     # Fallback: try without reviewed filter
-    url2 = f"https://rest.uniprot.org/uniprotkb/search?query=({encoded})&format=json&size=5"
+    url2 = f"https://rest.uniprot.org/uniprotkb/search?query={encoded}&format=json&size=5"
     try:
         data2 = _http_get_json(url2, timeout=15)
         results2 = data2.get("results", []) if isinstance(data2, dict) else []
@@ -1504,9 +1527,160 @@ def read_pdbbind_index(
     return results
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Config-driven unified fetch dispatcher
-# ─────────────────────────────────────────────────────────────────────────────
+
+def get_pdb_assembly_info(pdb_id: str) -> dict:
+    """
+    Query RCSB PDB for biological assembly information.
+
+    Returns a dict with keys:
+      * ``oligomeric_count``   – int (1 = monomeric)
+      * ``oligomeric_details`` – str (e.g. "monomeric", "homodimeric")
+      * ``chains_per_assembly``– list[list[str]] (chain IDs per assembly)
+      * ``asymmetric_chains``  – list[str] (chain IDs in the asymmetric unit)
+      * ``is_monomeric``       – bool (True if all biological assemblies are monomeric)
+
+    Returns an empty dict on any API failure so the caller can fall back.
+    """
+    pdb_id = pdb_id.strip().upper()
+    if len(pdb_id) != 4:
+        return {}
+
+    try:
+        entry = _http_get_json(
+            f"https://data.rcsb.org/rest/v1/core/entry/{pdb_id}"
+        )
+    except Exception as exc:
+        logger.debug(f"RCSB entry query failed for {pdb_id}: {exc}")
+        return {}
+
+    # Get polymer chains in asymmetric unit
+    asym_ids = (
+        entry.get("rcsb_entry_container_identifiers", {})
+        .get("polymer_entity_ids", [])
+    )
+    asymmetric_chains: list[str] = []
+    for eid in asym_ids:
+        try:
+            entity = _http_get_json(
+                f"https://data.rcsb.org/rest/v1/core/polymer_entity/{pdb_id}/{eid}"
+            )
+            ids = entity.get("rcsb_polymer_entity_container_identifiers", {}).get(
+                "asym_ids", []
+            )
+            asymmetric_chains.extend(ids)
+        except Exception:
+            pass
+
+    # Get assembly information
+    assembly_ids = (
+        entry.get("rcsb_entry_container_identifiers", {})
+        .get("assembly_ids", [])
+    )
+
+    chains_per_assembly: list[list[str]] = []
+    oligomeric_counts: list[int] = []
+    oligomeric_details: list[str] = []
+
+    for aid in assembly_ids:
+        try:
+            assembly = _http_get_json(
+                f"https://data.rcsb.org/rest/v1/core/assembly/{pdb_id}/{aid}"
+            )
+            a_info = assembly.get("pdbx_struct_assembly", {})
+            count = a_info.get("oligomeric_count", 0)
+            details = a_info.get("oligomeric_details", "")
+            oligomeric_counts.append(count)
+            oligomeric_details.append(details)
+
+            gen = assembly.get("pdbx_struct_assembly_gen", [])
+            for g in gen:
+                chains = g.get("asym_id_list", [])
+                if chains:
+                    chains_per_assembly.append(chains)
+        except Exception:
+            pass
+
+    is_monomeric = all(c == 1 for c in oligomeric_counts) if oligomeric_counts else False
+
+    return {
+        "oligomeric_count": oligomeric_counts[0] if oligomeric_counts else 0,
+        "oligomeric_details": oligomeric_details[0] if oligomeric_details else "",
+        "chains_per_assembly": chains_per_assembly,
+        "asymmetric_chains": asymmetric_chains,
+        "is_monomeric": is_monomeric,
+    }
+
+
+def extract_single_chain_from_mmcif(
+    cif_path: str,
+    chain_id: str | None = None,
+    output_path: str | None = None,
+) -> str:
+    """
+    Extract a single chain from a mmCIF file and save as PDB.
+
+    If *chain_id* is None, the longest chain is selected.
+    Returns the path to the saved PDB file.
+    """
+    from Bio.PDB import MMCIFParser, PDBIO
+
+    parser = MMCIFParser(QUIET=True)
+    structure = parser.get_structure(os.path.basename(cif_path), cif_path)
+
+    # Phase 1: explicit chain lookup
+    if chain_id is not None:
+        for model in structure:
+            for chain in model:
+                if chain.id == chain_id:
+                    best_chain = chain
+                    best_len = sum(1 for r in chain if r.id[0] == " ")
+                    break
+            else:
+                continue
+            break
+        else:
+            raise StructureFetchError(
+                f"No chain found in {cif_path} (requested: {chain_id})"
+            )
+    else:
+        # Phase 2: auto-select longest chain
+        best_chain = None
+        best_len = 0
+        for model in structure:
+            for chain in model:
+                n = sum(1 for r in chain if r.id[0] == " ")
+                if n > best_len:
+                    best_chain = chain
+                    best_len = n
+
+    if best_chain is None:
+        raise StructureFetchError(
+            f"No chain found in {cif_path} (requested: {chain_id})"
+        )
+
+    if output_path is None:
+        base = os.path.splitext(cif_path)[0]
+        output_path = f"{base}_chain_{best_chain.id}.pdb"
+
+    # Build a minimal structure with only the selected chain
+    from Bio.PDB.Structure import Structure
+    from Bio.PDB.Model import Model
+    from Bio.PDB.Chain import Chain
+
+    new_struct = Structure("extracted")
+    new_model = Model(0)
+    new_struct.add(new_model)
+    new_chain = Chain(best_chain.id)
+    for residue in best_chain:
+        if residue.id[0] == " ":
+            new_chain.add(residue.copy())
+    new_model.add(new_chain)
+
+    io = PDBIO()
+    io.set_structure(new_struct)
+    io.save(output_path)
+    logger.info(f"Extracted chain {best_chain.id} ({best_len} residues) -> {output_path}")
+    return output_path
 
 
 RECEPTOR_FETCHERS: dict[str, Any] = {

@@ -732,19 +732,19 @@ class TestAssessAlphaFoldQualityWarning:
     """Tests for assess_alphafold_quality warning paths."""
 
     def test_high_mean_but_many_low_confidence_warning(self, tmp_path):
-        """Mean > 70 but ≥20% residues below 50 → warning about regions."""
+        """Mean > 70 but ≥30% residues below 50 → warning about regions."""
         pdb = tmp_path / "af.pdb"
-        # 10 residues: 8 high (90), 2 low (40) → 20% low
+        # 10 residues: 7 high (90), 3 low (40) → 30% low
         lines = []
-        for i in range(8):
+        for i in range(7):
             lines.append(_pdb_atom(i + 1, "CA ", "SER", "A", i + 1, 0.0, 0.0, 0.0, 1.0, 90.0))
-        for i in range(2):
-            lines.append(_pdb_atom(i + 9, "CA ", "SER", "A", i + 9, 0.0, 0.0, 0.0, 1.0, 40.0))
+        for i in range(3):
+            lines.append(_pdb_atom(i + 8, "CA ", "SER", "A", i + 8, 0.0, 0.0, 0.0, 1.0, 40.0))
         pdb.write_text("\n".join(lines) + "\n")
         result = alphafold_tools.assess_alphafold_quality(str(pdb))
         assert result["suitable_for_docking"] is False
-        assert result["mean_plddt"] == pytest.approx(80.0, abs=0.1)
-        assert result["low_conf_pct"] == pytest.approx(20.0, abs=0.1)
+        assert result["mean_plddt"] == pytest.approx(75.0, abs=0.1)
+        assert result["low_conf_pct"] == pytest.approx(30.0, abs=0.1)
         assert result["warning"] is not None
         assert "low-confidence regions" in result["warning"]
-        assert "A:9-10" in result["warning"] or "A:8-10" in result["warning"]
+        assert "A:8-10" in result["warning"] or "A:9-10" in result["warning"] or "A:7-10" in result["warning"]

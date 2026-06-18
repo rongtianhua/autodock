@@ -278,6 +278,8 @@ def run_docking_workflow(
     interaction_method: str = "plip",
     max_postprocess_pockets: int = 2,
     minimize_pose: bool = False,
+    # ── Multi-chain receptor strategy ───────────────────────────────────────
+    receptor_multichain_strategy: str = "auto",
 ) -> DockingWorkflowResult:
     """
     Run an end-to-end publication-grade molecular docking analysis.
@@ -336,6 +338,13 @@ def run_docking_workflow(
             the best docked pose when PoseBusters is installed.
         interaction_method: Interaction backend for post-processing —
             ``"plip"`` (default), ``"prolif"``, or ``"both"``.
+        receptor_multichain_strategy: Strategy when a PDB entry's asymmetric unit
+            contains multiple chains but the biological assembly is monomeric:
+            ``"auto"`` (default) — automatically extract the first chain.
+            ``"multichain"`` — keep all chains (may produce inter-chain pseudo-pockets).
+            ``"extract_single"`` — extract the first chain for docking.
+            ``"alphafold"`` — use the AlphaFold monomeric structure instead.
+            A ``list`` of the above — run all specified strategies and compare.
 
     Returns:
         :class:`DockingWorkflowResult` with all output paths and metadata.
@@ -461,8 +470,8 @@ def run_docking_workflow(
             result.receptor_source = "file"
             logger.info(f"  Using local file: {receptor_file}")
 
-        elif receptor_source in ("pdb", "auto") and len(receptor_id) == 4 and receptor_id.isalnum():
-            # PDB ID (4 alphanumeric chars)
+        elif receptor_source == "pdb" and len(receptor_id) == 4 and receptor_id.isalnum():
+            # Direct PDB ID (only when explicitly requested)
             from autodock.fetchers import download_pdb
 
             fmt = "cif" if receptor_format in ("auto", "cif") else "pdb"
@@ -470,18 +479,47 @@ def run_docking_workflow(
             result.receptor_source = "PDB"
             logger.info(f"  Downloaded from PDB: {receptor_file}")
 
-        elif receptor_source in ("alphafold", "auto"):
-            # AlphaFold / UniProt
+        elif receptor_source == "alphafold":
+            # Explicit AlphaFold request
             from autodock.fetchers import download_alphafold
 
             receptor_file = download_alphafold(receptor_id, out_dir, format="cif")
             result.receptor_source = "AlphaFold"
             logger.info(f"  Downloaded AlphaFold: {receptor_file}")
 
+        elif receptor_source == "auto":
+            # Auto-resolve: use fetch_protein_structure with full priority chain
+            # (PDB search by name → AlphaFold → SWISS-MODEL)
+            from autodock.fetchers import fetch_protein_structure
+
+            fmt = "cif" if receptor_format in ("auto", "cif") else "pdb"
+            receptor_file = fetch_protein_structure(
+                receptor_id,
+                output_dir=out_dir,
+                format=fmt,
+                max_resolution=3.0,
+                require_ligand=True,
+                method="X-RAY DIFFRACTION",
+                fallback_alphafold=True,
+                fallback_swissmodel=True,
+            )
+            # Infer source from filename
+            basename = os.path.basename(receptor_file)
+            if basename.startswith("AF-"):
+                result.receptor_source = "AlphaFold"
+            elif "SWISS-MODEL" in basename or "swiss" in basename.lower():
+                result.receptor_source = "SWISS-MODEL"
+            else:
+                result.receptor_source = "PDB"
+            logger.info(
+                f"  Resolved via fetch_protein_structure: {receptor_file} "
+                f"(source={result.receptor_source})"
+            )
+
         else:
             raise ValueError(
                 f"Cannot resolve receptor: {receptor_id} (source={receptor_source}). "
-                "Try: PDB ID (4 chars), UniProt ID, or local file path."
+                "Try: PDB ID (4 chars), UniProt ID, gene name, or local file path."
             )
 
         state["receptor_file"] = receptor_file
@@ -490,6 +528,91 @@ def run_docking_workflow(
         _save_state(out_dir, state)
 
     result.receptor_name = os.path.basename(receptor_file)
+
+    # ── Biological assembly check (multi-chain monomer) ──────────────────
+    if result.receptor_source == "PDB" and len(receptor_id) == 4:
+        from autodock.fetchers import get_pdb_assembly_info, extract_single_chain_from_mmcif
+
+        asm_info = get_pdb_assembly_info(receptor_id)
+        asymmetric_chains = asm_info.get("asymmetric_chains", [])
+        is_monomeric = asm_info.get("is_monomeric", False)
+
+        if len(asymmetric_chains) > 1 and is_monomeric:
+            logger.info(
+                f"  PDB {receptor_id}: asymmetric unit has {len(asymmetric_chains)} chains "
+                f"but biological assembly is monomeric ({', '.join(asymmetric_chains)})"
+            )
+
+            # Resolve strategy
+            strategies = receptor_multichain_strategy
+            if isinstance(strategies, str):
+                strategies = [strategies]
+            # If "auto", default to single-chain extraction
+            if "auto" in strategies:
+                strategies = ["extract_single"]
+
+            for strategy in strategies:
+                if strategy == "multichain":
+                    logger.info(
+                        f"  Strategy '{strategy}': keeping all {len(asymmetric_chains)} chains"
+                    )
+                    # Continue with current receptor_file (no change)
+                    break
+
+                elif strategy == "extract_single":
+                    try:
+                        extracted = extract_single_chain_from_mmcif(
+                            receptor_file,
+                            chain_id=receptor_chain,
+                            output_path=os.path.join(out_dir, f"{receptor_id}_chain_extracted.pdb"),
+                        )
+                        logger.info(
+                            f"  Strategy '{strategy}': extracted single chain -> {extracted}"
+                        )
+                        receptor_file = extracted
+                        result.receptor_source = "PDB_single_chain"
+                        result.receptor_name = os.path.basename(receptor_file)
+                        state["receptor_file"] = receptor_file
+                        state["receptor_source"] = result.receptor_source
+                        _save_state(out_dir, state)
+                    except Exception as exc:
+                        logger.warning(
+                            f"  Single-chain extraction failed: {exc}. "
+                            f"Falling back to multi-chain receptor."
+                        )
+                    break
+
+                elif strategy == "alphafold":
+                    try:
+                        from autodock.fetchers import download_alphafold
+                        from autodock.fetchers import _resolve_to_uniprot
+
+                        uniprot_id = _resolve_to_uniprot(receptor_id)
+                        if uniprot_id:
+                            af_file = download_alphafold(uniprot_id, out_dir, format="cif")
+                            logger.info(
+                                f"  Strategy '{strategy}': AlphaFold monomer -> {af_file}"
+                            )
+                            receptor_file = af_file
+                            result.receptor_source = "AlphaFold"
+                            result.receptor_name = os.path.basename(receptor_file)
+                            state["receptor_file"] = receptor_file
+                            state["receptor_source"] = result.receptor_source
+                            _save_state(out_dir, state)
+                        else:
+                            logger.warning(
+                                f"  Could not resolve UniProt ID for {receptor_id}; "
+                                f"skipping AlphaFold strategy."
+                            )
+                    except Exception as exc:
+                        logger.warning(
+                            f"  AlphaFold download failed: {exc}. "
+                            f"Falling back to multi-chain receptor."
+                        )
+                    break
+
+                else:
+                    logger.warning(f"  Unknown multichain_strategy: {strategy}")
 
     # ═══════════════════════════════════════════════════════════════════════
     # Step 2: Receptor preparation
@@ -530,6 +653,19 @@ def run_docking_workflow(
             logger.info(f"  Receptor PDBQT: {receptor_pdbqt}")
             state["step_2_complete"] = True
             _save_state(out_dir, state)
+
+            # Fallback: Open Babel path in prepare_receptor skips output_pdb writing.
+            # Generate a PDB from the original input so downstream PLIP/PoseBusters
+            # do not crash.  This is a temporary workaround for a prepare_receptor bug.
+            if not os.path.isfile(receptor_pdb_out):
+                try:
+                    from autodock.utils import obabel_convert
+
+                    obabel_convert(receptor_file, receptor_pdb_out, out_format="pdb")
+                    logger.info(f"  Receptor PDB fallback: {receptor_pdb_out}")
+                except Exception as _exc:
+                    logger.warning(f"  Receptor PDB fallback failed: {_exc}")
+
         except (OSError, RuntimeError, ValueError, ImportError) as exc:
             result.errors.append(f"Receptor preparation failed: {exc}")
             logger.error(f"  Receptor preparation failed: {exc}")
@@ -739,9 +875,13 @@ def run_docking_workflow(
                     if v is not None and not k.startswith("n_")
                 }
             )
+            _le = le_dict.get('le')
+            _le_rb = le_dict.get('le_rb')
+            _le_str = f"{_le:.3f}" if _le is not None else "N/A"
+            _le_rb_str = f"{_le_rb:.3f}" if _le_rb is not None else "N/A"
             logger.info(
-                f"  Ligand efficiency: LE={le_dict.get('le'):.3f}, "
-                f"LE_RB={le_dict.get('le_rb'):.3f}, MW={lig_metrics['molecular_weight']:.1f}"
+                f"  Ligand efficiency: LE={_le_str}, "
+                f"LE_RB={_le_rb_str}, MW={lig_metrics['molecular_weight']:.1f}"
             )
 
     # ═══════════════════════════════════════════════════════════════════════
