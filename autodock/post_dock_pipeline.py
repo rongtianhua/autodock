@@ -190,13 +190,22 @@ def post_process_docking(
                 pdf_path = os.path.join(fig_dir, f"3d_{scene_name}.pdf")
                 pse_path = os.path.join(fig_dir, f"session_{scene_name}.pse")
 
+                # For AlphaFold / SWISS-MODEL structures, use the original CIF
+                # (receptor_pdb_holo) to preserve pLDDT B-factors for coloring.
+                # PDBFixer strips B-factors during preparation, so the apo PDB
+                # (receptor_pdb) would show uniform grey.
+                _rec_for_render = receptor_pdb
+                if result.receptor_source in ("AlphaFold", "SWISS-MODEL") and receptor_pdb_holo:
+                    _rec_for_render = receptor_pdb_holo
+
                 kw = {
-                    "receptor_pdb": receptor_pdb,
+                    "receptor_pdb": _rec_for_render,
                     "ligand_pdbqt": result.best_pose_pdbqt,
                     "output_png": png_path,
                     "output_pdf": pdf_path,
                     "scene": scene_name,
                     "save_pse": pse_path,
+                    "receptor_source": result.receptor_source or "auto",
                 }
                 if scene_name in ("pocket", "interaction"):
                     kw["center"] = result.center

@@ -122,7 +122,8 @@ def _build_pymol_script(
     height: int = DEFAULT_RAY_HEIGHT,
     pocket_distance: float = 5.0,
     save_pse: str | None = None,
-    color_scheme: str = "publication_white",
+    color_scheme: str = "presentation_black",
+    receptor_source: str = "auto",
 ) -> str:
     """Build a PyMOL command script for publication-quality rendering.
 
@@ -131,13 +132,40 @@ def _build_pymol_script(
     color_scheme:
         One of ``publication_white`` (default), ``publication_grey``,
         ``presentation_black``.
+    receptor_source:
+        ``"AlphaFold"``, ``"PDB"``, ``"PDB_single_chain"``, or ``"file"``.
+        Determines protein coloring: AlphaFold → pLDDT (B-factor) rainbow;
+        PDB → chainbow (N→C blue→red).
     """
-    scheme = COLOR_SCHEMES.get(color_scheme, COLOR_SCHEMES["publication_white"])
+    scheme = COLOR_SCHEMES.get(color_scheme, COLOR_SCHEMES["presentation_black"])
+    is_af = receptor_source in ("AlphaFold", "SWISS-MODEL")
+    is_pdb = receptor_source in ("PDB", "PDB_single_chain", "file")
 
     lines: list[str] = []
     lines.append("cmd.delete('all')")
     lines.append(f'cmd.load("{receptor_pdb}", "receptor")')
+    lines.append("cmd.show('cartoon', 'receptor')")
+    lines.append("cmd.set('cartoon_side_chain_helper', 1)")
+    lines.append("cmd.set('cartoon_discrete_colors', 0)")
+
+    # Protein coloring based on source (BEFORE loading ligand to avoid PyMOL 3.x bug
+    # where loading a second object wipes selection-level spectrum coloring)
+    if is_af:
+        # AlphaFold pLDDT coloring via B-factor (pLDDT range 0-100)
+        # rainbow_rev palette: low B-factor (low confidence, pLDDT 0) → red/yellow,
+        #                      high B-factor (high confidence, pLDDT 100) → blue
+        lines.append(
+            "cmd.spectrum('b', 'rainbow_rev', 'receptor', minimum=0, maximum=100)"
+        )
+    else:
+        # PDB / crystal: chainbow (N-terminus blue → C-terminus red)
+        lines.append("cmd.spectrum('count', 'rainbow', 'receptor')")
+
+    # ── Load ligand AFTER spectrum ──
     lines.append(f'cmd.load("{ligand_pdbqt}", "ligand")')
+
+    # ── Viewport (must be set BEFORE ray) ──
+    lines.append(f"cmd.viewport({width}, {height})")
 
     # ── Background ──
     lines.append(f"cmd.bg_color('{scheme['bg']}')")
@@ -149,14 +177,19 @@ def _build_pymol_script(
         else:
             lines.append(f"cmd.set('{key}', {val})")
 
-    # ── Protein representation ──
-    lines.append("cmd.show('cartoon', 'receptor')")
-    lines.append(f"cmd.color('{scheme['receptor_c']}', 'receptor and elem C')")
-
-    # Cartoon transparency for pocket / interaction scenes
-    if scene in ("pocket", "interaction"):
-        t = scheme.get("receptor_transparency", 0.15)
-        lines.append(f"cmd.set('cartoon_transparency', {t}, 'receptor')")
+    # For interaction scene, use cartoon_transparency to dim non-pocket cartoon
+    # instead of cmd.hide which wipes distance objects in PyMOL 3.1.8
+    if scene == "interaction" and center:
+        lines.append(
+            "cmd.select('pocket_vis', 'byres (receptor within 15.0 of ligand)')"
+        )
+        lines.append("cmd.set('cartoon_transparency', 1.0, 'receptor and not pocket_vis')")
+        lines.append("cmd.set('cartoon_transparency', 0.2, 'pocket_vis')")
+    else:
+        # Cartoon transparency for pocket / interaction scenes
+        if scene in ("pocket", "interaction"):
+            t = scheme.get("receptor_transparency", 0.15)
+            lines.append(f"cmd.set('cartoon_transparency', {t}, 'receptor')")
 
     # ── Pocket surface ──
     if scene == "pocket" and center:
@@ -171,28 +204,62 @@ def _build_pymol_script(
         lines.append(f"cmd.color('{scheme['pocket_surface']}', 'pocket_surf and elem C')")
         lines.append("cmd.set('surface_quality', 2)")
 
-    # ── Ligand ──
+    # ── Ligand: ball-and-stick with publication CPK colors ──
+    # Carbon: grey (0x999999 ~ [0.6,0.6,0.6]), Oxygen: red, Nitrogen: blue,
+    # Sulfur: yellow, Chlorine: green, Bromine: brown, Phosphorus: purple, Fluorine: magenta
     lines.append("cmd.show('sticks', 'ligand')")
-    lines.append("cmd.set('stick_radius', 0.18, 'ligand')")
-    lines.append(f"cmd.color('{scheme['ligand_c']}', 'ligand and elem C')")
+    lines.append("cmd.show('spheres', 'ligand')")
+    lines.append("cmd.set('stick_radius', 0.15, 'ligand')")
+    lines.append("cmd.set('sphere_scale', 0.25, 'ligand')")
+    # Publication-standard CPK colors with grey carbon
+    lines.append("cmd.set_color('greyc', [0.6, 0.6, 0.6])")
+    lines.append("cmd.color('greyc', 'ligand and elem C')")
     lines.append("cmd.color('red', 'ligand and elem O')")
     lines.append("cmd.color('blue', 'ligand and elem N')")
     lines.append("cmd.color('yellow', 'ligand and elem S')")
+    lines.append("cmd.color('green', 'ligand and elem Cl')")
+    lines.append("cmd.color('brown', 'ligand and elem Br')")
+    lines.append("cmd.color('purple', 'ligand and elem P')")
+    lines.append("cmd.color('magenta', 'ligand and elem F')")
+    lines.append("cmd.set('sphere_quality', 3, 'ligand')")
+    lines.append("cmd.set('stick_quality', 3, 'ligand')")
 
-    # Ligand close-up: ball-and-stick for better atom visibility
-    if scene == "pocket":
-        lines.append("cmd.set('stick_radius', 0.22, 'ligand')")
-        lines.append("cmd.show('spheres', 'ligand and hetero')")
-        lines.append("cmd.set('sphere_scale', 0.25, 'ligand')")
-
-    # ── Interaction dashed lines ──
+    # ── Interaction dashed lines (CGO-based, PyMOL 3.x Open Source compatible) ──
     if scene == "interaction" and interactions and center:
-        dash = DASH_PRESETS["fine"]
-        lines.append(f"cmd.set('dash_gap', {dash['dash_gap']})")
-        lines.append(f"cmd.set('dash_radius', {dash['dash_radius']})")
-        lines.append(f"cmd.set('dash_length', {dash['dash_length']})")
-        lines.append(f"cmd.set('dash_as_cylinders', {int(dash['dash_as_cylinders'])})")
-
+        lines.append("python")
+        lines.append("from pymol import cmd")
+        lines.append("from pymol.cgo import CYLINDER")
+        lines.append("import math")
+        lines.append("")
+        lines.append("def _dashed_line(p1, p2, radius=0.08, dash_len=0.4, gap_len=0.2, color=(1.0, 0.5, 0.0)):")
+        lines.append("    dx, dy, dz = p2[0]-p1[0], p2[1]-p1[1], p2[2]-p1[2]")
+        lines.append("    total = math.sqrt(dx*dx + dy*dy + dz*dz)")
+        lines.append("    if total == 0: return []")
+        lines.append("    ux, uy, uz = dx/total, dy/total, dz/total")
+        lines.append("    cgo = []")
+        lines.append("    seg = dash_len + gap_len")
+        lines.append("    n = int(total / seg) + 1")
+        lines.append("    for i in range(n):")
+        lines.append("        s = i * seg")
+        lines.append("        e = min(s + dash_len, total)")
+        lines.append("        if s >= total: break")
+        lines.append("        sx = p1[0] + ux * s; sy = p1[1] + uy * s; sz = p1[2] + uz * s")
+        lines.append("        ex = p1[0] + ux * e; ey = p1[1] + uy * e; ez = p1[2] + uz * e")
+        lines.append("        cgo.extend([CYLINDER, sx, sy, sz, ex, ey, ez, radius,")
+        lines.append("                   color[0], color[1], color[2], color[0], color[1], color[2]])")
+        lines.append("    return cgo")
+        lines.append("")
+        # Color mapping from name to RGB tuple
+        color_map = {
+            "cyan": "(0.0, 1.0, 1.0)",
+            "orange": "(1.0, 0.5, 0.0)",
+            "green": "(0.0, 1.0, 0.0)",
+            "purple": "(1.0, 0.0, 1.0)",
+            "red": "(1.0, 0.0, 0.0)",
+            "yellow": "(1.0, 1.0, 0.0)",
+            "blue": "(0.0, 0.0, 1.0)",
+            "grey": "(0.5, 0.5, 0.5)",
+        }
         for idx, inter in enumerate(interactions):
             itype = inter.get("type", "")
             if itype not in INTERACTION_COLORS:
@@ -200,43 +267,70 @@ def _build_pymol_script(
             resn = inter.get("resn", "")
             resi = inter.get("resi", "")
             chain = inter.get("chain", "A")
-            atom = inter.get("atom", "CA")
+            color_name = INTERACTION_COLORS[itype]
+            color_rgb = color_map.get(color_name, "(1.0, 0.5, 0.0)")
+            prot_sel = f"receptor and resn {resn} and resi {resi} and chain {chain}"
+            lines.append(f"try:")
+            lines.append(f"    m1 = cmd.get_model('{prot_sel}')")
+            lines.append(f"    m2 = cmd.get_model('ligand')")
+            lines.append(f"    if m1.atom and m2.atom:")
+            lines.append(f"        dmin = 9999; pair = None")
+            lines.append(f"        for a in m1.atom:")
+            lines.append(f"            for b in m2.atom:")
+            lines.append(f"                d = cmd.get_distance(f'receptor and index {{a.index}}', f'ligand and index {{b.index}}')")
+            lines.append(f"                if d < dmin: dmin = d; pair = (a.coord, b.coord)")
+            lines.append(f"        if pair and dmin <= 4.5:")
+            lines.append(f"            obj = _dashed_line(pair[0], pair[1], radius=0.10, dash_len=0.4, gap_len=0.2, color={color_rgb})")
+            lines.append(f"            if obj:")
+            lines.append(f"                cmd.load_cgo(obj, 'int_{idx}')")
+            lines.append(f"                cmd.show('cgo', 'int_{idx}')")
+            lines.append("except: pass")
+        lines.append("python end")
 
-            pair_name = f"int_{idx}"
-            prot_sel = (
-                f"(receptor and resn {resn} and resi {resi} and chain {chain} and name {atom})"
-            )
-            lig_sel = "ligand"
-
-            lines.append(f"try: cmd.distance('{pair_name}', '{prot_sel}', '{lig_sel}')")
-            lines.append("except: pass")
-            lines.append(
-                f"try: cmd.set('dash_color', '{INTERACTION_COLORS[itype]}', '{pair_name}')"
-            )
-            lines.append("except: pass")
-            lines.append(f"try: cmd.set('dash_width', 2.0, '{pair_name}')")
-            lines.append("except: pass")
-            lines.append(f"try: cmd.hide('labels', '{pair_name}')")
-            lines.append("except: pass")
-
-    # ── Labels for interacting residues ──
+    # ── Labels for interacting residues (directional offset to avoid overlap) ──
     if scene == "interaction" and interactions:
-        # Label each residue individually to reduce PyMOL auto-layout overlap
-        label_color = scheme.get("label_c", "black")
+        label_color = scheme.get("label_c", "white")
+        # De-duplicate residues so each residue gets only one label
+        seen_residues: set[tuple[str, str, str]] = set()
         for idx, inter in enumerate(interactions):
             resn = inter.get("resn", "")
-            resi = inter.get("resi", "")
+            resi = str(inter.get("resi", ""))
             chain = inter.get("chain", "A")
             if not resi:
                 continue
+            res_key = (resn, resi, chain)
+            if res_key in seen_residues:
+                continue
+            seen_residues.add(res_key)
+
             lab_name = f"lab_{idx}"
             sel = f"(receptor and resn {resn} and resi {resi} and chain {chain} and name CA)"
+            pseudo = f"labpos_{idx}"
             lines.append("try:")
             lines.append(f"    cmd.select('{lab_name}', '{sel}')")
-            lines.append(f"    cmd.label('{lab_name}', '\"%s-%s\" % (resn, resi)')")
-            lines.append(f"    cmd.set('label_color', '{label_color}', '{lab_name}')")
-            lines.append(f"    cmd.set('label_size', -1.2, '{lab_name}')")
-            lines.append(f"    cmd.set('label_font_id', 7, '{lab_name}')")
+            # Create pseudoatom at CA
+            lines.append(f"    cmd.pseudoatom('{pseudo}', '{lab_name}')")
+            # Use directional offset based on residue position relative to ligand center
+            # to spread labels outward and reduce overlap
+            lines.append(f"    ca = cmd.get_model('{sel}').atom")
+            lines.append(f"    if ca:")
+            lines.append(f"        c = ca[0].coord")
+            lines.append(f"        com = cmd.get_extent('ligand')")
+            lines.append(f"        lig_c = [(com[0][i]+com[1][i])/2 for i in range(3)]")
+            lines.append(f"        dx = c[0] - lig_c[0]; dy = c[1] - lig_c[1]; dz = c[2] - lig_c[2]")
+            lines.append(f"        dist = math.sqrt(dx*dx + dy*dy + dz*dz)")
+            lines.append(f"        if dist > 0:")
+            lines.append(f"            # Normalize and scale offset to 4.0 Å outward from ligand")
+            lines.append(f"            scale = 4.0 / dist")
+            lines.append(f"            cmd.translate([dx*scale, dy*scale, dz*scale], '{pseudo}')")
+            lines.append(f"        else:")
+            lines.append(f"            cmd.translate([0, 0, 4.0], '{pseudo}')")
+            # Label with residue name, number and chain: e.g. LYS211(A)
+            lines.append(f"    cmd.label('{pseudo}', '\"{resn}{resi}({chain})\"')")
+            # Label style: white text, bold sans-serif
+            lines.append(f"    cmd.set('label_color', '{label_color}', '{pseudo}')")
+            lines.append(f"    cmd.set('label_size', 40, '{pseudo}')")
+            lines.append(f"    cmd.set('label_font_id', 10, '{pseudo}')")  # Sans-serif bold
             lines.append("except: pass")
 
     # ── Camera / viewport ──
@@ -244,15 +338,16 @@ def _build_pymol_script(
     if scene == "complex":
         lines.append("cmd.zoom('(receptor or ligand)', 5)")
     elif scene == "pocket":
-        lines.append("cmd.zoom('ligand', 8)")
+        lines.append("cmd.zoom('(receptor or ligand)', 3)")
         if center:
             cx, cy, cz = center
-            lines.append(f"cmd.origin(center=[{cx}, {cy}, {cz}])")
+            lines.append(f"cmd.origin([{cx}, {cy}, {cz}])")
     elif scene == "interaction":
-        lines.append("cmd.zoom('ligand', 6)")
+        # Zoom to ligand to crop away non-pocket cartoon and reduce clutter
+        lines.append("cmd.zoom('ligand', 2)")
         if center:
             cx, cy, cz = center
-            lines.append(f"cmd.origin(center=[{cx}, {cy}, {cz}])")
+            lines.append(f"cmd.origin([{cx}, {cy}, {cz}])")
     else:
         lines.append("cmd.center('ligand')")
 
@@ -260,8 +355,12 @@ def _build_pymol_script(
     # Mode 1 adds black outlines which can look cartoonish;
     # mode 0 with antialias=3 gives the cleanest publication look.
     lines.append("cmd.set('ray_trace_mode', 0)")
+    # Additional quality settings for crisp edges
+    lines.append("cmd.set('ray_trace_color', 'black')")
+    lines.append("cmd.set('ray_trace_disco_factor', 1.0)")
 
     # ── Render ──
+    # viewport must be set before ray(); cmd.png with ray=1 triggers ray-tracing
     lines.append(f"cmd.ray({width}, {height})")
     lines.append(f'cmd.png("{output_png}", dpi={DEFAULT_DPI}, ray=1)')
     if save_pse:
@@ -282,7 +381,8 @@ def render_scene_pymol(
     width: int = DEFAULT_RAY_WIDTH,
     height: int = DEFAULT_RAY_HEIGHT,
     save_pse: str | None = None,
-    color_scheme: str = "publication_white",
+    color_scheme: str = "presentation_black",
+    receptor_source: str = "auto",
 ) -> str:
     """
     Render a 3D scene using PyMOL CLI.
@@ -294,11 +394,13 @@ def render_scene_pymol(
         scene: 'complex' | 'pocket' | 'interaction' | 'ligand_closeup'.
         center: Pocket center for camera positioning.
         interactions: List of interaction dicts (for 'interaction' scene).
-        width: Image width in pixels.
-        height: Image height in pixels.
+        width: Image width in pixels (default 2400).
+        height: Image height in pixels (default 1800).
         save_pse: Optional path to save a PyMOL session (.pse) file.
-        color_scheme: Colour preset — ``publication_white`` (default),
-            ``publication_grey``, or ``presentation_black``.
+        color_scheme: Colour preset — ``presentation_black`` (default),
+            ``publication_white``, or ``publication_grey``.
+        receptor_source: ``"AlphaFold"``, ``"PDB"``, ``"PDB_single_chain"``,
+            or ``"file"``. Determines protein coloring.
 
     Returns:
         Path to output PNG.
@@ -323,6 +425,7 @@ def render_scene_pymol(
         height=height,
         save_pse=save_pse,
         color_scheme=color_scheme,
+        receptor_source=receptor_source,
     )
 
     fd, script_path = tempfile.mkstemp(suffix=".pml")

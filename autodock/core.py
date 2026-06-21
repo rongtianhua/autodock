@@ -242,15 +242,26 @@ def find_p2rank() -> str | None:
 
 
 def find_pymol() -> str | None:
-    """Locate PyMOL executable (CLI)."""
+    """Locate PyMOL executable (CLI).
+
+    Priority:
+    1. macOS Schrödinger PyMOL (Incentive / Academic) — better ray-tracing quality.
+    2. Conda environment PyMOL (Open Source fallback).
+    3. Any ``pymol`` on PATH.
+    """
+    # macOS Schrodinger PyMOL (Incentive / Academic edition)
+    schrodinger = "/Applications/PyMOL.app/Contents/bin/pymol"
+    if os.path.isfile(schrodinger) and os.access(schrodinger, os.X_OK):
+        return schrodinger
+    # Fallback to conda Open Source
     if CONDA_PREFIX:
         candidate = os.path.join(CONDA_PREFIX, "bin", "pymol")
         if os.path.isfile(candidate) and os.access(candidate, os.X_OK):
             return candidate
-    # macOS Schrodinger PyMOL
-    schrodinger = "/Applications/PyMOL.app/Contents/MacOS/PyMOL"
-    if os.path.isfile(schrodinger) and os.access(schrodinger, os.X_OK):
-        return schrodinger
+    # Also try the old MacOS wrapper path
+    schrodinger_wrapper = "/Applications/PyMOL.app/Contents/MacOS/PyMOL"
+    if os.path.isfile(schrodinger_wrapper) and os.access(schrodinger_wrapper, os.X_OK):
+        return schrodinger_wrapper
     return shutil.which("pymol")
 
 
