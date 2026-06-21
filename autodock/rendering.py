@@ -139,7 +139,6 @@ def _build_pymol_script(
     """
     scheme = COLOR_SCHEMES.get(color_scheme, COLOR_SCHEMES["presentation_black"])
     is_af = receptor_source in ("AlphaFold", "SWISS-MODEL")
-    is_pdb = receptor_source in ("PDB", "PDB_single_chain", "file")
 
     lines: list[str] = []
     lines.append("cmd.delete('all')")
@@ -154,9 +153,7 @@ def _build_pymol_script(
         # AlphaFold pLDDT coloring via B-factor (pLDDT range 0-100)
         # rainbow_rev palette: low B-factor (low confidence, pLDDT 0) → red/yellow,
         #                      high B-factor (high confidence, pLDDT 100) → blue
-        lines.append(
-            "cmd.spectrum('b', 'rainbow_rev', 'receptor', minimum=0, maximum=100)"
-        )
+        lines.append("cmd.spectrum('b', 'rainbow_rev', 'receptor', minimum=0, maximum=100)")
     else:
         # PDB / crystal: chainbow (N-terminus blue → C-terminus red)
         lines.append("cmd.spectrum('count', 'rainbow', 'receptor')")
@@ -180,9 +177,7 @@ def _build_pymol_script(
     # For interaction scene, use cartoon_transparency to dim non-pocket cartoon
     # instead of cmd.hide which wipes distance objects in PyMOL 3.1.8
     if scene == "interaction" and center:
-        lines.append(
-            "cmd.select('pocket_vis', 'byres (receptor within 15.0 of ligand)')"
-        )
+        lines.append("cmd.select('pocket_vis', 'byres (receptor within 15.0 of ligand)')")
         lines.append("cmd.set('cartoon_transparency', 1.0, 'receptor and not pocket_vis')")
         lines.append("cmd.set('cartoon_transparency', 0.2, 'pocket_vis')")
     else:
@@ -231,7 +226,9 @@ def _build_pymol_script(
         lines.append("from pymol.cgo import CYLINDER")
         lines.append("import math")
         lines.append("")
-        lines.append("def _dashed_line(p1, p2, radius=0.08, dash_len=0.4, gap_len=0.2, color=(1.0, 0.5, 0.0)):")
+        lines.append(
+            "def _dashed_line(p1, p2, radius=0.08, dash_len=0.4, gap_len=0.2, color=(1.0, 0.5, 0.0)):"
+        )
         lines.append("    dx, dy, dz = p2[0]-p1[0], p2[1]-p1[1], p2[2]-p1[2]")
         lines.append("    total = math.sqrt(dx*dx + dy*dy + dz*dz)")
         lines.append("    if total == 0: return []")
@@ -246,7 +243,9 @@ def _build_pymol_script(
         lines.append("        sx = p1[0] + ux * s; sy = p1[1] + uy * s; sz = p1[2] + uz * s")
         lines.append("        ex = p1[0] + ux * e; ey = p1[1] + uy * e; ez = p1[2] + uz * e")
         lines.append("        cgo.extend([CYLINDER, sx, sy, sz, ex, ey, ez, radius,")
-        lines.append("                   color[0], color[1], color[2], color[0], color[1], color[2]])")
+        lines.append(
+            "                   color[0], color[1], color[2], color[0], color[1], color[2]])"
+        )
         lines.append("    return cgo")
         lines.append("")
         # Color mapping from name to RGB tuple
@@ -270,18 +269,22 @@ def _build_pymol_script(
             color_name = INTERACTION_COLORS[itype]
             color_rgb = color_map.get(color_name, "(1.0, 0.5, 0.0)")
             prot_sel = f"receptor and resn {resn} and resi {resi} and chain {chain}"
-            lines.append(f"try:")
+            lines.append("try:")
             lines.append(f"    m1 = cmd.get_model('{prot_sel}')")
-            lines.append(f"    m2 = cmd.get_model('ligand')")
-            lines.append(f"    if m1.atom and m2.atom:")
-            lines.append(f"        dmin = 9999; pair = None")
-            lines.append(f"        for a in m1.atom:")
-            lines.append(f"            for b in m2.atom:")
-            lines.append(f"                d = cmd.get_distance(f'receptor and index {{a.index}}', f'ligand and index {{b.index}}')")
-            lines.append(f"                if d < dmin: dmin = d; pair = (a.coord, b.coord)")
-            lines.append(f"        if pair and dmin <= 4.5:")
-            lines.append(f"            obj = _dashed_line(pair[0], pair[1], radius=0.10, dash_len=0.4, gap_len=0.2, color={color_rgb})")
-            lines.append(f"            if obj:")
+            lines.append("    m2 = cmd.get_model('ligand')")
+            lines.append("    if m1.atom and m2.atom:")
+            lines.append("        dmin = 9999; pair = None")
+            lines.append("        for a in m1.atom:")
+            lines.append("            for b in m2.atom:")
+            lines.append(
+                "                d = cmd.get_distance(f'receptor and index {a.index}', f'ligand and index {b.index}')"
+            )
+            lines.append("                if d < dmin: dmin = d; pair = (a.coord, b.coord)")
+            lines.append("        if pair and dmin <= 4.5:")
+            lines.append(
+                f"            obj = _dashed_line(pair[0], pair[1], radius=0.10, dash_len=0.4, gap_len=0.2, color={color_rgb})"
+            )
+            lines.append("            if obj:")
             lines.append(f"                cmd.load_cgo(obj, 'int_{idx}')")
             lines.append(f"                cmd.show('cgo', 'int_{idx}')")
             lines.append("except: pass")
@@ -313,17 +316,17 @@ def _build_pymol_script(
             # Use directional offset based on residue position relative to ligand center
             # to spread labels outward and reduce overlap
             lines.append(f"    ca = cmd.get_model('{sel}').atom")
-            lines.append(f"    if ca:")
-            lines.append(f"        c = ca[0].coord")
-            lines.append(f"        com = cmd.get_extent('ligand')")
-            lines.append(f"        lig_c = [(com[0][i]+com[1][i])/2 for i in range(3)]")
-            lines.append(f"        dx = c[0] - lig_c[0]; dy = c[1] - lig_c[1]; dz = c[2] - lig_c[2]")
-            lines.append(f"        dist = math.sqrt(dx*dx + dy*dy + dz*dz)")
-            lines.append(f"        if dist > 0:")
-            lines.append(f"            # Normalize and scale offset to 4.0 Å outward from ligand")
-            lines.append(f"            scale = 4.0 / dist")
+            lines.append("    if ca:")
+            lines.append("        c = ca[0].coord")
+            lines.append("        com = cmd.get_extent('ligand')")
+            lines.append("        lig_c = [(com[0][i]+com[1][i])/2 for i in range(3)]")
+            lines.append("        dx = c[0] - lig_c[0]; dy = c[1] - lig_c[1]; dz = c[2] - lig_c[2]")
+            lines.append("        dist = math.sqrt(dx*dx + dy*dy + dz*dz)")
+            lines.append("        if dist > 0:")
+            lines.append("            # Normalize and scale offset to 4.0 Å outward from ligand")
+            lines.append("            scale = 4.0 / dist")
             lines.append(f"            cmd.translate([dx*scale, dy*scale, dz*scale], '{pseudo}')")
-            lines.append(f"        else:")
+            lines.append("        else:")
             lines.append(f"            cmd.translate([0, 0, 4.0], '{pseudo}')")
             # Label with residue name, number and chain: e.g. LYS211(A)
             lines.append(f"    cmd.label('{pseudo}', '\"{resn}{resi}({chain})\"')")
