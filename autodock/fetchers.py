@@ -1137,7 +1137,13 @@ def fetch_zinc_smiles(zinc_id: str, timeout: int = 15) -> str | None:
             if smi:
                 logger.info(f"Resolved ZINC SMILES from {url}")
                 return smi
-        except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError, json.JSONDecodeError):
+        except (
+            urllib.error.URLError,
+            urllib.error.HTTPError,
+            TimeoutError,
+            json.JSONDecodeError,
+            ConnectionError,
+        ):
             continue
 
     # Attempt 2: CartBlanche text endpoint (experimental)

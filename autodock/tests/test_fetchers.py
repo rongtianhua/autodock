@@ -1017,8 +1017,10 @@ class TestFetchZinc:
         mock_json.return_value = {"smiles": "CCO"}
         assert fetchers.fetch_zinc_smiles("ZINC1") == "CCO"
 
+    @patch("autodock.fetchers._http_get_json")
     @patch("autodock.fetchers._http_get_text")
-    def test_fetch_zinc_smiles_text(self, mock_text):
+    def test_fetch_zinc_smiles_text(self, mock_text, mock_json):
+        mock_json.return_value = {}  # JSON endpoint returns no smiles
         mock_text.return_value = "ZINC1\tCCO\n"
         assert fetchers.fetch_zinc_smiles("ZINC1") == "CCO"
 
