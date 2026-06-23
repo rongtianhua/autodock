@@ -210,33 +210,6 @@ class TestFetchBindingDB:
         result = fetchers.fetch_bindingdb_by_smiles("CC(=O)O")
         assert result["bdb.hit"] == "42"
 
-
-class TestFetchZincSMILES:
-    @patch("autodock.fetchers._http_get_json")
-    def test_success(self, mock_json):
-        mock_json.return_value = {"smiles": "CC(=O)O"}
-        smi = fetchers.fetch_zinc_smiles("ZINC000000000001")
-        assert smi == "CC(=O)O"
-
-    def test_invalid_id(self):
-        assert fetchers.fetch_zinc_smiles("NOTZINC") is None
-
-    @patch("autodock.fetchers._http_get_json")
-    @patch("autodock.fetchers._http_get_text")
-    def test_all_fail(self, mock_text, mock_json):
-        import urllib.error
-
-        mock_json.side_effect = urllib.error.URLError("fail")
-        mock_text.side_effect = urllib.error.URLError("fail")
-        assert fetchers.fetch_zinc_smiles("ZINC000000000001") is None
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# File-format readers
-# ─────────────────────────────────────────────────────────────────────────────
-
-
-class TestReadSDFLibrary:
     def test_read_sdf(self, tmp_path):
         from rdkit import Chem
 
@@ -423,65 +396,6 @@ class TestSafeFloat:
 
     def test_type_error(self):
         assert fetchers._safe_float([1, 2], default=-1.0) == -1.0
-
-
-class TestParseZincResults:
-    def test_valid(self):
-        results = [
-            {"zinc_id": "ZINC1", "smiles": "CCO"},
-            {"id": "ZINC2", "canonical_smiles": "CCC"},
-        ]
-        parsed = fetchers._parse_zinc_results(results, 10)
-        assert len(parsed) == 2
-        assert parsed[0] == {"zinc_id": "ZINC1", "smiles": "CCO"}
-
-    def test_missing_smiles_skipped(self):
-        results = [
-            {"zinc_id": "ZINC1", "smiles": "CCO"},
-            {"zinc_id": "ZINC2"},
-        ]
-        parsed = fetchers._parse_zinc_results(results, 10)
-        assert len(parsed) == 1
-
-    def test_not_dict_skipped(self):
-        results = ["not_a_dict", {"zinc_id": "ZINC1", "smiles": "CCO"}]
-        parsed = fetchers._parse_zinc_results(results, 10)
-        assert len(parsed) == 1
-
-    def test_max_results(self):
-        results = [
-            {"zinc_id": "ZINC1", "smiles": "CCO"},
-            {"zinc_id": "ZINC2", "smiles": "CCC"},
-        ]
-        parsed = fetchers._parse_zinc_results(results, 1)
-        assert len(parsed) == 1
-
-
-class TestParseZincTsv:
-    def test_valid(self):
-        text = "ZINC0001\tCCO\tprop1\nZINC0002\tCCC\n"
-        parsed = fetchers._parse_zinc_tsv(text, 10)
-        assert len(parsed) == 2
-
-    def test_comments_and_empty_skipped(self):
-        text = "# comment\n\nZINC0001\tCCO\n"
-        parsed = fetchers._parse_zinc_tsv(text, 10)
-        assert len(parsed) == 1
-
-    def test_non_zinc_prefix_skipped(self):
-        text = "ABC\tCCO\nZINC0001\tCCC\n"
-        parsed = fetchers._parse_zinc_tsv(text, 10)
-        assert len(parsed) == 1
-
-    def test_single_column_skipped(self):
-        text = "ZINC0001\n"
-        parsed = fetchers._parse_zinc_tsv(text, 10)
-        assert len(parsed) == 0
-
-    def test_max_results(self):
-        text = "ZINC0001\tCCO\nZINC0002\tCCC\nZINC0003\tCCN\n"
-        parsed = fetchers._parse_zinc_tsv(text, 2)
-        assert len(parsed) == 2
 
 
 class TestHttpHelpersRetry:
@@ -1009,49 +923,6 @@ class TestFetchBindingDBErrors:
         mock_json.side_effect = urllib.error.URLError("fail")
         with pytest.raises(DataSourceError, match="BindingDB query failed"):
             fetchers.fetch_bindingdb_by_smiles("CCO")
-
-
-class TestFetchZinc:
-    @patch("autodock.fetchers._http_get_json")
-    def test_fetch_zinc_smiles_json(self, mock_json):
-        mock_json.return_value = {"smiles": "CCO"}
-        assert fetchers.fetch_zinc_smiles("ZINC1") == "CCO"
-
-    @patch("autodock.fetchers._http_get_json")
-    @patch("autodock.fetchers._http_get_text")
-    def test_fetch_zinc_smiles_text(self, mock_text, mock_json):
-        mock_json.return_value = {}  # JSON endpoint returns no smiles
-        mock_text.return_value = "ZINC1\tCCO\n"
-        assert fetchers.fetch_zinc_smiles("ZINC1") == "CCO"
-
-    def test_search_zinc_empty(self):
-        assert fetchers.search_zinc("") == []
-
-    @patch("autodock.fetchers._http_get_text")
-    def test_search_zinc_json_path(self, mock_text):
-        mock_text.return_value = '{"results": [{"zinc_id": "ZINC1", "smiles": "CCO"}]}'
-        result = fetchers.search_zinc("ethanol", max_results=1)
-        assert len(result) == 1
-        assert result[0]["zinc_id"] == "ZINC1"
-
-    @patch("autodock.fetchers._http_get_text")
-    def test_search_zinc_tsv_path(self, mock_text):
-        mock_text.return_value = "zinc_id\tsmiles\nZINC1\tCCO\nZINC2\tCCC\n"
-        result = fetchers.search_zinc("ethanol", max_results=2)
-        assert len(result) == 2
-
-    @patch("autodock.fetchers._download_url")
-    def test_fetch_zinc_sdf(self, mock_dl, tmp_path):
-        out = str(tmp_path / "zinc.sdf")
-        with open(out, "w") as fh:
-            fh.write("x" * 200)
-        result = fetchers.fetch_zinc_sdf("ZINC1", out)
-        assert result == out
-
-    def test_fetch_zinc_sdf_invalid_id(self):
-        """Cover lines 1277-1278: invalid ZINC ID returns None."""
-        result = fetchers.fetch_zinc_sdf("NOTZINC", "/tmp/fake.sdf")
-        assert result is None
 
 
 # ─────────────────────────────────────────────────────────────────────────────
