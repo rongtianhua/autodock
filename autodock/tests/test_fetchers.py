@@ -815,9 +815,21 @@ class TestFetchPubchem:
 
     @patch("autodock.fetchers._http_get_json")
     def test_fetch_pubchem_smiles_connection_error(self, mock_json):
+        mock_pcp = MagicMock()
+        mock_pcp.get_compounds.side_effect = ConnectionError("remote disconnected")
         mock_json.side_effect = ConnectionError("remote disconnected")
-        with pytest.raises(DataSourceError, match="PubChem lookup failed"):
-            fetchers.fetch_pubchem_smiles("aspirin")
+        with patch.dict("sys.modules", {"pubchempy": mock_pcp}):
+            with pytest.raises(DataSourceError, match="PubChem lookup failed"):
+                fetchers.fetch_pubchem_smiles("aspirin")
+
+    def test_fetch_pubchem_smiles_connection_error_fallback(self):
+        mock_pcp = MagicMock()
+        mock_pcp.get_compounds.side_effect = ImportError("no pubchempy")
+        with patch.dict("sys.modules", {"pubchempy": mock_pcp}):
+            with patch("autodock.fetchers._http_get_json") as mock_json:
+                mock_json.side_effect = ConnectionError("remote disconnected")
+                with pytest.raises(DataSourceError, match="PubChem lookup failed"):
+                    fetchers.fetch_pubchem_smiles("aspirin")
 
 
 class TestFetchCompoundSDF:
