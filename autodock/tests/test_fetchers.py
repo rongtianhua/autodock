@@ -882,7 +882,9 @@ class TestFetchCompoundSDF:
                         mock_embed.return_value = 0
                         with patch("rdkit.Chem.AllChem.MMFFOptimizeMolecule") as mock_mmff:
                             mock_mmff.return_value = 0
-                            with pytest.raises(DataSourceError, match="failed to produce any conformer"):
+                            with pytest.raises(
+                                DataSourceError, match="failed to produce any conformer"
+                            ):
                                 fetchers.fetch_compound_sdf_by_name("ethanol", out)
 
 

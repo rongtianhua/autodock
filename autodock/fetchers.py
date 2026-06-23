@@ -40,9 +40,7 @@ def _is_retryable(exc: BaseException) -> bool:
     """Return True for transient HTTP / network errors worth retrying."""
     if isinstance(exc, urllib.error.HTTPError):
         return exc.code in (429, 502, 503, 504)
-    return isinstance(
-        exc, (urllib.error.URLError, ConnectionError, TimeoutError, OSError)
-    )
+    return isinstance(exc, (urllib.error.URLError, ConnectionError, TimeoutError, OSError))
 
 
 def _http_get_json(url: str, timeout: int = 30) -> Any:
@@ -58,7 +56,7 @@ def _http_get_json(url: str, timeout: int = 30) -> Any:
             if attempt < 2 and _is_retryable(exc):
                 import time
 
-                time.sleep(2.0 ** attempt)
+                time.sleep(2.0**attempt)
                 continue
             raise
     raise last_exc  # pragma: no cover
@@ -77,7 +75,7 @@ def _http_get_text(url: str, timeout: int = 30) -> str:
             if attempt < 2 and _is_retryable(exc):
                 import time
 
-                time.sleep(2.0 ** attempt)
+                time.sleep(2.0**attempt)
                 continue
             raise
     raise last_exc  # pragma: no cover
@@ -98,7 +96,7 @@ def _download_url(url: str, out_path: str, timeout: int = 60) -> None:
             if attempt < 2 and _is_retryable(exc):
                 import time
 
-                time.sleep(2.0 ** attempt)
+                time.sleep(2.0**attempt)
                 continue
             raise StructureFetchError(f"Download failed: {url} -> {exc}")
     else:
@@ -1003,7 +1001,13 @@ def fetch_chembl_by_target(
                 target_name = tgt.get("pref_name") or target_query
                 logger.info(f"ChEMBL: resolved '{target_query}' → {target_id} ({target_name})")
                 break
-        except (urllib.error.URLError, urllib.error.HTTPError, ConnectionError, TimeoutError, json.JSONDecodeError):
+        except (
+            urllib.error.URLError,
+            urllib.error.HTTPError,
+            ConnectionError,
+            TimeoutError,
+            json.JSONDecodeError,
+        ):
             continue
 
     if not target_id:
@@ -1072,7 +1076,13 @@ def fetch_chembl_by_target(
                 entry["target_id"] = target_id
                 entry["target_name"] = target_name
                 results.append(entry)
-        except (urllib.error.URLError, urllib.error.HTTPError, ConnectionError, TimeoutError, json.JSONDecodeError):
+        except (
+            urllib.error.URLError,
+            urllib.error.HTTPError,
+            ConnectionError,
+            TimeoutError,
+            json.JSONDecodeError,
+        ):
             logger.warning(f"ChEMBL: failed to fetch SMILES for {mol_id}, skipping")
             continue
 
