@@ -3,7 +3,7 @@ autodock.fetchers — Unified structure and compound data fetchers.
 ===============================================================
 Programmatic access to protein structure databases (RCSB PDB,
 AlphaFold DB, SWISS-MODEL, ESM Atlas) and chemical databases
-(PubChem, ChEMBL, BindingDB, ZINC, PDB Ligand Expo).
+(PubChem, ChEMBL, BindingDB, PDB Ligand Expo).
 
 All functions follow a uniform pattern:
   * Accept an identifier and output directory / path.
@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -39,7 +40,9 @@ def _is_retryable(exc: BaseException) -> bool:
     """Return True for transient HTTP / network errors worth retrying."""
     if isinstance(exc, urllib.error.HTTPError):
         return exc.code in (429, 502, 503, 504)
-    return isinstance(exc, (urllib.error.URLError, TimeoutError, OSError))
+    return isinstance(
+        exc, (urllib.error.URLError, ConnectionError, TimeoutError, OSError)
+    )
 
 
 def _http_get_json(url: str, timeout: int = 30) -> Any:
@@ -55,7 +58,7 @@ def _http_get_json(url: str, timeout: int = 30) -> Any:
             if attempt < 2 and _is_retryable(exc):
                 import time
 
-                time.sleep(1.5**attempt)
+                time.sleep(2.0 ** attempt)
                 continue
             raise
     raise last_exc  # pragma: no cover
@@ -74,7 +77,7 @@ def _http_get_text(url: str, timeout: int = 30) -> str:
             if attempt < 2 and _is_retryable(exc):
                 import time
 
-                time.sleep(1.5**attempt)
+                time.sleep(2.0 ** attempt)
                 continue
             raise
     raise last_exc  # pragma: no cover
@@ -85,14 +88,17 @@ def _download_url(url: str, out_path: str, timeout: int = 60) -> None:
     last_exc: BaseException | None = None
     for attempt in range(3):
         try:
-            urllib.request.urlretrieve(url, out_path)
+            req = urllib.request.Request(url)
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                with open(out_path, "wb") as fh:
+                    shutil.copyfileobj(resp, fh)
             break
         except Exception as exc:  # noqa: BLE001
             last_exc = exc
             if attempt < 2 and _is_retryable(exc):
                 import time
 
-                time.sleep(1.5**attempt)
+                time.sleep(2.0 ** attempt)
                 continue
             raise StructureFetchError(f"Download failed: {url} -> {exc}")
     else:
@@ -787,6 +793,7 @@ def fetch_pubchem_smiles(query: str) -> str:
         AttributeError,
         urllib.error.URLError,
         urllib.error.HTTPError,
+        ConnectionError,
         TimeoutError,
     ):
         pass
@@ -805,6 +812,7 @@ def fetch_pubchem_smiles(query: str) -> str:
     except (
         urllib.error.URLError,
         urllib.error.HTTPError,
+        ConnectionError,
         TimeoutError,
         json.JSONDecodeError,
         KeyError,
@@ -857,6 +865,7 @@ def fetch_compound_sdf_by_name(name: str, output_path: str) -> str:
         AttributeError,
         urllib.error.URLError,
         urllib.error.HTTPError,
+        ConnectionError,
         TimeoutError,
     ):
         pass
@@ -870,8 +879,12 @@ def fetch_compound_sdf_by_name(name: str, output_path: str) -> str:
     if mol is None:
         raise DataSourceError(f"Could not generate 3D for '{name}' from SMILES")
     mol = Chem.AddHs(mol)
-    AllChem.EmbedMolecule(mol, AllChem.ETKDGv3())
-    AllChem.MMFFOptimizeMolecule(mol)
+    if AllChem.EmbedMolecule(mol, AllChem.ETKDGv3()) == -1:
+        raise DataSourceError(f"RDKit ETKDG failed to generate 3D conformer for '{name}'")
+    if AllChem.MMFFOptimizeMolecule(mol) == -1:
+        logger.warning(f"MMFF optimization failed for '{name}', using unoptimized conformer")
+    if mol.GetNumConformers() == 0:
+        raise DataSourceError(f"RDKit failed to produce any conformer for '{name}'")
     writer = Chem.SDWriter(str(output_path))
     writer.write(mol)
     writer.close()
@@ -905,6 +918,7 @@ def fetch_chembl_smiles(chembl_id: str) -> str:
     except (
         urllib.error.URLError,
         urllib.error.HTTPError,
+        ConnectionError,
         TimeoutError,
         json.JSONDecodeError,
     ) as exc:
@@ -989,7 +1003,7 @@ def fetch_chembl_by_target(
                 target_name = tgt.get("pref_name") or target_query
                 logger.info(f"ChEMBL: resolved '{target_query}' → {target_id} ({target_name})")
                 break
-        except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError, json.JSONDecodeError):
+        except (urllib.error.URLError, urllib.error.HTTPError, ConnectionError, TimeoutError, json.JSONDecodeError):
             continue
 
     if not target_id:
@@ -1013,6 +1027,7 @@ def fetch_chembl_by_target(
     except (
         urllib.error.URLError,
         urllib.error.HTTPError,
+        ConnectionError,
         TimeoutError,
         json.JSONDecodeError,
     ) as exc:
@@ -1057,7 +1072,8 @@ def fetch_chembl_by_target(
                 entry["target_id"] = target_id
                 entry["target_name"] = target_name
                 results.append(entry)
-        except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError, json.JSONDecodeError):
+        except (urllib.error.URLError, urllib.error.HTTPError, ConnectionError, TimeoutError, json.JSONDecodeError):
+            logger.warning(f"ChEMBL: failed to fetch SMILES for {mol_id}, skipping")
             continue
 
     logger.info(
@@ -1070,7 +1086,7 @@ def fetch_chembl_by_target(
 def fetch_bindingdb_by_smiles(
     smiles: str,
     *,
-    affinity_cutoff: float = 0.85,
+    affinity_cutoff: float = 6.0,
     timeout: int = 30,
 ) -> dict[str, Any]:
     """
@@ -1078,7 +1094,7 @@ def fetch_bindingdb_by_smiles(
 
     Args:
         smiles: Canonical SMILES string.
-        affinity_cutoff: Affinity cutoff (pKi / pIC50).
+        affinity_cutoff: Affinity cutoff (pKi / pIC50).  Default ``6.0`` ≈ 1 µM.
         timeout: HTTP timeout in seconds.
 
     Returns:
@@ -1100,6 +1116,7 @@ def fetch_bindingdb_by_smiles(
     except (
         urllib.error.URLError,
         urllib.error.HTTPError,
+        ConnectionError,
         TimeoutError,
         json.JSONDecodeError,
     ) as exc:

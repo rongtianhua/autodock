@@ -307,50 +307,70 @@ class TestHttpHelpers:
         with pytest.raises(urllib.error.HTTPError):
             fetchers._http_get_text("https://example.com/text")
 
-    @patch("autodock.fetchers.urllib.request.urlretrieve")
-    def test_download_url_success(self, mock_urlretrieve, tmp_path):
+    @patch("autodock.fetchers.urllib.request.urlopen")
+    def test_download_url_success(self, mock_urlopen, tmp_path):
+        mock_resp = MagicMock()
+        mock_resp.read.side_effect = [b"x" * 100, b""]
+        mock_urlopen.return_value.__enter__ = MagicMock(return_value=mock_resp)
+        mock_urlopen.return_value.__exit__ = MagicMock(return_value=False)
         out = str(tmp_path / "out.txt")
-        with open(out, "w") as fh:
-            fh.write("x" * 100)
         fetchers._download_url("https://example.com/file", out)
-        mock_urlretrieve.assert_called_once()
+        mock_urlopen.assert_called_once()
 
-    @patch("autodock.fetchers.urllib.request.urlretrieve")
-    def test_download_url_too_small(self, mock_urlretrieve, tmp_path):
+    @patch("autodock.fetchers.urllib.request.urlopen")
+    def test_download_url_too_small(self, mock_urlopen, tmp_path):
+        mock_resp = MagicMock()
+        mock_resp.read.side_effect = [b"x" * 10, b""]
+        mock_urlopen.return_value.__enter__ = MagicMock(return_value=mock_resp)
+        mock_urlopen.return_value.__exit__ = MagicMock(return_value=False)
         out = str(tmp_path / "out.txt")
-        with open(out, "w") as fh:
-            fh.write("x" * 10)
         with pytest.raises(StructureFetchError, match="too small"):
             fetchers._download_url("https://example.com/file", out)
 
-    @patch("autodock.fetchers.urllib.request.urlretrieve")
-    def test_download_url_html(self, mock_urlretrieve, tmp_path):
+    @patch("autodock.fetchers.urllib.request.urlopen")
+    def test_download_url_html(self, mock_urlopen, tmp_path):
+        mock_resp = MagicMock()
+        mock_resp.read.side_effect = [b"<!DOCTYPE html><html>...</html>" + b"x" * 100, b""]
+        mock_urlopen.return_value.__enter__ = MagicMock(return_value=mock_resp)
+        mock_urlopen.return_value.__exit__ = MagicMock(return_value=False)
         out = str(tmp_path / "out.txt")
-        with open(out, "w") as fh:
-            fh.write("<!DOCTYPE html><html>...</html>" + "x" * 100)
         with pytest.raises(StructureFetchError, match="HTML instead"):
             fetchers._download_url("https://example.com/file", out)
 
-    @patch("autodock.fetchers.urllib.request.urlretrieve")
-    def test_download_url_error(self, mock_urlretrieve):
+    @patch("autodock.fetchers.urllib.request.urlopen")
+    def test_download_url_error(self, mock_urlopen):
         import urllib.error
 
-        mock_urlretrieve.side_effect = urllib.error.URLError("fail")
+        mock_urlopen.side_effect = urllib.error.URLError("fail")
         with pytest.raises(StructureFetchError, match="Download failed"):
             fetchers._download_url("https://example.com/file", "/tmp/out.txt")
 
-    @patch("autodock.fetchers.urllib.request.urlretrieve")
-    def test_download_url_retryable_then_fail(self, mock_urlretrieve):
+    @patch("autodock.fetchers.urllib.request.urlopen")
+    def test_download_url_retryable_then_fail(self, mock_urlopen):
         import urllib.error
 
-        mock_urlretrieve.side_effect = [
+        mock_urlopen.side_effect = [
             urllib.error.HTTPError("url", 503, "Service Unavailable", {}, None),
             urllib.error.HTTPError("url", 502, "Bad Gateway", {}, None),
             urllib.error.URLError("fail"),
         ]
         with pytest.raises(StructureFetchError, match="Download failed"):
             fetchers._download_url("https://example.com/file", "/tmp/out.txt")
-        assert mock_urlretrieve.call_count == 3
+        assert mock_urlopen.call_count == 3
+
+    @patch("autodock.fetchers.urllib.request.urlopen")
+    def test_download_url_connection_error_retry(self, mock_urlopen):
+        import http.client
+        import urllib.error
+
+        mock_urlopen.side_effect = [
+            http.client.RemoteDisconnected("Connection closed"),
+            http.client.RemoteDisconnected("Connection closed"),
+            urllib.error.URLError("final fail"),
+        ]
+        with pytest.raises(StructureFetchError, match="Download failed"):
+            fetchers._download_url("https://example.com/file", "/tmp/out.txt")
+        assert mock_urlopen.call_count == 3
 
 
 class TestIsRetryable:
@@ -374,6 +394,10 @@ class TestIsRetryable:
 
     def test_oserror(self):
         exc = OSError("fail")
+        assert fetchers._is_retryable(exc) is True
+
+    def test_connection_error(self):
+        exc = ConnectionError("remote disconnected")
         assert fetchers._is_retryable(exc) is True
 
     def test_generic_exception(self):
@@ -789,6 +813,12 @@ class TestFetchPubchem:
             smi = fetchers.fetch_pubchem_smiles("aspirin")
         assert smi == "CC(=O)O"
 
+    @patch("autodock.fetchers._http_get_json")
+    def test_fetch_pubchem_smiles_connection_error(self, mock_json):
+        mock_json.side_effect = ConnectionError("remote disconnected")
+        with pytest.raises(DataSourceError, match="PubChem lookup failed"):
+            fetchers.fetch_pubchem_smiles("aspirin")
+
 
 class TestFetchCompoundSDF:
     @patch("autodock.fetchers.fetch_pubchem_sdf")
@@ -823,6 +853,38 @@ class TestFetchCompoundSDF:
             with pytest.raises(DataSourceError, match="Could not generate 3D"):
                 fetchers.fetch_compound_sdf_by_name("fake", out)
 
+    @patch("autodock.fetchers.fetch_pubchem_smiles")
+    def test_rdkit_embed_failure(self, mock_smiles, tmp_path):
+        mock_pcp = MagicMock()
+        mock_pcp.get_compounds.return_value = []  # empty → triggers fallback
+        with patch.dict("sys.modules", {"pubchempy": mock_pcp}):
+            mock_smiles.return_value = "CCO"
+            out = str(tmp_path / "out.sdf")
+            with patch("rdkit.Chem.AllChem.EmbedMolecule") as mock_embed:
+                mock_embed.return_value = -1
+                with pytest.raises(DataSourceError, match="ETKDG failed"):
+                    fetchers.fetch_compound_sdf_by_name("ethanol", out)
+
+    @patch("autodock.fetchers.fetch_pubchem_smiles")
+    def test_rdkit_no_conformer(self, mock_smiles, tmp_path):
+        mock_pcp = MagicMock()
+        mock_pcp.get_compounds.return_value = []  # empty → triggers fallback
+        with patch.dict("sys.modules", {"pubchempy": mock_pcp}):
+            mock_smiles.return_value = "CCO"
+            out = str(tmp_path / "out.sdf")
+            with patch("rdkit.Chem.MolFromSmiles") as mock_from_smiles:
+                mock_mol = MagicMock()
+                mock_mol.GetNumConformers.return_value = 0
+                mock_from_smiles.return_value = mock_mol
+                with patch("rdkit.Chem.AddHs") as mock_add_hs:
+                    mock_add_hs.return_value = mock_mol
+                    with patch("rdkit.Chem.AllChem.EmbedMolecule") as mock_embed:
+                        mock_embed.return_value = 0
+                        with patch("rdkit.Chem.AllChem.MMFFOptimizeMolecule") as mock_mmff:
+                            mock_mmff.return_value = 0
+                            with pytest.raises(DataSourceError, match="failed to produce any conformer"):
+                                fetchers.fetch_compound_sdf_by_name("ethanol", out)
+
 
 class TestFetchChembl:
     @patch("autodock.fetchers._download_url")
@@ -830,6 +892,12 @@ class TestFetchChembl:
         out = str(tmp_path / "out.sdf")
         result = fetchers.fetch_chembl_sdf("CHEMBL25", out)
         assert result == out
+
+    @patch("autodock.fetchers._http_get_json")
+    def test_fetch_chembl_smiles_connection_error(self, mock_json):
+        mock_json.side_effect = ConnectionError("remote disconnected")
+        with pytest.raises(DataSourceError, match="ChEMBL lookup failed"):
+            fetchers.fetch_chembl_smiles("CHEMBL25")
 
 
 class TestFetchChemblByTarget:
@@ -914,6 +982,29 @@ class TestFetchChemblByTarget:
         assert len(result) == 1
         assert result[0]["smiles"] == "ABC"
 
+    @patch("autodock.fetchers._http_get_json")
+    def test_smiles_fetch_failure_logs_warning(self, mock_json, caplog):
+        import logging
+
+        mock_json.side_effect = [
+            {"targets": [{"target_chembl_id": "CHEMBL123", "pref_name": "Test"}]},
+            {
+                "activities": [
+                    {
+                        "molecule_chembl_id": "CHEMBL25",
+                        "pchembl_value": 7.5,
+                        "assay_type": "B",
+                        "standard_type": "IC50",
+                    }
+                ]
+            },
+            ConnectionError("remote disconnected"),
+        ]
+        with caplog.at_level(logging.WARNING):
+            result = fetchers.fetch_chembl_by_target("P15056", max_molecules=1)
+        assert result == []
+        assert "failed to fetch SMILES for CHEMBL25" in caplog.text
+
 
 class TestFetchBindingDBErrors:
     @patch("autodock.fetchers._http_get_json")
@@ -923,6 +1014,38 @@ class TestFetchBindingDBErrors:
         mock_json.side_effect = urllib.error.URLError("fail")
         with pytest.raises(DataSourceError, match="BindingDB query failed"):
             fetchers.fetch_bindingdb_by_smiles("CCO")
+
+    @patch("autodock.fetchers._http_get_json")
+    def test_connection_error(self, mock_json):
+        mock_json.side_effect = ConnectionError("remote disconnected")
+        with pytest.raises(DataSourceError, match="BindingDB query failed"):
+            fetchers.fetch_bindingdb_by_smiles("CCO")
+
+
+class TestFetchBindingDBSuccess:
+    @patch("autodock.fetchers._http_get_json")
+    def test_success(self, mock_json):
+        mock_json.return_value = {
+            "targets": [
+                {
+                    "target_name": "Test Kinase",
+                    "ki": 0.1,
+                    "ic50": 1.0,
+                }
+            ]
+        }
+        result = fetchers.fetch_bindingdb_by_smiles("CCO")
+        assert result["targets"][0]["target_name"] == "Test Kinase"
+        # Verify default cutoff is 6.0
+        call_url = mock_json.call_args[0][0]
+        assert "cutoff=6.0" in call_url
+
+    @patch("autodock.fetchers._http_get_json")
+    def test_custom_cutoff(self, mock_json):
+        mock_json.return_value = {"targets": []}
+        fetchers.fetch_bindingdb_by_smiles("CCO", affinity_cutoff=7.0)
+        call_url = mock_json.call_args[0][0]
+        assert "cutoff=7.0" in call_url
 
 
 # ─────────────────────────────────────────────────────────────────────────────
