@@ -266,7 +266,9 @@ class TestVirtualScreen:
         outdir = str(tmp_path / "vs")
 
         def make_result(rec_path, lig_path, center, box, **kwargs):
-            name = os.path.basename(os.path.dirname(lig_path)) if "/" in lig_path else "unknown"
+            name = kwargs.get("compound_name") or (
+                os.path.basename(os.path.dirname(lig_path)) if "/" in lig_path else "unknown"
+            )
             return DockingResult(
                 compound_name=name,
                 receptor=rec_path,
@@ -307,6 +309,55 @@ class TestVirtualScreen:
             output_dir=str(tmp_path / "vs"),
         )
         assert results == []
+
+    @patch("autodock.docking.dock_ligand")
+    @patch("autodock.preparation.prepare_ligand")
+    def test_virtual_screen_covalent_check(self, mock_prep, mock_dock, tmp_path):
+        rec = tmp_path / "rec.pdbqt"
+        rec.write_text(
+            "ATOM      1  N   SER A   1      0.000   0.000   0.000  1.00 20.00      A    N\n" * 5
+            + "ENDMDL\n"
+        )
+
+        library = {"acrylamide": "C=CC(=O)N", "ibu": "CC(C)Cc1ccc(C(C)C(=O)O)cc1"}
+        outdir = str(tmp_path / "vs")
+
+        def make_result(rec_path, lig_path, center, box, **kwargs):
+            name = kwargs.get("compound_name") or (
+                os.path.basename(os.path.dirname(lig_path)) if "/" in lig_path else "unknown"
+            )
+            return DockingResult(
+                compound_name=name,
+                receptor=rec_path,
+                center=center,
+                box_size=box,
+                best_affinity=-7.5,
+                seed=kwargs.get("seed"),
+            )
+
+        mock_dock.side_effect = make_result
+        mock_prep.return_value = None
+
+        results, _ = docking.virtual_screen(
+            str(rec),
+            library,
+            (0, 0, 0),
+            (20, 20, 20),
+            output_dir=outdir,
+            n_workers=1,
+            seed=42,
+            covalent_check=True,
+        )
+
+        covalent_results = [r for r in results if r.is_covalent_ligand]
+        assert len(covalent_results) == 1
+        assert covalent_results[0].compound_name == "acrylamide"
+        assert "acrylamide" in covalent_results[0].covalent_warheads
+        assert covalent_results[0].covalent_recommendation is not None
+
+        non_covalent = [r for r in results if r.is_covalent_ligand is False]
+        assert len(non_covalent) == 1
+        assert non_covalent[0].compound_name == "ibu"
 
 
 class TestBatchDock:

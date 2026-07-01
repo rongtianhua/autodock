@@ -71,20 +71,24 @@ def validate_pose_with_posebusters(
 
     mol = Chem.AddHs(mol, addCoords=True)
 
-    tmp_sdf = tempfile.NamedTemporaryFile(mode="w", suffix=".sdf", delete=False)
+    tmp_path: str | None = None
     try:
-        writer = Chem.SDWriter(tmp_sdf.name)
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".sdf", delete=False) as tmp_sdf:
+            tmp_path = tmp_sdf.name
+        writer = Chem.SDWriter(tmp_path)
         writer.write(mol)
         writer.close()
 
         busters = PoseBusters(config="dock")
         try:
-            results = busters.bust(tmp_sdf.name, mol_cond=receptor_pdb)
+            results = busters.bust(tmp_path, mol_cond=receptor_pdb)
         except (RuntimeError, ValueError, TypeError, OSError) as exc:
             logger.warning(f"PoseBusters validation failed: {exc}")
             return {"available": True, "pass": False, "error": str(exc)}
     finally:
-        os.unlink(tmp_sdf.name)
+        if tmp_path:
+            with contextlib.suppress(OSError):
+                os.unlink(tmp_path)
 
     # PoseBusters returns a DataFrame with boolean columns.
     # Exclude checks that produce false negatives in the docking context.

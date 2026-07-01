@@ -1315,22 +1315,29 @@ def prepare_receptor(
     # that Meeko's Polymer.from_pdb_string() can parse reliably.
     # This also catches any naming anomalies introduced by PDB2PQR+PROPKA.
     if fix_protonation and find_conda_tool("obabel"):
-        tmp_norm = write_temp_file(pdb_content, suffix="_normalized.pdb")
-        _all_temps.append(tmp_norm)
+        # Use separate input/output files: some OpenBabel versions truncate
+        # the output file before reading the input when -O points to the same
+        # path, resulting in an empty structure and a silent Meeko failure.
+        tmp_norm_in = write_temp_file(pdb_content, suffix="_normalized_in.pdb")
+        tmp_norm_out = write_temp_file("", suffix="_normalized_out.pdb")
+        _all_temps.extend([tmp_norm_in, tmp_norm_out])
         try:
             norm_success, _norm_out, norm_err = safe_subprocess(
-                ["obabel", "-ipdb", tmp_norm, "-opdb", "-O", tmp_norm],
+                ["obabel", "-ipdb", tmp_norm_in, "-opdb", "-O", tmp_norm_out],
                 timeout=120,
             )
-            if norm_success:
-                with open(tmp_norm) as _fh:
+            if norm_success and os.path.getsize(tmp_norm_out) > 0:
+                with open(tmp_norm_out) as _fh:
                     pdb_content = _fh.read()
                 # OpenBabel converts AMBER His names (HID/HIE/HIP) to standard
                 # PDB "HIS", but Meeko only recognises AMBER names.
                 pdb_content = _restore_his_amber_names(pdb_content)
                 logger.debug("OpenBabel: PDB atom naming normalised for Meeko")
             else:
-                logger.debug(f"OpenBabel normalisation skipped ({norm_err[:100]})")
+                logger.debug(
+                    f"OpenBabel normalisation skipped "
+                    f"({norm_err[:100] if norm_err else 'empty output'})"
+                )
         except (OSError, ValueError, RuntimeError, TypeError) as exc:
             logger.debug(f"OpenBabel normalisation skipped ({exc})")
 
@@ -1635,6 +1642,7 @@ def prepare_ligand(
     enumerate_stereo: bool = True,
     max_stereo_isomers: int = 8,
     cache_dir: str | None = None,
+    covalent_check: bool = False,
 ) -> str:
     """
     Prepare a ligand for docking (SMILES → PDBQT).
@@ -1680,10 +1688,20 @@ def prepare_ligand(
         max_stereo_isomers: Maximum stereoisomers to enumerate
             (default 8).  Prevents combinatorial explosion for highly
             flexible ligands with many unspecified chiral centers.
+        covalent_check: If True, detect covalent warheads in the input
+            SMILES and log a warning if any are found. The ligand is still
+            prepared for non-covalent docking with AutoDock Vina.
 
     Returns:
         Absolute path to the prepared PDBQT file.
     """
+    annotation = None
+    if covalent_check:
+        from autodock.covalent import detect_covalent_warheads, format_covalent_warning
+
+        annotation = detect_covalent_warheads(smiles)
+        if annotation.has_warhead:
+            logger.warning(format_covalent_warning(annotation))
     # ── Cache lookup -------------------------------------------------------
     if cache_dir is not None:
         from autodock.cache import LigandCache
@@ -1910,6 +1928,9 @@ def prepare_ligand(
     with open(output_pdbqt, "w") as fh:
         fh.write(pdbqt_str)
 
+    if covalent_check and annotation is not None and not annotation.has_warhead:
+        logger.debug("No covalent warhead detected for %s", smiles)
+
     logger.info(f"Ligand prepared: {output_pdbqt}")
 
     # ── Cache store --------------------------------------------------------
@@ -1937,6 +1958,7 @@ def prepare_ligand_from_file(
     output_pdbqt: str,
     name: str = "LIG",
     ph: float = 7.4,
+    covalent_check: bool = False,
 ) -> str:
     """
     Prepare a ligand from a structure file, auto-detecting the format.
@@ -1948,6 +1970,7 @@ def prepare_ligand_from_file(
         path: Path to structure file.
         output_pdbqt: Output PDBQT file path.
         name: Residue name in PDBQT.
+        covalent_check: If True, detect covalent warheads and log a warning.
 
     Returns:
         Absolute path to the prepared PDBQT file.
@@ -1984,10 +2007,11 @@ def prepare_ligand_from_file(
             molscrub_states=False,
             enumerate_stereo=False,
             ph=ph,
+            covalent_check=covalent_check,
         )
 
     # SDF / MOL — use prepare_ligand_from_sdf
-    return prepare_ligand_from_sdf(path, output_pdbqt, name=name)
+    return prepare_ligand_from_sdf(path, output_pdbqt, name=name, covalent_check=covalent_check)
 
 
 def prepare_ligand_from_sdf(
@@ -1995,6 +2019,7 @@ def prepare_ligand_from_sdf(
     output_pdbqt: str,
     name: str = "LIG",
     ph: float = 7.4,
+    covalent_check: bool = False,
 ) -> str:
     """
     Prepare a ligand from an SDF file, preserving existing 3D coordinates.
@@ -2006,6 +2031,7 @@ def prepare_ligand_from_sdf(
         sdf_path: Path to SDF file (single molecule).
         output_pdbqt: Output PDBQT file path.
         name: Residue name in PDBQT.
+        covalent_check: If True, detect covalent warheads and log a warning.
 
     Returns:
         Absolute path to the prepared PDBQT file.
@@ -2027,6 +2053,14 @@ def prepare_ligand_from_sdf(
                 break
     if mol is None:
         raise PreparationError(f"Could not parse SDF: {sdf_path}")
+
+    if covalent_check:
+        from autodock.covalent import detect_covalent_warheads, format_covalent_warning
+
+        smiles = Chem.MolToSmiles(mol)
+        annotation = detect_covalent_warheads(smiles)
+        if annotation.has_warhead:
+            logger.warning(format_covalent_warning(annotation))
 
     # Ensure hydrogens are present (SDF may lack them)
     mol = Chem.AddHs(mol, addCoords=True)
@@ -2396,6 +2430,7 @@ def prepare_ligand_adaptive(
     ph: float = 7.4,
     molscrub_states: bool = True,
     enumerate_stereo: bool = True,
+    covalent_check: bool = False,
 ) -> str | list[str]:
     """
     Adaptive ligand preparation: auto-selects strategy based on molecular complexity.
@@ -2438,6 +2473,7 @@ def prepare_ligand_adaptive(
         molscrub_states: If True, run salt removal + tautomer selection
             via molscrub before conformer generation.
         enumerate_stereo: If True, enumerate stereoisomers.
+        covalent_check: If True, detect covalent warheads and log a warning.
 
     Returns:
         Single PDBQT path, or list of paths for multi-conformer mode.
@@ -2492,6 +2528,7 @@ def prepare_ligand_adaptive(
             molscrub_states=molscrub_states,
             enumerate_stereo=enumerate_stereo,
             cache_dir=cache_dir,
+            covalent_check=covalent_check,
         )
 
     if not force_multi_conformer and strategy == "complex" and not needs_multi:
@@ -2511,6 +2548,7 @@ def prepare_ligand_adaptive(
             molscrub_states=molscrub_states,
             enumerate_stereo=enumerate_stereo,
             cache_dir=cache_dir,
+            covalent_check=covalent_check,
         )
 
     # Multi-conformer path (legacy behaviour, or ring-geometry auto-detection)
@@ -2550,6 +2588,7 @@ def prepare_ligand_adaptive(
             molscrub_states=molscrub_states,
             enumerate_stereo=enumerate_stereo,
             cache_dir=cache_dir,
+            covalent_check=covalent_check,
         )
 
     if n_heavy > 45:

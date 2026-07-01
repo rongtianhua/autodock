@@ -12,6 +12,8 @@ from pathlib import Path
 
 from autodock.config import write_default_config
 from autodock.core import (
+    VINA_DEFAULT_EXHAUSTIVENESS,
+    VINA_DEFAULT_N_POSES,
     logger,
     print_environment_status,
     set_log_level,
@@ -141,7 +143,10 @@ def cmd_prepare_ligand(args: argparse.Namespace) -> int:
     from autodock.preparation import prepare_ligand
 
     output = args.output or "ligand.pdbqt"
-    prepare_ligand(args.smiles, output, name=args.name, seed=args.seed)
+    prepare_ligand(
+        args.smiles, output, name=args.name, seed=args.seed,
+        covalent_check=args.covalent_check,
+    )
     print(f"✅ Ligand prepared: {output}")
     return 0
 
@@ -731,6 +736,7 @@ def cmd_virtual_screen(args: argparse.Namespace) -> int:
         exhaustiveness=args.exhaustiveness,
         n_poses=args.n_poses,
         n_workers=args.workers,
+        covalent_check=args.covalent_check,
     )
 
     print(f"\n{'=' * 50}")
@@ -1023,6 +1029,11 @@ def build_parser() -> argparse.ArgumentParser:
     p_prep_lig.add_argument("-o", "--output", default="ligand.pdbqt")
     p_prep_lig.add_argument("--name", default="LIG")
     p_prep_lig.add_argument("--seed", type=int, default=42)
+    p_prep_lig.add_argument(
+        "--covalent-check",
+        action="store_true",
+        help="Detect covalent warheads and print a warning (default: off)",
+    )
     p_prep_lig.set_defaults(func=cmd_prepare_ligand)
 
     # find-pockets
@@ -1226,10 +1237,25 @@ def build_parser() -> argparse.ArgumentParser:
         help="Library file format (default: auto-detect from extension)",
     )
     p_vs.add_argument("--outdir", default="./vs_results")
-    p_vs.add_argument("--exhaustiveness", type=int, default=16)
-    p_vs.add_argument("--n-poses", type=int, default=3)
+    p_vs.add_argument(
+        "--exhaustiveness",
+        type=int,
+        default=VINA_DEFAULT_EXHAUSTIVENESS,
+        help="Per-compound exhaustiveness (default: 32; use 16 for high-throughput screening)",
+    )
+    p_vs.add_argument(
+        "--n-poses",
+        type=int,
+        default=VINA_DEFAULT_N_POSES,
+        help="Poses per compound (default: 20; use 3 for high-throughput screening)",
+    )
     p_vs.add_argument("--seed", type=int, default=42)
     p_vs.add_argument("--workers", type=int, default=1, help="Parallel workers (-1 = all cores)")
+    p_vs.add_argument(
+        "--covalent-check",
+        action="store_true",
+        help="Detect covalent warheads for each compound and annotate the CSV (default: off)",
+    )
     p_vs.set_defaults(func=cmd_virtual_screen)
 
     # md

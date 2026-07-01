@@ -224,20 +224,56 @@ def find_java() -> str | None:
 
 def find_p2rank() -> str | None:
     """
-    Locate P2Rank prank script.  Searches conda env opt/ and bin/ first.
+    Locate P2Rank prank script.
+
+    Resolution order:
+      1. ``$P2RANK_HOME/prank`` (explicit install directory).
+      2. ``$CONDA_PREFIX/opt/p2rank_*/prank`` (newest version by directory name).
+      3. ``$CONDA_PREFIX/bin/prank``.
+      4. ``prank`` on system PATH.
+
+    The version-number directory is discovered dynamically so that updates to
+    P2Rank do not require code changes.
     """
-    candidates = []
-    if CONDA_PREFIX:
-        candidates.extend(
-            [
-                os.path.join(CONDA_PREFIX, "opt", "p2rank_2.5.1", "prank"),
-                os.path.join(CONDA_PREFIX, "bin", "prank"),
-            ]
-        )
-    candidates.append(shutil.which("prank"))
-    for c in candidates:
-        if c and os.path.isfile(c) and os.access(c, os.X_OK):
-            return c
+    conda_prefix = os.environ.get("CONDA_PREFIX", "")
+
+    # 1. Explicit environment variable
+    p2rank_home = os.environ.get("P2RANK_HOME", "")
+    if p2rank_home:
+        candidate = os.path.join(p2rank_home, "prank")
+        if os.path.isfile(candidate) and os.access(candidate, os.X_OK):
+            logger.debug(f"P2Rank found via P2RANK_HOME: {candidate}")
+            return candidate
+
+    # 2. Conda opt/ directory — discover any p2rank_* installation
+    if conda_prefix:
+        opt_dir = os.path.join(conda_prefix, "opt")
+        if os.path.isdir(opt_dir):
+            p2rank_dirs = sorted(
+                (
+                    d
+                    for d in os.listdir(opt_dir)
+                    if d.startswith("p2rank_") and os.path.isdir(os.path.join(opt_dir, d))
+                ),
+                reverse=True,
+            )
+            for d in p2rank_dirs:
+                candidate = os.path.join(opt_dir, d, "prank")
+                if os.path.isfile(candidate) and os.access(candidate, os.X_OK):
+                    logger.debug(f"P2Rank found in conda opt: {candidate}")
+                    return candidate
+
+        # 3. Conda bin/
+        candidate = os.path.join(conda_prefix, "bin", "prank")
+        if os.path.isfile(candidate) and os.access(candidate, os.X_OK):
+            logger.debug(f"P2Rank found in conda bin: {candidate}")
+            return candidate
+
+    # 4. System PATH
+    candidate = shutil.which("prank")
+    if candidate:
+        logger.debug(f"P2Rank found on PATH: {candidate}")
+        return candidate
     return None
 
 
@@ -245,24 +281,45 @@ def find_pymol() -> str | None:
     """Locate PyMOL executable (CLI).
 
     Priority:
-    1. macOS Schrödinger PyMOL (Incentive / Academic) — better ray-tracing quality.
-    2. Conda environment PyMOL (Open Source fallback).
-    3. Any ``pymol`` on PATH.
+      1. ``$PYMOL_EXE`` (explicit executable path).
+      2. macOS Schrödinger PyMOL (Incentive / Academic).
+      3. Conda environment PyMOL (Open Source fallback).
+      4. Any ``pymol`` on PATH.
     """
-    # macOS Schrodinger PyMOL (Incentive / Academic edition)
+    conda_prefix = os.environ.get("CONDA_PREFIX", "")
+
+    # 1. Explicit environment variable
+    pymol_exe = os.environ.get("PYMOL_EXE", "")
+    if pymol_exe:
+        candidate = os.path.expanduser(pymol_exe)
+        if os.path.isfile(candidate) and os.access(candidate, os.X_OK):
+            logger.debug(f"PyMOL found via PYMOL_EXE: {candidate}")
+            return candidate
+
+    # 2. macOS Schrodinger PyMOL (Incentive / Academic edition)
     schrodinger = "/Applications/PyMOL.app/Contents/bin/pymol"
     if os.path.isfile(schrodinger) and os.access(schrodinger, os.X_OK):
+        logger.debug(f"PyMOL found at Schrödinger path: {schrodinger}")
         return schrodinger
-    # Fallback to conda Open Source
-    if CONDA_PREFIX:
-        candidate = os.path.join(CONDA_PREFIX, "bin", "pymol")
+
+    # 3. Fallback to conda Open Source
+    if conda_prefix:
+        candidate = os.path.join(conda_prefix, "bin", "pymol")
         if os.path.isfile(candidate) and os.access(candidate, os.X_OK):
+            logger.debug(f"PyMOL found in conda bin: {candidate}")
             return candidate
-    # Also try the old MacOS wrapper path
+
+    # 4. Also try the old macOS wrapper path
     schrodinger_wrapper = "/Applications/PyMOL.app/Contents/MacOS/PyMOL"
     if os.path.isfile(schrodinger_wrapper) and os.access(schrodinger_wrapper, os.X_OK):
+        logger.debug(f"PyMOL found at legacy wrapper path: {schrodinger_wrapper}")
         return schrodinger_wrapper
-    return shutil.which("pymol")
+
+    # 5. System PATH
+    candidate = shutil.which("pymol")
+    if candidate:
+        logger.debug(f"PyMOL found on PATH: {candidate}")
+    return candidate
 
 
 def safe_subprocess(
@@ -288,14 +345,32 @@ def safe_subprocess(
         )
         if result.returncode == 0:
             return True, result.stdout, result.stderr
+        # Full stderr is invaluable for debugging external tool failures;
+        # emit it at DEBUG before truncating the user-facing WARNING.
+        logger.debug(
+            f"Full stderr for failed command {' '.join(cmd[:6])}...:\n"
+            f"{result.stderr}"
+        )
         logger.warning(
             f"Command failed (rc={result.returncode}): {' '.join(cmd[:6])}...\n"
             f"  stderr: {result.stderr[:300]}"
         )
         return False, result.stdout, result.stderr
-    except subprocess.TimeoutExpired:
+    except subprocess.TimeoutExpired as exc:
         logger.error(f"Command timed out after {timeout}s: {' '.join(cmd[:6])}...")
-        return False, "", f"timeout after {timeout}s"
+        # Best-effort capture of any partial output produced before timeout.
+        stdout = exc.stdout or ""
+        stderr = exc.stderr or ""
+        if isinstance(stdout, bytes):
+            stdout = stdout.decode("utf-8", errors="replace")
+        if isinstance(stderr, bytes):
+            stderr = stderr.decode("utf-8", errors="replace")
+        if stderr:
+            logger.debug(
+                f"Partial stderr from timed-out command {' '.join(cmd[:6])}...:\n"
+                f"{stderr}"
+            )
+        return False, stdout, f"timeout after {timeout}s"
     except FileNotFoundError:
         logger.error(f"Command not found: {cmd[0]}")
         return False, "", f"command not found: {cmd[0]}"
@@ -455,6 +530,11 @@ class DockingResult:
     rmsd_from_crystal: float | None = None  # Å
     protocol_valid: bool | None = None
     redocking_threshold: float | None = None
+
+    # ── Covalent ligand annotation ───────────────────────────────────
+    is_covalent_ligand: bool | None = None
+    covalent_warheads: list[str] = field(default_factory=list)
+    covalent_recommendation: str | None = None
 
     # ── Pose quality ─────────────────────────────────────────────────
     posebusters_pass: bool | None = None
@@ -649,6 +729,9 @@ class DockingResult:
             "best_pose_pdbqt": self.best_pose_pdbqt,
             "all_poses_pdbqt": self.all_poses_pdbqt,
             "method": self.method_label,
+            "is_covalent_ligand": self.is_covalent_ligand,
+            "covalent_warheads": ",".join(self.covalent_warheads) if self.covalent_warheads else None,
+            "covalent_recommendation": self.covalent_recommendation,
         }
 
 

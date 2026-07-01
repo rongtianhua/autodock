@@ -701,30 +701,32 @@ def pdb_chain_to_smiles(pdb_path: str, chain_id: str) -> str | None:
 
     fd, chain_pdb = tempfile.mkstemp(suffix="_chain.pdb")
     os.close(fd)
-    extract_chain_from_pdb(pdb_path, chain_id, chain_pdb)
-
-    obabel = find_conda_tool("obabel")
-    if not obabel:
-        logger.warning("Open Babel not found — cannot convert chain to SMILES")
-        return None
-
     try:
-        result = subprocess.run(
-            [obabel, "-i", "pdb", chain_pdb, "-o", "smi"],
-            capture_output=True,
-            text=True,
-            timeout=30,
-        )
-        if result.returncode == 0:
-            # Output format: "SMILES  filename"
-            line = result.stdout.strip().split("\n")[0]
-            smiles = line.split()[0] if line else None
-            return smiles
-    except (subprocess.SubprocessError, OSError, ValueError, IndexError) as exc:
-        logger.warning(f"obabel SMILES conversion failed: {exc}")
+        extract_chain_from_pdb(pdb_path, chain_id, chain_pdb)
+
+        obabel = find_conda_tool("obabel")
+        if not obabel:
+            logger.warning("Open Babel not found — cannot convert chain to SMILES")
+            return None
+
+        try:
+            result = subprocess.run(
+                [obabel, "-i", "pdb", chain_pdb, "-o", "smi"],
+                capture_output=True,
+                text=True,
+                timeout=30,
+            )
+            if result.returncode == 0:
+                # Output format: "SMILES  filename"
+                line = result.stdout.strip().split("\n")[0]
+                smiles = line.split()[0] if line else None
+                return smiles
+        except (subprocess.SubprocessError, OSError, ValueError, IndexError) as exc:
+            logger.warning(f"obabel SMILES conversion failed: {exc}")
     finally:
-        if os.path.exists(chain_pdb):
-            os.remove(chain_pdb)
+        with contextlib.suppress(OSError):
+            if os.path.exists(chain_pdb):
+                os.remove(chain_pdb)
     return None
 
 
@@ -844,10 +846,10 @@ class StructureCache:
         try:
             shutil.copy2(source_path, tmp_path)
             os.replace(tmp_path, dest)
-        except OSError:
+        finally:
             with contextlib.suppress(OSError):
-                os.unlink(tmp_path)
-            raise
+                if os.path.exists(tmp_path):
+                    os.unlink(tmp_path)
         return str(dest)
 
     def clear(self) -> int:

@@ -280,6 +280,8 @@ def run_docking_workflow(
     minimize_pose: bool = False,
     # ── Multi-chain receptor strategy ───────────────────────────────────────
     receptor_multichain_strategy: str = "auto",
+    # ── Covalent ligand annotation ──────────────────────────────────────────
+    covalent_check: bool = False,
 ) -> DockingWorkflowResult:
     """
     Run an end-to-end publication-grade molecular docking analysis.
@@ -345,6 +347,9 @@ def run_docking_workflow(
             ``"extract_single"`` — extract the first chain for docking.
             ``"alphafold"`` — use the AlphaFold monomeric structure instead.
             A ``list`` of the above — run all specified strategies and compare.
+        covalent_check: If True, detect covalent warheads in the ligand and
+            add a warning/annotation to the workflow result. Docking remains
+            non-covalent with AutoDock Vina.
 
     Returns:
         :class:`DockingWorkflowResult` with all output paths and metadata.
@@ -381,6 +386,7 @@ def run_docking_workflow(
             do_2d_figures=do_2d_figures,
             do_report=do_report,
             run_posebusters=run_posebusters,
+            covalent_check=covalent_check,
         )
         # Unpack merged parameters back into local variables
         receptor_id = merged.get("receptor_id", receptor_id)
@@ -407,6 +413,7 @@ def run_docking_workflow(
         do_2d_figures = merged.get("do_2d_figures", do_2d_figures)
         do_report = merged.get("do_report", do_report)
         run_posebusters = merged.get("run_posebusters", run_posebusters)
+        covalent_check = merged.get("covalent_check", covalent_check)
 
     if receptor_id is None:
         raise ValueError(
@@ -538,21 +545,47 @@ def run_docking_workflow(
 
         asm_info = get_pdb_assembly_info(receptor_id)
         asymmetric_chains = asm_info.get("asymmetric_chains", [])
-        is_monomeric = asm_info.get("is_monomeric", False)
+        oligomeric_count = asm_info.get("oligomeric_count", 0)
+        details = (asm_info.get("oligomeric_details") or "").lower()
 
-        if len(asymmetric_chains) > 1 and is_monomeric:
-            logger.info(
-                f"  PDB {receptor_id}: asymmetric unit has {len(asymmetric_chains)} chains "
-                f"but biological assembly is monomeric ({', '.join(asymmetric_chains)})"
+        is_monomeric = oligomeric_count == 1 or "monomeric" in details
+        is_dimer = oligomeric_count == 2 or "dimer" in details
+        is_higher_oligomer = oligomeric_count >= 3 or any(
+            w in details
+            for w in (
+                "trimer", "tetramer", "pentamer", "hexamer",
+                "heptamer", "octamer", "nonamer", "decamer",
             )
+        )
+        has_multiple_chains = len(asymmetric_chains) > 1
+
+        if has_multiple_chains and (is_monomeric or is_dimer or is_higher_oligomer):
+            if is_monomeric:
+                logger.info(
+                    f"  PDB {receptor_id}: asymmetric unit has {len(asymmetric_chains)} chains "
+                    f"but biological assembly is monomeric ({', '.join(asymmetric_chains)})"
+                )
+            elif is_dimer:
+                logger.info(
+                    f"  PDB {receptor_id}: biological assembly is dimeric "
+                    f"({', '.join(asymmetric_chains)}); keeping chains preserves the functional interface"
+                )
+            elif is_higher_oligomer:
+                msg = (
+                    f"  PDB {receptor_id}: biological assembly suggests a higher-order oligomer "
+                    f"({details or oligomeric_count} chains). The full assembly will be kept; "
+                    f"consider receptor_multichain_strategy='extract_single' if docking into a single chain."
+                )
+                logger.warning(msg)
+                result.warnings.append(msg)
 
             # Resolve strategy
             strategies = receptor_multichain_strategy
             if isinstance(strategies, str):
                 strategies = [strategies]
-            # If "auto", default to single-chain extraction
+            # If "auto", choose based on biological assembly metadata
             if "auto" in strategies:
-                strategies = ["extract_single"]
+                strategies = ["extract_single"] if is_monomeric else ["multichain"]
 
             for strategy in strategies:
                 if strategy == "multichain":
@@ -733,6 +766,7 @@ def run_docking_workflow(
                 molscrub_states=True,
                 enumerate_stereo=True,
                 cache_dir=os.path.expanduser("~/.autodock/cache"),
+                covalent_check=covalent_check,
             )
             logger.info(f"  Ligand from SMILES: {ligand_pdbqt}")
         elif ligand_source == "pubchem":
@@ -752,12 +786,13 @@ def run_docking_workflow(
                 ligand_pdbqt,
                 ph=ph,
                 cache_dir=os.path.expanduser("~/.autodock/cache"),
+                covalent_check=covalent_check,
             )
             logger.info(f"  Ligand from PubChem CID {cid}: {ligand_pdbqt}")
         elif ligand_source == "file" and os.path.isfile(ligand_smiles or ""):
             from autodock.preparation import prepare_ligand_from_file
 
-            prepare_ligand_from_file(ligand_smiles, ligand_pdbqt)
+            prepare_ligand_from_file(ligand_smiles, ligand_pdbqt, covalent_check=covalent_check)
             logger.info(f"  Ligand from file: {ligand_pdbqt}")
         else:
             raise ValueError(
@@ -766,6 +801,20 @@ def run_docking_workflow(
             )
 
         result.ligand_pdbqt = ligand_pdbqt
+
+        # Covalent annotation at the workflow level
+        if covalent_check:
+            from autodock.covalent import detect_covalent_warheads
+
+            smiles_for_check = ligand_smiles
+            if ligand_source == "pubchem":
+                smiles_for_check = smiles
+            if smiles_for_check:
+                ann = detect_covalent_warheads(smiles_for_check)
+                if ann.has_warhead:
+                    result.warnings.append(ann.message)
+                    logger.warning(ann.message)
+
         state["step_4_complete"] = True
         _save_state(out_dir, state)
 
@@ -1232,6 +1281,17 @@ def main():
     parser.add_argument("--max-pockets", type=int, default=5)
     parser.add_argument("--ph", type=float, default=7.4)
     parser.add_argument("--fix-protonation", action="store_true")
+    parser.add_argument(
+        "--receptor-multichain-strategy",
+        default="auto",
+        choices=["auto", "multichain", "extract_single", "alphafold"],
+        help="Strategy for multi-chain PDB entries (default: auto, inferred from assembly metadata)",
+    )
+    parser.add_argument(
+        "--covalent-check",
+        action="store_true",
+        help="Detect covalent warheads in the ligand and annotate results",
+    )
     parser.add_argument("--outdir", default="./docking_results", help="Output directory")
     parser.add_argument("--log-level", default="INFO")
     parser.add_argument("--no-3d", action="store_true", help="Skip 3D figures")
@@ -1278,6 +1338,8 @@ def main():
         run_posebusters=not args.no_posebusters,
         interaction_method=args.method,
         minimize_pose=args.minimize_pose,
+        receptor_multichain_strategy=args.receptor_multichain_strategy,
+        covalent_check=args.covalent_check,
     )
 
     # Print summary

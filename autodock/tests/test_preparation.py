@@ -364,6 +364,44 @@ class TestPrepareLigand:
         assert out.exists()
         assert result == str(out.resolve())
 
+    @patch("autodock.covalent.detect_covalent_warheads")
+    def test_covalent_check_logs_warning(self, mock_detect, tmp_path, caplog):
+        from autodock.covalent import CovalentAnnotation
+
+        mock_detect.return_value = CovalentAnnotation(
+            has_warhead=True,
+            warhead_matches=[],
+            recommended_residues={"CYS"},
+            risk_level="medium",
+            message="test covalent warning",
+        )
+        out = tmp_path / "lig.pdbqt"
+        with caplog.at_level("WARNING"):
+            prep.prepare_ligand(
+                "CCO",
+                str(out),
+                name="LIG",
+                seed=42,
+                molscrub_states=False,
+                enumerate_stereo=False,
+                covalent_check=True,
+            )
+        assert "test covalent warning" in caplog.text
+
+    @patch("autodock.covalent.detect_covalent_warheads")
+    def test_covalent_check_false_skips_detection(self, mock_detect, tmp_path):
+        out = tmp_path / "lig.pdbqt"
+        prep.prepare_ligand(
+            "CCO",
+            str(out),
+            name="LIG",
+            seed=42,
+            molscrub_states=False,
+            enumerate_stereo=False,
+            covalent_check=False,
+        )
+        mock_detect.assert_not_called()
+
 
 class TestPrepareLigandConformers:
     @patch("autodock.preparation.prepare_ligand")

@@ -527,13 +527,16 @@ class TestCmdPrepareLigand:
             output="ligand.pdbqt",
             name="LIG",
             seed=42,
+            covalent_check=False,
             quiet=False,
             verbose=False,
             log_file=None,
         )
         rc = cli.cmd_prepare_ligand(args)
         assert rc == 0
-        mock_prep.assert_called_once_with("CCO", "ligand.pdbqt", name="LIG", seed=42)
+        mock_prep.assert_called_once_with(
+            "CCO", "ligand.pdbqt", name="LIG", seed=42, covalent_check=False
+        )
 
 
 # ────────────────────────────────
@@ -904,6 +907,7 @@ class TestCmdVirtualScreen:
             n_poses=3,
             seed=42,
             workers=1,
+            covalent_check=False,
             quiet=False,
             verbose=False,
             log_file=None,
@@ -959,6 +963,7 @@ class TestCmdVirtualScreen:
             n_poses=3,
             seed=42,
             workers=1,
+            covalent_check=False,
             quiet=False,
             verbose=False,
             log_file=None,
@@ -995,6 +1000,7 @@ class TestCmdVirtualScreen:
             n_poses=3,
             seed=42,
             workers=1,
+            covalent_check=False,
             quiet=False,
             verbose=False,
             log_file=None,

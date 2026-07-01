@@ -1105,13 +1105,17 @@ def _dock_single_compound(
         exhaustiveness,
         n_poses,
         compound_seed,
+        covalent_check,
     ) = args
 
     from autodock.preparation import prepare_ligand
 
     ligand_pdbqt = os.path.join(output_dir, f"{name}.pdbqt")
     try:
-        prepare_ligand(smiles, ligand_pdbqt, name=name, seed=compound_seed)
+        prepare_ligand(
+            smiles, ligand_pdbqt, name=name, seed=compound_seed,
+            covalent_check=covalent_check,
+        )
         result = dock_ligand(
             receptor_pdbqt,
             ligand_pdbqt,
@@ -1123,6 +1127,12 @@ def _dock_single_compound(
             output_dir=os.path.join(output_dir, name),
             compound_name=name,
         )
+        if covalent_check:
+            from autodock.covalent import detect_covalent_warheads
+            ann = detect_covalent_warheads(smiles)
+            result.is_covalent_ligand = ann.has_warhead
+            result.covalent_warheads = [m.name for m in ann.warhead_matches]
+            result.covalent_recommendation = ann.message
         return result
     except (RuntimeError, OSError, ValueError, DockingCalculationError) as exc:
         logger.error(f"{name}: docking failed — {exc}")
@@ -1141,13 +1151,19 @@ def virtual_screen(
     center: tuple[float, float, float],
     box_size: tuple[float, float, float],
     output_dir: str = "./docking_results",
-    exhaustiveness: int = 16,
-    n_poses: int = 3,
+    exhaustiveness: int = VINA_DEFAULT_EXHAUSTIVENESS,
+    n_poses: int = VINA_DEFAULT_N_POSES,
     seed: int | None = None,
     n_workers: int = 1,
+    covalent_check: bool = False,
 ) -> tuple[list[DockingResult], str]:
     """
     Screen a compound library against a protein target.
+
+    Defaults mirror the publication-grade single-ligand docking settings
+    (``exhaustiveness=32``, ``n_poses=20``).  For very large libraries where
+    throughput is critical, pass lower values explicitly, e.g.
+    ``exhaustiveness=16, n_poses=3``.
 
     Args:
         receptor_pdbqt: Prepared receptor PDBQT.
@@ -1155,10 +1171,12 @@ def virtual_screen(
         center: Binding box center.
         box_size: Binding box dimensions.
         output_dir: Results directory.
-        exhaustiveness: Per-compound exhaustiveness (16 for screening).
+        exhaustiveness: Per-compound exhaustiveness.
         n_poses: Poses per compound.
         seed: Base random seed.
         n_workers: Number of parallel workers. -1 = use all CPU cores.
+        covalent_check: If True, detect covalent warheads for each ligand
+            and annotate the result; docking remains non-covalent.
 
     Returns:
         (list_of_DockingResult, csv_path)
@@ -1166,6 +1184,10 @@ def virtual_screen(
     import pandas as pd
 
     ensure_dir(output_dir)
+    logger.info(
+        f"Virtual screening: exhaustiveness={exhaustiveness}, n_poses={n_poses}. "
+        f"Use lower values explicitly for high-throughput screening."
+    )
 
     base_seed = _get_vina_seed(seed)
     items = list(ligand_smiles_dict.items())
@@ -1185,6 +1207,7 @@ def virtual_screen(
                 exhaustiveness,
                 n_poses,
                 compound_seed,
+                covalent_check,
             )
             results.append(_dock_single_compound(args))
     else:
@@ -1206,6 +1229,7 @@ def virtual_screen(
                     exhaustiveness,
                     n_poses,
                     compound_seed,
+                    covalent_check,
                 )
             )
 

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import os
+import stat
 
 import pytest
 
@@ -105,6 +106,34 @@ class TestEnvironmentDiscovery:
         path = core.find_p2rank()
         assert path is None or isinstance(path, str)
 
+    def test_find_p2rank_env_var(self, monkeypatch, tmp_path):
+        prank = tmp_path / "prank"
+        prank.write_text("#!/bin/sh\necho test")
+        prank.chmod(prank.stat().st_mode | stat.S_IXUSR)
+        monkeypatch.setenv("P2RANK_HOME", str(tmp_path))
+        monkeypatch.delenv("CONDA_PREFIX", raising=False)
+        assert core.find_p2rank() == str(prank)
+
+    def test_find_p2rank_conda_opt_scan(self, monkeypatch, tmp_path):
+        opt = tmp_path / "opt"
+        opt.mkdir()
+        (opt / "p2rank_2.5.1").mkdir()
+        (opt / "p2rank_2.5.2").mkdir()
+        prank = opt / "p2rank_2.5.2" / "prank"
+        prank.write_text("#!/bin/sh\necho test")
+        prank.chmod(prank.stat().st_mode | stat.S_IXUSR)
+        monkeypatch.setenv("CONDA_PREFIX", str(tmp_path))
+        monkeypatch.delenv("P2RANK_HOME", raising=False)
+        assert core.find_p2rank() == str(prank)
+
+    def test_find_pymol_env_var(self, monkeypatch, tmp_path):
+        pymol = tmp_path / "pymol"
+        pymol.write_text("#!/bin/sh\necho test")
+        pymol.chmod(pymol.stat().st_mode | stat.S_IXUSR)
+        monkeypatch.setenv("PYMOL_EXE", str(pymol))
+        monkeypatch.delenv("CONDA_PREFIX", raising=False)
+        assert core.find_pymol() == str(pymol)
+
     def test_get_environment_status_keys(self):
         st = core.get_environment_status()
         expected = {
@@ -143,6 +172,16 @@ class TestEnvironmentDiscovery:
         ok, out, err = core.safe_subprocess(["sleep", "10"], timeout=1)
         assert ok is False
         assert "timeout" in err.lower()
+
+    def test_safe_subprocess_failure_keeps_full_stderr(self):
+        import sys
+
+        ok, out, err = core.safe_subprocess(
+            [sys.executable, "-c", "import sys; print('FULL_STDERR_MARKER', file=sys.stderr); sys.exit(1)"],
+            timeout=5,
+        )
+        assert ok is False
+        assert "FULL_STDERR_MARKER" in err
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -254,6 +293,38 @@ class TestDockingResult:
         )
         assert r.best_affinity == -8.0
         assert r.score_improvement == -6.0 - (-8.0)
+
+    def test_covalent_fields_default_to_empty(self):
+        r = core.DockingResult(compound_name="x", receptor="r")
+        assert r.is_covalent_ligand is None
+        assert r.covalent_warheads == []
+        assert r.covalent_recommendation is None
+
+    def test_covalent_fields_in_to_dict(self):
+        r = core.DockingResult(
+            compound_name="x",
+            receptor="r",
+            is_covalent_ligand=True,
+            covalent_warheads=["acrylamide"],
+            covalent_recommendation="Cys binder",
+        )
+        d = r.to_dict()
+        assert d["is_covalent_ligand"] is True
+        assert d["covalent_warheads"] == ["acrylamide"]
+        assert d["covalent_recommendation"] == "Cys binder"
+
+    def test_covalent_fields_in_to_dataframe_row(self):
+        r = core.DockingResult(
+            compound_name="x",
+            receptor="r",
+            is_covalent_ligand=True,
+            covalent_warheads=["acrylamide", "nitrile"],
+            covalent_recommendation="Cys binder",
+        )
+        row = r.to_dataframe_row()
+        assert row["is_covalent_ligand"] is True
+        assert row["covalent_warheads"] == "acrylamide,nitrile"
+        assert row["covalent_recommendation"] == "Cys binder"
 
 
 # ─────────────────────────────────────────────────────────────────────────────

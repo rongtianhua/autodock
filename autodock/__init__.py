@@ -34,6 +34,7 @@ from autodock.core import (
     print_environment_status,
     set_log_level,
 )
+from autodock.covalent import detect_covalent_warheads, format_covalent_warning
 from autodock.docking import batch_dock, dock_ligand, dock_ligand_multi_conformer, virtual_screen
 from autodock.fetchers import fetch_protein_structure, find_best_pdb_structure, search_pdb_by_name
 from autodock.heatmap import plot_energy_heatmap
@@ -108,6 +109,7 @@ __all__ = [
     "compute_rmsd_to_crystal",
     "detect_interactions",
     "detect_interactions_plip",
+    "detect_covalent_warheads",
     "detect_interactions_prolif",
     "DockingWorkflowResult",
     "dock_ligand",
@@ -120,6 +122,7 @@ __all__ = [
     "fetch_protein_structure",
     "filter_pdb_lines",
     "find_best_pdb_structure",
+    "format_covalent_warning",
     "find_top_pockets",
     "LigandCache",
     "generate_csv_report",

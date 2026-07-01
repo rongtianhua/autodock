@@ -1028,6 +1028,135 @@ class TestMultichainStrategy:
     @patch("autodock.validation.validate_pose_with_posebusters")
     @patch("autodock.post_dock_pipeline.post_process_docking")
     @patch("autodock.analysis.compute_ligand_efficiency")
+    def test_strategy_auto_dimer_uses_multichain(
+        self,
+        mock_le,
+        mock_pp,
+        mock_pb,
+        mock_clash,
+        mock_dock,
+        mock_prep_lig,
+        mock_find_pockets,
+        mock_prep_rec,
+        mock_asm_info,
+        mock_fetch,
+        mock_perf,
+        mock_log,
+        mock_env,
+        tmp_path,
+    ):
+        """Default 'auto' strategy keeps multichain for dimeric PDB."""
+        mock_fetch.return_value = str(tmp_path / "1ABC.cif")
+        mock_asm_info.return_value = {
+            "is_monomeric": False,
+            "asymmetric_chains": ["A", "B"],
+            "oligomeric_count": 2,
+            "oligomeric_details": "homodimeric",
+        }
+        mock_prep_rec.return_value = None
+        mock_prep_lig.return_value = None
+        mock_find_pockets.return_value = [_make_pocket(0)]
+        pose_file = tmp_path / "best_pose.pdbqt"
+        pose_file.write_text("ATOM\n")
+        mock_dock.return_value = _make_docking_result(-7.5, best_pose_pdbqt=str(pose_file))
+        mock_clash.return_value = {"clash_score": 0.5, "is_acceptable": True, "n_clashes": 0}
+        mock_pb.return_value = {"available": True, "pass": True}
+        mock_pp.return_value = {
+            "pdf": str(tmp_path / "report.pdf"),
+            "csv": str(tmp_path / "report.csv"),
+            "figures": [str(tmp_path / "fig.png")],
+        }
+        mock_le.return_value = {"le": 0.35, "le_rb": 0.18, "lle": 4.5, "lem": 0.12}
+
+        result = wf.run_docking_workflow(
+            receptor_id="1ABC",
+            receptor_source="auto",
+            receptor_multichain_strategy="auto",
+            ligand_smiles="CCO",
+            ligand_name="ethanol",
+            output_dir=str(tmp_path / "out"),
+            resume=False,
+        )
+        assert result.receptor_source == "PDB"
+
+    @patch("autodock.workflow.get_environment_status", return_value={})
+    @patch("autodock.workflow.set_log_level")
+    @patch("autodock.workflow.time.perf_counter", side_effect=[0.0, 1.0])
+    @patch("autodock.fetchers.fetch_protein_structure")
+    @patch("autodock.fetchers.get_pdb_assembly_info")
+    @patch("autodock.preparation.prepare_receptor")
+    @patch("autodock.preparation.find_top_pockets")
+    @patch("autodock.preparation.prepare_ligand")
+    @patch("autodock.docking.dock_ligand")
+    @patch("autodock.validation.compute_clash_score")
+    @patch("autodock.validation.validate_pose_with_posebusters")
+    @patch("autodock.post_dock_pipeline.post_process_docking")
+    @patch("autodock.analysis.compute_ligand_efficiency")
+    def test_strategy_auto_higher_oligomer_warns(
+        self,
+        mock_le,
+        mock_pp,
+        mock_pb,
+        mock_clash,
+        mock_dock,
+        mock_prep_lig,
+        mock_find_pockets,
+        mock_prep_rec,
+        mock_asm_info,
+        mock_fetch,
+        mock_perf,
+        mock_log,
+        mock_env,
+        tmp_path,
+    ):
+        """Default 'auto' strategy keeps multichain and warns for higher-order oligomers."""
+        mock_fetch.return_value = str(tmp_path / "2HU4.cif")
+        mock_asm_info.return_value = {
+            "is_monomeric": False,
+            "asymmetric_chains": ["A", "B", "C", "D"],
+            "oligomeric_count": 4,
+            "oligomeric_details": "tetrameric",
+        }
+        mock_prep_rec.return_value = None
+        mock_prep_lig.return_value = None
+        mock_find_pockets.return_value = [_make_pocket(0)]
+        pose_file = tmp_path / "best_pose.pdbqt"
+        pose_file.write_text("ATOM\n")
+        mock_dock.return_value = _make_docking_result(-7.5, best_pose_pdbqt=str(pose_file))
+        mock_clash.return_value = {"clash_score": 0.5, "is_acceptable": True, "n_clashes": 0}
+        mock_pb.return_value = {"available": True, "pass": True}
+        mock_pp.return_value = {
+            "pdf": str(tmp_path / "report.pdf"),
+            "csv": str(tmp_path / "report.csv"),
+            "figures": [str(tmp_path / "fig.png")],
+        }
+        mock_le.return_value = {"le": 0.35, "le_rb": 0.18, "lle": 4.5, "lem": 0.12}
+
+        result = wf.run_docking_workflow(
+            receptor_id="2HU4",
+            receptor_source="auto",
+            receptor_multichain_strategy="auto",
+            ligand_smiles="CCO",
+            ligand_name="ethanol",
+            output_dir=str(tmp_path / "out"),
+            resume=False,
+        )
+        assert result.receptor_source == "PDB"
+        assert any("higher-order oligomer" in w for w in result.warnings)
+
+    @patch("autodock.workflow.get_environment_status", return_value={})
+    @patch("autodock.workflow.set_log_level")
+    @patch("autodock.workflow.time.perf_counter", side_effect=[0.0, 1.0])
+    @patch("autodock.fetchers.fetch_protein_structure")
+    @patch("autodock.fetchers.get_pdb_assembly_info")
+    @patch("autodock.preparation.prepare_receptor")
+    @patch("autodock.preparation.find_top_pockets")
+    @patch("autodock.preparation.prepare_ligand")
+    @patch("autodock.docking.dock_ligand")
+    @patch("autodock.validation.compute_clash_score")
+    @patch("autodock.validation.validate_pose_with_posebusters")
+    @patch("autodock.post_dock_pipeline.post_process_docking")
+    @patch("autodock.analysis.compute_ligand_efficiency")
     def test_strategy_multichain_keeps_all(
         self,
         mock_le,
@@ -1165,7 +1294,7 @@ class TestMultichainStrategy:
     @patch("autodock.validation.validate_pose_with_posebusters")
     @patch("autodock.post_dock_pipeline.post_process_docking")
     @patch("autodock.analysis.compute_ligand_efficiency")
-    def test_strategy_auto_defaults_to_extract_single(
+    def test_strategy_auto_monomer_extracts_single(
         self,
         mock_le,
         mock_pp,
@@ -1183,7 +1312,7 @@ class TestMultichainStrategy:
         mock_env,
         tmp_path,
     ):
-        """Default 'auto' strategy should extract single chain for monomeric multi-chain PDB."""
+        """Default 'auto' strategy extracts single chain for monomeric multi-chain PDB."""
         mock_fetch.return_value = str(tmp_path / "4F9Z.cif")
         mock_asm_info.return_value = {
             "is_monomeric": True,
@@ -1282,3 +1411,133 @@ class TestMultichainStrategy:
             resume=False,
         )
         assert result.receptor_source == "PDB"
+
+
+class TestCovalentCheck:
+    """Tests for covalent warhead annotation in the workflow."""
+
+    @patch("autodock.workflow.get_environment_status", return_value={})
+    @patch("autodock.workflow.set_log_level")
+    @patch("autodock.workflow.time.perf_counter", side_effect=[0.0, 1.0])
+    @patch("autodock.fetchers.fetch_protein_structure")
+    @patch("autodock.fetchers.get_pdb_assembly_info")
+    @patch("autodock.preparation.prepare_receptor")
+    @patch("autodock.preparation.find_top_pockets")
+    @patch("autodock.preparation.prepare_ligand")
+    @patch("autodock.docking.dock_ligand")
+    @patch("autodock.validation.compute_clash_score")
+    @patch("autodock.validation.validate_pose_with_posebusters")
+    @patch("autodock.post_dock_pipeline.post_process_docking")
+    @patch("autodock.analysis.compute_ligand_efficiency")
+    def test_covalent_check_adds_warning(
+        self,
+        mock_le,
+        mock_pp,
+        mock_pb,
+        mock_clash,
+        mock_dock,
+        mock_prep_lig,
+        mock_find_pockets,
+        mock_prep_rec,
+        mock_asm_info,
+        mock_fetch,
+        mock_perf,
+        mock_log,
+        mock_env,
+        tmp_path,
+    ):
+        """covalent_check=True should add a warning for acrylamide warheads."""
+        mock_fetch.return_value = str(tmp_path / "1A30.cif")
+        mock_asm_info.return_value = {
+            "is_monomeric": True,
+            "asymmetric_chains": ["A"],
+            "oligomeric_count": 1,
+        }
+        mock_prep_rec.return_value = None
+        mock_prep_lig.return_value = None
+        mock_find_pockets.return_value = [_make_pocket(0)]
+        pose_file = tmp_path / "best_pose.pdbqt"
+        pose_file.write_text("ATOM\n")
+        mock_dock.return_value = _make_docking_result(-7.5, best_pose_pdbqt=str(pose_file))
+        mock_clash.return_value = {"clash_score": 0.5, "is_acceptable": True, "n_clashes": 0}
+        mock_pb.return_value = {"available": True, "pass": True}
+        mock_pp.return_value = {
+            "pdf": str(tmp_path / "report.pdf"),
+            "csv": str(tmp_path / "report.csv"),
+            "figures": [str(tmp_path / "fig.png")],
+        }
+        mock_le.return_value = {"le": 0.35, "le_rb": 0.18, "lle": 4.5, "lem": 0.12}
+
+        result = wf.run_docking_workflow(
+            receptor_id="1A30",
+            receptor_source="auto",
+            ligand_smiles="C=CC(=O)N",
+            ligand_name="acrylamide",
+            output_dir=str(tmp_path / "out"),
+            resume=False,
+            covalent_check=True,
+        )
+        assert any("Covalent warhead" in w for w in result.warnings)
+
+    @patch("autodock.workflow.get_environment_status", return_value={})
+    @patch("autodock.workflow.set_log_level")
+    @patch("autodock.workflow.time.perf_counter", side_effect=[0.0, 1.0])
+    @patch("autodock.fetchers.fetch_protein_structure")
+    @patch("autodock.fetchers.get_pdb_assembly_info")
+    @patch("autodock.preparation.prepare_receptor")
+    @patch("autodock.preparation.find_top_pockets")
+    @patch("autodock.preparation.prepare_ligand")
+    @patch("autodock.docking.dock_ligand")
+    @patch("autodock.validation.compute_clash_score")
+    @patch("autodock.validation.validate_pose_with_posebusters")
+    @patch("autodock.post_dock_pipeline.post_process_docking")
+    @patch("autodock.analysis.compute_ligand_efficiency")
+    def test_covalent_check_false_no_warning(
+        self,
+        mock_le,
+        mock_pp,
+        mock_pb,
+        mock_clash,
+        mock_dock,
+        mock_prep_lig,
+        mock_find_pockets,
+        mock_prep_rec,
+        mock_asm_info,
+        mock_fetch,
+        mock_perf,
+        mock_log,
+        mock_env,
+        tmp_path,
+    ):
+        """covalent_check=False should not add covalent warnings."""
+        mock_fetch.return_value = str(tmp_path / "1A30.cif")
+        mock_asm_info.return_value = {
+            "is_monomeric": True,
+            "asymmetric_chains": ["A"],
+            "oligomeric_count": 1,
+        }
+        mock_prep_rec.return_value = None
+        mock_prep_lig.return_value = None
+        mock_find_pockets.return_value = [_make_pocket(0)]
+        pose_file = tmp_path / "best_pose.pdbqt"
+        pose_file.write_text("ATOM\n")
+        mock_dock.return_value = _make_docking_result(-7.5, best_pose_pdbqt=str(pose_file))
+        mock_clash.return_value = {"clash_score": 0.5, "is_acceptable": True, "n_clashes": 0}
+        mock_pb.return_value = {"available": True, "pass": True}
+        mock_pp.return_value = {
+            "pdf": str(tmp_path / "report.pdf"),
+            "csv": str(tmp_path / "report.csv"),
+            "figures": [str(tmp_path / "fig.png")],
+        }
+        mock_le.return_value = {"le": 0.35, "le_rb": 0.18, "lle": 4.5, "lem": 0.12}
+
+        result = wf.run_docking_workflow(
+            receptor_id="1A30",
+            receptor_source="auto",
+            ligand_smiles="C=CC(=O)N",
+            ligand_name="acrylamide",
+            output_dir=str(tmp_path / "out"),
+            resume=False,
+            covalent_check=False,
+        )
+        assert not any("Covalent warhead" in w for w in result.warnings)
