@@ -154,6 +154,7 @@ def _rdkit_available() -> bool:
     """Return True if RDKit can be imported."""
     try:
         from rdkit import Chem  # noqa: F401
+
         return True
     except Exception:
         return False
@@ -257,9 +258,7 @@ def find_reactive_residues_in_receptor(
 
     results: list[dict[str, Any]] = []
     half_box = (
-        (box_size[0] / 2.0, box_size[1] / 2.0, box_size[2] / 2.0)
-        if box_size is not None
-        else None
+        (box_size[0] / 2.0, box_size[1] / 2.0, box_size[2] / 2.0) if box_size is not None else None
     )
 
     with open(receptor_pdbqt) as fh:
@@ -284,10 +283,14 @@ def find_reactive_residues_in_receptor(
             except (ValueError, IndexError):
                 continue
 
-            if center is not None and half_box is not None and (
-                abs(x - center[0]) > half_box[0]
-                or abs(y - center[1]) > half_box[1]
-                or abs(z - center[2]) > half_box[2]
+            if (
+                center is not None
+                and half_box is not None
+                and (
+                    abs(x - center[0]) > half_box[0]
+                    or abs(y - center[1]) > half_box[1]
+                    or abs(z - center[2]) > half_box[2]
+                )
             ):
                 continue
 

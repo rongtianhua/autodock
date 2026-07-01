@@ -171,9 +171,7 @@ class TestCheckReactiveGeometry:
             os.unlink(rec_path)
 
     def test_rejects_distant_pair(self):
-        ligand_pdbqt = (
-            "ATOM      1  C   LIG A   1       0.000   0.000   0.000  0.00  0.00\n"
-        )
+        ligand_pdbqt = "ATOM      1  C   LIG A   1       0.000   0.000   0.000  0.00  0.00\n"
         receptor_pdbqt = "ATOM      1  SG  CYS A   1      20.000   0.000   0.000  0.00  0.00\n"
         with tempfile.NamedTemporaryFile(mode="w", suffix=".pdbqt", delete=False) as lf:
             lf.write(ligand_pdbqt)

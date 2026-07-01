@@ -347,10 +347,7 @@ def safe_subprocess(
             return True, result.stdout, result.stderr
         # Full stderr is invaluable for debugging external tool failures;
         # emit it at DEBUG before truncating the user-facing WARNING.
-        logger.debug(
-            f"Full stderr for failed command {' '.join(cmd[:6])}...:\n"
-            f"{result.stderr}"
-        )
+        logger.debug(f"Full stderr for failed command {' '.join(cmd[:6])}...:\n" f"{result.stderr}")
         logger.warning(
             f"Command failed (rc={result.returncode}): {' '.join(cmd[:6])}...\n"
             f"  stderr: {result.stderr[:300]}"
@@ -367,8 +364,7 @@ def safe_subprocess(
             stderr = stderr.decode("utf-8", errors="replace")
         if stderr:
             logger.debug(
-                f"Partial stderr from timed-out command {' '.join(cmd[:6])}...:\n"
-                f"{stderr}"
+                f"Partial stderr from timed-out command {' '.join(cmd[:6])}...:\n" f"{stderr}"
             )
         return False, stdout, f"timeout after {timeout}s"
     except FileNotFoundError:
@@ -730,7 +726,9 @@ class DockingResult:
             "all_poses_pdbqt": self.all_poses_pdbqt,
             "method": self.method_label,
             "is_covalent_ligand": self.is_covalent_ligand,
-            "covalent_warheads": ",".join(self.covalent_warheads) if self.covalent_warheads else None,
+            "covalent_warheads": (
+                ",".join(self.covalent_warheads) if self.covalent_warheads else None
+            ),
             "covalent_recommendation": self.covalent_recommendation,
         }
 

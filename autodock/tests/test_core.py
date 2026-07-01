@@ -177,7 +177,11 @@ class TestEnvironmentDiscovery:
         import sys
 
         ok, out, err = core.safe_subprocess(
-            [sys.executable, "-c", "import sys; print('FULL_STDERR_MARKER', file=sys.stderr); sys.exit(1)"],
+            [
+                sys.executable,
+                "-c",
+                "import sys; print('FULL_STDERR_MARKER', file=sys.stderr); sys.exit(1)",
+            ],
             timeout=5,
         )
         assert ok is False

@@ -144,7 +144,10 @@ def cmd_prepare_ligand(args: argparse.Namespace) -> int:
 
     output = args.output or "ligand.pdbqt"
     prepare_ligand(
-        args.smiles, output, name=args.name, seed=args.seed,
+        args.smiles,
+        output,
+        name=args.name,
+        seed=args.seed,
         covalent_check=args.covalent_check,
     )
     print(f"✅ Ligand prepared: {output}")

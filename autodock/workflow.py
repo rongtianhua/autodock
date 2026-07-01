@@ -553,8 +553,14 @@ def run_docking_workflow(
         is_higher_oligomer = oligomeric_count >= 3 or any(
             w in details
             for w in (
-                "trimer", "tetramer", "pentamer", "hexamer",
-                "heptamer", "octamer", "nonamer", "decamer",
+                "trimer",
+                "tetramer",
+                "pentamer",
+                "hexamer",
+                "heptamer",
+                "octamer",
+                "nonamer",
+                "decamer",
             )
         )
         has_multiple_chains = len(asymmetric_chains) > 1

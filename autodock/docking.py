@@ -1113,7 +1113,10 @@ def _dock_single_compound(
     ligand_pdbqt = os.path.join(output_dir, f"{name}.pdbqt")
     try:
         prepare_ligand(
-            smiles, ligand_pdbqt, name=name, seed=compound_seed,
+            smiles,
+            ligand_pdbqt,
+            name=name,
+            seed=compound_seed,
             covalent_check=covalent_check,
         )
         result = dock_ligand(
@@ -1129,6 +1132,7 @@ def _dock_single_compound(
         )
         if covalent_check:
             from autodock.covalent import detect_covalent_warheads
+
             ann = detect_covalent_warheads(smiles)
             result.is_covalent_ligand = ann.has_warhead
             result.covalent_warheads = [m.name for m in ann.warhead_matches]
