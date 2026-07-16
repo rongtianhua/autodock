@@ -152,6 +152,43 @@ def _fake_run_parallel(item):
     }
 
 
+def _fake_run_layered(item):
+    pdb = item["target"]["pdb_id"]
+    base = {
+        "pdb_id": pdb,
+        "family": "x",
+        "success_raw": False,
+        "rmsd_raw": None,
+    }
+    if pdb == "CASC":
+        return {
+            **base,
+            "success": True,
+            "rmsd": 1.1,
+            "success_cascade": True,
+            "rmsd_cascade": 1.1,
+            "rescued_by": "IFP",
+        }
+    if pdb == "CONS":
+        return {
+            **base,
+            "success": True,
+            "rmsd": 1.2,
+            "success_consensus": True,
+            "rmsd_consensus": 1.2,
+        }
+    if pdb == "RESC":
+        return {
+            **base,
+            "success": True,
+            "rmsd": 1.3,
+            "success_rescored": True,
+            "rmsd_rescored": 1.3,
+            "rescored_by": "ifp",
+        }
+    return {**base, "success": False, "rmsd": None}
+
+
 class TestRunRedockingBenchmark:
     """Tests for run_redocking_benchmark stats compilation (mocked worker)."""
 
@@ -220,6 +257,31 @@ class TestRunRedockingBenchmark:
         summary = benchmark.run_redocking_benchmark(targets=[], output_dir=str(out), n_workers=1)
         assert summary["n_total"] == 0
         assert summary["success_rate"] == 0.0
+
+    def test_layered_rescue_metrics(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(benchmark, "_run_single_benchmark", _fake_run_layered)
+        out = tmp_path / "bench"
+        targets = [
+            {"pdb_id": "CASC", "family": "x"},
+            {"pdb_id": "CONS", "family": "x"},
+            {"pdb_id": "RESC", "family": "x"},
+            {"pdb_id": "FAIL", "family": "x"},
+        ]
+        summary = benchmark.run_redocking_benchmark(
+            targets=targets, output_dir=str(out), n_workers=1, minimize=False
+        )
+        assert summary["n_success"] == 3
+        assert summary["n_rescued_by_cascade"] == 1
+        assert summary["n_rescued_by_consensus"] == 1
+        assert summary["n_rescued_by_rescored"] == 1
+        assert len(summary["cascade_successes"]) == 1
+        assert len(summary["consensus_successes"]) == 1
+        assert len(summary["rescored_successes"]) == 1
+        csv_text = (out / "benchmark_results.csv").read_text()
+        header = csv_text.splitlines()[0].split(",")
+        assert "success_cascade" in header
+        assert "success_consensus" in header
+        assert "success_rescored" in header
 
 
 class TestAutoDetectLigandResname:
@@ -855,3 +917,31 @@ class TestRunSingleBenchmark:
         }
         result = benchmark._run_single_benchmark(item)
         assert result["success"] is True
+
+
+class TestJsonSerialization:
+    def test_clean_for_json_replaces_nan_inf(self):
+        import math
+
+        raw = {
+            "ok": 1.5,
+            "nan": float("nan"),
+            "inf": float("inf"),
+            "neg_inf": float("-inf"),
+            "nested": {"arr": [1.0, math.nan, 2.0]},
+        }
+        cleaned = benchmark._clean_for_json(raw)
+        assert cleaned["ok"] == 1.5
+        assert cleaned["nan"] is None
+        assert cleaned["inf"] is None
+        assert cleaned["neg_inf"] is None
+        assert cleaned["nested"]["arr"] == [1.0, None, 2.0]
+
+    def test_clean_for_json_serializable(self):
+        import json
+
+        raw = {"x": float("nan"), "y": [1, float("inf")]}
+        cleaned = benchmark._clean_for_json(raw)
+        # json.dumps should not raise when NaN/Inf are removed.
+        text = json.dumps(cleaned)
+        assert "null" in text

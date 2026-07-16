@@ -68,14 +68,26 @@ class TestRenderScenePymol:
     @patch("autodock.rendering._PYMOL_EXE", "/fake/pymol")
     @patch("autodock.rendering.safe_subprocess")
     @patch("os.path.exists")
-    def test_calls_pymol(self, mock_exists, mock_subprocess, tmp_path):
+    def test_calls_pymol_with_resolution_flags(self, mock_exists, mock_subprocess, tmp_path):
         mock_subprocess.return_value = (True, "", "")
         mock_exists.return_value = True
         out_png = tmp_path / "scene.png"
-        rend.render_scene_pymol("rec.pdb", "lig.pdbqt", str(out_png), scene="complex")
+        rend.render_scene_pymol(
+            "rec.pdb",
+            "lig.pdbqt",
+            str(out_png),
+            scene="complex",
+            width=2400,
+            height=1800,
+        )
         assert mock_subprocess.called
         cmd = mock_subprocess.call_args[0][0]
         assert "pymol" in cmd[0]
+        # Headless PyMOL must receive -W/-H to avoid 640x480 fallback.
+        assert "-W" in cmd
+        assert "-H" in cmd
+        assert cmd[cmd.index("-W") + 1] == "2400"
+        assert cmd[cmd.index("-H") + 1] == "1800"
 
     def test_missing_pymol_raises(self, tmp_path):
         with patch("autodock.rendering._PYMOL_EXE", None):
@@ -154,6 +166,23 @@ class TestCompositeSummary:
 
         rend.composite_summary([str(img1), str(img2)], str(out))
         assert out.exists()
+
+    def test_adaptive_row_heights(self, tmp_path):
+        from PIL import Image
+
+        # Create two wide panels and one tall panel.
+        wide = tmp_path / "wide.png"
+        Image.new("RGB", (400, 100), color=(255, 0, 0)).save(wide)
+        tall = tmp_path / "tall.png"
+        Image.new("RGB", (100, 400), color=(0, 255, 0)).save(tall)
+        out = tmp_path / "composite.png"
+
+        rend.composite_summary([str(wide), str(tall)], str(out), ncols=1)
+        composite = Image.open(out)
+        # Two rows; total height ≈ title + pad + row1(100) + pad + row2(400) + pad.
+        assert composite.height > 500
+        # Width should match the widest panel (400) plus padding.
+        assert composite.width >= 400
 
     def test_empty_panels_raises(self, tmp_path):
         with pytest.raises(VisualizationError, match="No panels"):

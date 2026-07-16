@@ -92,7 +92,7 @@
 1. **P2Rank**（若可用）：
    - 运行 `p2rank predict`，输出每个口袋的概率 `prob`。
    - 解析 `_predictions.csv` 获取口袋中心、体积、残基 ID。
-   - 仅保留 `prob ≥ 0.5` 的口袋。
+   - 默认保留排名前 10 的口袋，不再使用硬概率截断；fpocket 交叉验证提供二次过滤。
 
 2. **fpocket 验证**（若可用）：
    - 对同一受体运行 `fpocket`，解析 `_info.txt` 获取 α-sphere 口袋。
@@ -140,9 +140,10 @@
 
 - 主打分函数：`vina`（默认）或 `vinardo`。
 - 可用时同时计算 `vinardo` 与 `ad4` 映射分。
-- 共识亲和力取可用打分函数的中位数。
+- 当前实现仅记录各打分函数分数，`consensus_affinity` 字段保留为 `None`。
 
-> 当前共识为简单中位数，无权重或异常值剔除，结果应作为辅助参考。
+> 历史文档中“共识亲和力取中位数”的描述已过时；当前版本不合成单一共识值，
+> 各打分函数分数可在 `all_scores` 中查看并自行比较。
 
 ---
 
@@ -166,8 +167,12 @@
 
 ### 6.3 Clash 检测
 
-- 计算配体重原子与受体重原子间距离 < 2.0 Å 的冲突数。
-- 输出 `clash_score`（每原子平均冲突数）。
+- 计算配体原子与受体原子间的 VDW 半径重叠（`overlap = r_vdw,lig + r_vdw,rec − distance`）。
+- 自动检测输入是否含显式氢：含氢时阈值 1.2 Å，仅重原子时阈值 0.5 Å。
+- 输出 `clash_score`（最大重叠，Å）、`n_clashes`（显著重叠数，>0.3 Å）、
+  `median_overlap_A`、`p90_overlap_A`、`fraction_over_threshold`，以及
+  `clash_acceptable`（最大重叠 ≤ 阈值）。
+- 该指标为几何相容性粗筛，不替代显式氢冲突检查。
 
 ---
 
@@ -233,17 +238,28 @@
 - 靶点类型覆盖激酶、蛋白酶、核受体、酶等。
 - 评估指标：
   - **best-achievable**：全部 pose 中最低 RMSD ≤ 2.0 Å 的比例。
-  - **top-1**：Vina 排名第一 pose 的 RMSD ≤ 2.0 Å 的比例。
+  - **top-1**：最终 reported pose（含 minimization/cascade/consensus/rescored 救援）的 RMSD ≤ 2.0 Å 的比例。
   - **top-3**：前三 pose 中至少一个 RMSD ≤ 2.0 Å 的比例。
+  - **success_raw**：未 minimization/cascade 前的原始 top-1 成功率。
+  - **success_cascade**：IFP(20)/IFP/MM-GBSA cascade 救援成功数。
+  - **success_consensus**：cluster-consensus 救援成功数。
+  - **success_rescored**：auxiliary rescoring（如 IFP）救援成功数。
 - 困难靶点（采样/打分挑战）在 `HARD_TARGET_OVERRIDES` 中配置特殊边界框或增加采样。
 
-当前表现（P0 20 靶点）：
+当前表现（P0 20 靶点，Vina baseline）：
 
 | 指标 | 数值 |
 |------|------|
 | best-achievable | 70% |
-| top-3 | 55% |
-| top-1 | ~40% |
+| top-3 | 50% |
+| top-1 | 35% |
+
+启用 IFP cascade 救援后：
+
+| 指标 | 数值 |
+|------|------|
+| top-1 | 55% |
+| best-achievable | 85% |
 
 ---
 

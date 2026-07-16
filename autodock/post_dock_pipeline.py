@@ -227,16 +227,19 @@ def post_process_docking(
 
             png_2d = os.path.join(fig_dir, "2d_interactions.png")
             pdf_2d = os.path.join(fig_dir, "2d_interactions.pdf")
+            svg_2d = os.path.join(fig_dir, "2d_interactions.svg")
             render_interactions_2d(
                 receptor_pdb,
                 result.best_pose_pdbqt,
                 interactions,
                 output_png=png_2d,
                 output_pdf=pdf_2d,
+                output_svg=svg_2d,
             )
             fig_paths.append(png_2d)
             outputs["fig_2d_png"] = png_2d
             outputs["fig_2d_pdf"] = pdf_2d
+            outputs["fig_2d_svg"] = svg_2d
         except (RuntimeError, OSError, ValueError, TypeError, ImportError) as exc:
             logger.warning(f"2D RDKit rendering skipped: {exc}")
             # Fallback: PoseView via proteins.plus

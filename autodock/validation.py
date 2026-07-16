@@ -16,6 +16,7 @@ import numpy as np
 from autodock.core import (
     _HAVE_RDKIT,
     CLASH_THRESHOLD_EXPLICIT_H,
+    CLASH_THRESHOLD_HEAVY,
     REDocking_RMSD_THRESHOLD,
     ValidationError,
     logger,
@@ -167,17 +168,28 @@ def validate_pose_with_posebusters(
 def compute_clash_score(
     pose_pdbqt: str,
     receptor_pdb: str,
-    clash_threshold: float = CLASH_THRESHOLD_EXPLICIT_H,
+    clash_threshold: float | None = None,
+    significant_overlap: float = 0.3,
 ) -> dict[str, Any]:
     """
-    Compute receptor-ligand clash score.
+    Compute receptor-ligand clash score with distribution-based metrics.
+
+    The threshold is chosen automatically based on whether the receptor and
+    ligand files contain explicit hydrogens: 1.2 Å when explicit H are present
+    (tight VDW overlap), 0.5 Å for heavy-atom-only structures.  Pass a numeric
+    *clash_threshold* to override this.
 
     Returns:
         {
             "clash_score": max_overlap_Å,
-            "n_clashes": int,
+            "n_clashes": int (over significant_overlap),
             "is_acceptable": bool,
             "mean_distance": float,
+            "median_overlap_A": float,
+            "p90_overlap_A": float,
+            "fraction_over_threshold": float,
+            "threshold_A": float,
+            "has_explicit_H": bool,
         }
     """
     rec_atoms = read_pdb_atoms(receptor_pdb)
@@ -189,7 +201,23 @@ def compute_clash_score(
             "n_clashes": None,
             "is_acceptable": None,
             "mean_distance": None,
+            "median_overlap_A": None,
+            "p90_overlap_A": None,
+            "fraction_over_threshold": None,
+            "threshold_A": clash_threshold,
+            "has_explicit_H": None,
         }
+
+    # Auto-detect explicit hydrogens and pick threshold
+    def _has_explicit_hydrogens(atoms: list[dict]) -> bool:
+        return any((a.get("element") or "").strip().upper() == "H" for a in atoms)
+
+    has_explicit_H = _has_explicit_hydrogens(rec_atoms) or _has_explicit_hydrogens(lig_atoms)
+    threshold = (
+        clash_threshold
+        if clash_threshold is not None
+        else (CLASH_THRESHOLD_EXPLICIT_H if has_explicit_H else CLASH_THRESHOLD_HEAVY)
+    )
 
     rec_coords = np.array([(a["x"], a["y"], a["z"]) for a in rec_atoms])
 
@@ -219,6 +247,7 @@ def compute_clash_score(
     }
 
     clashes = []
+    overlaps = []
     min_dists = []
     for la in lig_atoms:
         lig_pt = np.array([la["x"], la["y"], la["z"]])
@@ -241,7 +270,8 @@ def compute_clash_score(
 
         # Overlap = sum_r - distance (positive = clash)
         overlap = sum_r - min_dist
-        if overlap > 0.3:  # significant overlap
+        overlaps.append(overlap)
+        if overlap > significant_overlap:
             clashes.append(overlap)
 
     if not min_dists:
@@ -250,16 +280,30 @@ def compute_clash_score(
             "n_clashes": 0,
             "is_acceptable": None,
             "mean_distance": None,
+            "median_overlap_A": None,
+            "p90_overlap_A": None,
+            "fraction_over_threshold": None,
+            "threshold_A": threshold,
+            "has_explicit_H": has_explicit_H,
         }
 
-    max_clash = max(clashes) if clashes else 0.0
+    overlaps_arr = np.array(overlaps)
+    max_clash = float(np.max(overlaps_arr))
+    median_overlap = float(np.median(overlaps_arr))
+    p90_overlap = float(np.percentile(overlaps_arr, 90))
+    fraction_over_threshold = float(np.mean(overlaps_arr > threshold))
     mean_dist = float(np.mean(min_dists))
 
     return {
         "clash_score": round(max_clash, 3),
         "n_clashes": len(clashes),
-        "is_acceptable": max_clash <= clash_threshold,
+        "is_acceptable": max_clash <= threshold,
         "mean_distance": round(mean_dist, 3),
+        "median_overlap_A": round(median_overlap, 3),
+        "p90_overlap_A": round(p90_overlap, 3),
+        "fraction_over_threshold": round(fraction_over_threshold, 3),
+        "threshold_A": threshold,
+        "has_explicit_H": has_explicit_H,
     }
 
 
@@ -1077,6 +1121,12 @@ def run_redocking_validation(
                 f"{'PASS' if top_n_success else 'FAIL'}"
             )
 
+    # Layered success fields keep raw/min results distinct from cascade/consensus
+    # rescues so that benchmark summaries can report each tier independently.
+    success_cascade = None
+    rmsd_cascade = None
+    rescued_by = None
+
     # ── 7.5 Cascade fallback rescoring ─────────────────────────────────────
     # Three-tier fallback: Vina → IFP(20 poses) → IFP(+more poses) → MM-GBSA
     cascade_results: dict[str, Any] = {}
@@ -1257,7 +1307,9 @@ def run_redocking_validation(
             else:
                 logger.warning("Cascade MM-GBSA skipped: no SMILES available")
 
-        # If a cascade tier rescued, update primary reported result
+        # If a cascade tier rescued, record it in the layered fields and update
+        # the primary reported result so downstream consumers still see a single
+        # success/rmsd pair.
         if cascade_results:
             for tier_name, tier_key in [
                 ("IFP(20)", "ifp20"),
@@ -1266,7 +1318,10 @@ def run_redocking_validation(
             ]:
                 tier_result = cascade_results.get(tier_key)
                 if tier_result and tier_result.get("success"):
-                    rmsd = tier_result["best_rmsd"]
+                    rmsd_cascade = tier_result["best_rmsd"]
+                    success_cascade = True
+                    rescued_by = tier_name
+                    rmsd = rmsd_cascade
                     success = True
                     best_pose_tmp = os.path.join(
                         output_dir,
@@ -1287,6 +1342,9 @@ def run_redocking_validation(
     # miss.  Each method independently selects its best pose; RMSD is then
     # computed against the crystal for evaluation.
     aux_results: dict[str, dict[str, Any]] = {}
+    success_rescored = None
+    rmsd_rescored = None
+    rescored_by = None
     if rescoring_methods and result.all_poses_pdbqt and os.path.isfile(result.all_poses_pdbqt):
         from autodock.rescoring import combined_rescoring, select_best_by_method
 
@@ -1313,19 +1371,25 @@ def run_redocking_validation(
                     pose_tmp = os.path.join(output_dir, f"{method}_best_pose_{best_idx}.pdbqt")
                     with open(pose_tmp, "w") as fh:
                         fh.write(model_block)
-                    rmsd = compute_rmsd_to_crystal(pose_tmp, crystal_ligand_pdb)
-                    success = rmsd is not None and rmsd < REDocking_RMSD_THRESHOLD
+                    rmsd_method = compute_rmsd_to_crystal(pose_tmp, crystal_ligand_pdb)
+                    method_success = (
+                        rmsd_method is not None and rmsd_method < REDocking_RMSD_THRESHOLD
+                    )
                     aux_results[method] = {
-                        "best_rmsd": rmsd,
+                        "best_rmsd": rmsd_method,
                         "best_pose_idx": best_idx,
                         "best_score": best_score,
-                        "success": success,
+                        "success": method_success,
                     }
                     logger.info(
-                        f"Redocking {method.upper()}-best RMSD: {rmsd:.2f} Å "
+                        f"Redocking {method.upper()}-best RMSD: {rmsd_method:.2f} Å "
                         f"(pose #{best_idx}, score={best_score:.3f}) — "
-                        f"{'PASS' if success else 'FAIL'}"
+                        f"{'PASS' if method_success else 'FAIL'}"
                     )
+                    if method_success and success_rescored is None:
+                        success_rescored = True
+                        rmsd_rescored = rmsd_method
+                        rescored_by = method
         except Exception as exc:
             logger.warning(f"Auxiliary rescoring failed: {exc}")
     elif not success and not rescoring_methods:
@@ -1344,6 +1408,8 @@ def run_redocking_validation(
     # pick the cluster representative with the best geometric match.
     consensus_best_rmsd = None
     consensus_best_pose_idx = None
+    success_consensus = None
+    rmsd_consensus = None
     if (
         not success
         and result.pose_clusters
@@ -1383,13 +1449,14 @@ def run_redocking_validation(
             if best_consensus_idx is not None:
                 consensus_best_rmsd = best_consensus_rmsd
                 consensus_best_pose_idx = best_consensus_idx
-                consensus_success = consensus_best_rmsd < REDocking_RMSD_THRESHOLD
+                success_consensus = consensus_best_rmsd < REDocking_RMSD_THRESHOLD
+                rmsd_consensus = consensus_best_rmsd
                 logger.info(
                     f"Redocking cluster-consensus RMSD: {consensus_best_rmsd:.2f} Å "
                     f"(pose #{consensus_best_pose_idx}) — "
-                    f"{'PASS' if consensus_success else 'FAIL'}"
+                    f"{'PASS' if success_consensus else 'FAIL'}"
                 )
-                if consensus_success:
+                if success_consensus:
                     logger.info("Cluster consensus rescued the scoring failure")
         except Exception as exc:
             logger.warning(f"Cluster-consensus rescue failed: {exc}")
@@ -1451,6 +1518,14 @@ def run_redocking_validation(
         "success": success,
         "success_raw": success_raw,
         "success_min": success_min,
+        "success_cascade": success_cascade,
+        "rmsd_cascade": rmsd_cascade,
+        "rescued_by": rescued_by,
+        "success_consensus": success_consensus,
+        "rmsd_consensus": rmsd_consensus,
+        "success_rescored": success_rescored,
+        "rmsd_rescored": rmsd_rescored,
+        "rescored_by": rescored_by,
         "threshold": REDocking_RMSD_THRESHOLD,
         "best_affinity": result.best_affinity,
         "center": center,

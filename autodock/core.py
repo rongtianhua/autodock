@@ -536,6 +536,23 @@ class DockingResult:
     posebusters_pass: bool | None = None
     clash_score: float | None = None  # Å overlap
     clash_acceptable: bool | None = None
+    clash_median_overlap_a: float | None = None
+    clash_p90_overlap_a: float | None = None
+    clash_fraction_over_threshold: float | None = None
+    clash_threshold_a: float | None = None
+    clash_has_explicit_h: bool | None = None
+
+    # ── Redocking validation layering ────────────────────────────────
+    success_raw: bool | None = None
+    success_min: bool | None = None
+    success_cascade: bool | None = None
+    rmsd_cascade_a: float | None = None
+    rescued_by: str | None = None
+    success_consensus: bool | None = None
+    rmsd_consensus_a: float | None = None
+    success_rescored: bool | None = None
+    rmsd_rescored_a: float | None = None
+    rescored_by: str | None = None
 
     # ── Pose clustering ──────────────────────────────────────────────
     pose_clusters: list[dict] | None = None
@@ -708,8 +725,23 @@ class DockingResult:
             "posebusters_pass": self.posebusters_pass,
             "clash_score_A": self.clash_score,
             "clash_acceptable": self.clash_acceptable,
+            "clash_median_overlap_a": self.clash_median_overlap_a,
+            "clash_p90_overlap_a": self.clash_p90_overlap_a,
+            "clash_fraction_over_threshold": self.clash_fraction_over_threshold,
+            "clash_threshold_a": self.clash_threshold_a,
+            "clash_has_explicit_h": self.clash_has_explicit_h,
             "rmsd_from_crystal_A": self.rmsd_from_crystal,
             "protocol_valid": self.protocol_valid,
+            "success_raw": self.success_raw,
+            "success_min": self.success_min,
+            "success_cascade": self.success_cascade,
+            "rmsd_cascade_a": self.rmsd_cascade_a,
+            "rescued_by": self.rescued_by,
+            "success_consensus": self.success_consensus,
+            "rmsd_consensus_a": self.rmsd_consensus_a,
+            "success_rescored": self.success_rescored,
+            "rmsd_rescored_a": self.rmsd_rescored_a,
+            "rescored_by": self.rescored_by,
             "pocket_num": pocket.get("pocket_num"),
             "pocket_druggability": pocket.get("druggability"),
             "pocket_p2rank_prob": pocket.get("p2rank_prob"),
@@ -781,6 +813,13 @@ def build_docking_result(
         interactions=interactions or [],
         clash_score=clash_result.get("clash_score") if clash_result else None,
         clash_acceptable=clash_result.get("is_acceptable") if clash_result else None,
+        clash_median_overlap_a=clash_result.get("median_overlap_A") if clash_result else None,
+        clash_p90_overlap_a=clash_result.get("p90_overlap_A") if clash_result else None,
+        clash_fraction_over_threshold=(
+            clash_result.get("fraction_over_threshold") if clash_result else None
+        ),
+        clash_threshold_a=clash_result.get("threshold_A") if clash_result else None,
+        clash_has_explicit_h=clash_result.get("has_explicit_H") if clash_result else None,
         binding_pocket=binding_pocket,
         receptor_source=receptor_source,
         best_pose_pdbqt=best_pose_path,

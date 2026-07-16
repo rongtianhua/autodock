@@ -13,6 +13,7 @@ literature (kinases, proteases, nuclear receptors, and other enzymes).
 from __future__ import annotations
 
 import json
+import math
 import os
 from typing import Any
 
@@ -27,6 +28,21 @@ from autodock.core import (
 )
 from autodock.utils import safe_pdb_slice
 from autodock.validation import run_redocking_validation
+
+
+def _clean_for_json(obj: Any) -> Any:
+    """Recursively replace NaN/Inf floats with None for JSON compatibility."""
+    if isinstance(obj, dict):
+        return {k: _clean_for_json(v) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [_clean_for_json(v) for v in obj]
+    if isinstance(obj, float) and (math.isnan(obj) or math.isinf(obj)):
+        return None
+    if isinstance(obj, np.floating):
+        val = float(obj)
+        return None if math.isnan(val) or math.isinf(val) else val
+    return obj
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Default benchmark set (20 diverse non-covalent targets)
@@ -365,7 +381,11 @@ def run_redocking_benchmark(
         "ifp_rmsds": [
             r["ifp_best_rmsd"] for r in raw_results if r.get("ifp_best_rmsd") is not None
         ],
-        # Cascade fallback metrics
+        # Layered cascade/consensus/rescored success metrics
+        "cascade_successes": [r for r in raw_results if r.get("success_cascade")],
+        "consensus_successes": [r for r in raw_results if r.get("success_consensus")],
+        "rescored_successes": [r for r in raw_results if r.get("success_rescored")],
+        # Legacy tier-specific cascade metrics (kept for backward compatibility)
         "cascade_ifp_successes": [r for r in raw_results if r.get("cascade_ifp_success")],
         "cascade_mmgbsa_successes": [r for r in raw_results if r.get("cascade_mmgbsa_success")],
         # Auxiliary rescoring metrics (IFP, etc.)
@@ -392,6 +412,17 @@ def run_redocking_benchmark(
     n_degraded = sum(1 for r in raw_results if r.get("success_raw") and not r.get("success"))
     summary["n_rescued"] = n_rescued
     summary["n_degraded"] = n_degraded
+
+    # Layered rescue breakdown: how each tier recovered raw top-1 failures
+    summary["n_rescued_by_cascade"] = sum(
+        1 for r in raw_results if not r.get("success_raw") and r.get("success_cascade")
+    )
+    summary["n_rescued_by_consensus"] = sum(
+        1 for r in raw_results if not r.get("success_raw") and r.get("success_consensus")
+    )
+    summary["n_rescued_by_rescored"] = sum(
+        1 for r in raw_results if not r.get("success_raw") and r.get("success_rescored")
+    )
 
     # By family (primary)
     by_family: dict[str, list[float]] = {}
@@ -423,7 +454,7 @@ def run_redocking_benchmark(
     # Persist
     json_path = os.path.join(output_dir, "benchmark_summary.json")
     with open(json_path, "w") as fh:
-        json.dump(summary, fh, indent=2, default=str)
+        json.dump(_clean_for_json(summary), fh, indent=2, default=str)
 
     # CSV
     try:
@@ -456,6 +487,14 @@ def run_redocking_benchmark(
                     "ifp_best_pose_idx": r.get("ifp_best_pose_idx"),
                     "ifp_best_score": r.get("ifp_best_score"),
                     "cascade": r.get("cascade", False),
+                    "success_cascade": r.get("success_cascade"),
+                    "rmsd_cascade": r.get("rmsd_cascade"),
+                    "rescued_by": r.get("rescued_by"),
+                    "success_consensus": r.get("success_consensus"),
+                    "rmsd_consensus": r.get("rmsd_consensus"),
+                    "success_rescored": r.get("success_rescored"),
+                    "rmsd_rescored": r.get("rmsd_rescored"),
+                    "rescored_by": r.get("rescored_by"),
                     "cascade_ifp_rmsd": r.get("cascade_ifp_rmsd"),
                     "cascade_ifp_success": r.get("cascade_ifp_success"),
                     "cascade_mmgbsa_rmsd": r.get("cascade_mmgbsa_rmsd"),
@@ -498,12 +537,23 @@ def run_redocking_benchmark(
             f"IFP-best: {len(ifp_successes)}/{summary['n_total']} "
             f"({len(ifp_successes)/summary['n_total']*100:.1f}%). "
         )
-    # Cascade fallback summary
+    # Layered rescue summary
+    cascade_succ = summary.get("cascade_successes", [])
+    consensus_succ = summary.get("consensus_successes", [])
+    rescored_succ = summary.get("rescored_successes", [])
+    if cascade_succ or consensus_succ or rescored_succ:
+        msg += (
+            f"Rescues: cascade={len(cascade_succ)}, "
+            f"consensus={len(consensus_succ)}, "
+            f"rescored={len(rescored_succ)}. "
+        )
+    # Legacy cascade fallback summary
     cascade_ifp = summary.get("cascade_ifp_successes", [])
     cascade_mmgbsa = summary.get("cascade_mmgbsa_successes", [])
     if cascade_ifp or cascade_mmgbsa:
         msg += (
-            f"Cascade: IFP rescued {len(cascade_ifp)}, " f"MM-GBSA rescued {len(cascade_mmgbsa)}. "
+            f"Cascade tiers: IFP rescued {len(cascade_ifp)}, "
+            f"MM-GBSA rescued {len(cascade_mmgbsa)}. "
         )
     if summary["median_rmsd"] is not None:
         msg += f"Median RMSD: {summary['median_rmsd']:.2f} Å"
@@ -771,6 +821,14 @@ def _run_single_benchmark(item: dict[str, Any]) -> dict[str, Any]:
             "ifp_best_score": result.get("ifp_best_score"),
             "cascade": result.get("cascade", False),
             "cascade_results": result.get("cascade_results", {}),
+            "success_cascade": result.get("success_cascade"),
+            "rmsd_cascade": result.get("rmsd_cascade"),
+            "rescued_by": result.get("rescued_by"),
+            "success_consensus": result.get("success_consensus"),
+            "rmsd_consensus": result.get("rmsd_consensus"),
+            "success_rescored": result.get("success_rescored"),
+            "rmsd_rescored": result.get("rmsd_rescored"),
+            "rescored_by": result.get("rescored_by"),
             "cascade_ifp_rmsd": result.get("cascade_ifp_rmsd"),
             "cascade_ifp_success": result.get("cascade_ifp_success"),
             "cascade_mmgbsa_rmsd": result.get("cascade_mmgbsa_rmsd"),
@@ -946,16 +1004,18 @@ def run_repeat_docking(
     json_path = os.path.join(output_dir, "repeat_docking_summary.json")
     with open(json_path, "w") as fh:
         json.dump(
-            {
-                "parameters": {
-                    "n_repeats": n_repeats,
-                    "seeds": list(seeds),
-                    "exhaustiveness": exhaustiveness,
-                    "n_poses": n_poses,
-                    "minimize": minimize,
-                },
-                "per_target": per_target,
-            },
+            _clean_for_json(
+                {
+                    "parameters": {
+                        "n_repeats": n_repeats,
+                        "seeds": list(seeds),
+                        "exhaustiveness": exhaustiveness,
+                        "n_poses": n_poses,
+                        "minimize": minimize,
+                    },
+                    "per_target": per_target,
+                }
+            ),
             fh,
             indent=2,
             default=str,

@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import contextlib
 import logging
+import math
 import re
 from typing import Any
 
@@ -297,11 +298,18 @@ def _run_mmgbsa_rescoring(
             )
 
             binding_energy = e_complex - e_receptor - e_ligand
+            if not math.isfinite(binding_energy):
+                logger.debug(
+                    f"MM-GBSA pose {pose_idx} produced non-finite ΔG={binding_energy}; skipping"
+                )
+                continue
             scores.append((pose_idx, binding_energy, vina_energy))
         except (ValueError, TypeError, RuntimeError) as exc:
             logger.debug(f"MM-GBSA pose {pose_idx} energy failed: {exc}")
             continue
 
+    # Drop any non-finite scores as a defensive second guard.
+    scores = [(idx, score, vina) for idx, score, vina in scores if math.isfinite(score)]
     if not scores:
         logger.warning("MM-GBSA: no poses scored successfully")
         return None
@@ -368,8 +376,10 @@ def _extract_ligand_coords_from_pose(
         pos = docked_conf.GetAtomPosition(docked_idx)
         coords[template_idx] = [pos.x, pos.y, pos.z]
 
-    # Place hydrogens near their bonded heavy atoms using OpenFF topology
-    rng = np.random.default_rng(42)
+    # Place hydrogens near their bonded heavy atoms.  Deterministic offsets
+    # along the +X direction from the parent keep the geometry physically
+    # reasonable enough for MM-GBSA scoring while avoiding the numerical
+    # instabilities caused by random coordinates near the origin.
     for a in offmol_base.atoms:
         if a.atomic_number == 1:
             for bond in offmol_base.bonds:
@@ -381,10 +391,16 @@ def _extract_ligand_coords_from_pose(
                     continue
                 if coords[parent] != [0.0, 0.0, 0.0]:
                     coords[a.molecule_atom_index] = [
-                        coords[parent][0] + rng.normal(0, 0.3),
-                        coords[parent][1] + rng.normal(0, 0.3),
-                        coords[parent][2] + rng.normal(0, 0.3),
+                        coords[parent][0] + 1.0,
+                        coords[parent][1],
+                        coords[parent][2],
                     ]
                     break
+
+    # If any heavy atom failed to map, abort this pose rather than scoring
+    # a partially-zero structure, which would corrupt MM-GBSA energies.
+    if any(c == [0.0, 0.0, 0.0] for c in coords):
+        logger.debug("MM-GBSA: incomplete coordinate mapping for pose; skipping")
+        return None
 
     return [Vec3(x, y, z) * unit.angstrom for x, y, z in coords]

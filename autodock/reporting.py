@@ -293,11 +293,30 @@ def generate_pdf_report(
     if figure_paths:
         story.append(PageBreak())
         story.append(Paragraph("<b>Figures</b>", styles["Heading2"]))
+        # Use the full text width (A4 minus margins) as the maximum figure width.
+        max_fig_width = doc.width
         for fig_path in figure_paths:
-            if os.path.exists(fig_path):
-                img = Image(fig_path, width=16 * cm, height=12 * cm)
-                story.append(img)
-                story.append(Spacer(1, 0.3 * cm))
+            if not os.path.exists(fig_path):
+                continue
+            # Preserve aspect ratio: fit within max_fig_width × a generous height.
+            try:
+                from PIL import Image as _PILImage
+
+                with _PILImage.open(fig_path) as _pil_img:
+                    img_w_px, img_h_px = _pil_img.size
+            except Exception:
+                img_w_px, img_h_px = 4, 3
+            aspect = img_h_px / img_w_px if img_w_px else 0.75
+            fig_width = max_fig_width
+            fig_height = fig_width * aspect
+            # Limit height to roughly 75 % of the page height to avoid oversized panels.
+            max_fig_height = 0.75 * doc.height
+            if fig_height > max_fig_height:
+                fig_height = max_fig_height
+                fig_width = fig_height / aspect if aspect else max_fig_width
+            img = Image(fig_path, width=fig_width, height=fig_height)
+            story.append(img)
+            story.append(Spacer(1, 0.3 * cm))
 
     doc.build(story)
     logger.info(f"PDF report generated: {output_pdf}")

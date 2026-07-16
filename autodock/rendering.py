@@ -10,6 +10,7 @@ import contextlib
 import math
 import os
 import tempfile
+from pathlib import Path
 from typing import Any
 
 from autodock.core import (
@@ -55,6 +56,13 @@ INTERACTION_COLORS = {
 }
 
 # Publication-grade colour schemes aligned with Nature/Science conventions
+JOURNAL_PRESETS: dict[str, str] = {
+    "nature": "publication_white",
+    "cell": "presentation_black",
+    "acs": "publication_grey",
+    "science": "publication_white",
+}
+
 COLOR_SCHEMES: dict[str, dict[str, Any]] = {
     "publication_white": {
         "bg": "white",
@@ -124,6 +132,7 @@ def _build_pymol_script(
     save_pse: str | None = None,
     color_scheme: str = "presentation_black",
     receptor_source: str = "auto",
+    show_distance_labels: bool = True,
 ) -> str:
     """Build a PyMOL command script for publication-quality rendering.
 
@@ -131,12 +140,17 @@ def _build_pymol_script(
     ----------
     color_scheme:
         One of ``publication_white`` (default), ``publication_grey``,
-        ``presentation_black``.
+        ``presentation_black``, or a journal preset (``nature``, ``cell``,
+        ``acs``, ``science``).
     receptor_source:
         ``"AlphaFold"``, ``"PDB"``, ``"PDB_single_chain"``, or ``"file"``.
         Determines protein coloring: AlphaFold → pLDDT (B-factor) rainbow;
         PDB → chainbow (N→C blue→red).
+    show_distance_labels:
+        If True and ``scene == "interaction"``, annotate each dashed interaction
+        line with its distance in Å.
     """
+    color_scheme = JOURNAL_PRESETS.get(color_scheme, color_scheme)
     scheme = COLOR_SCHEMES.get(color_scheme, COLOR_SCHEMES["presentation_black"])
     is_af = receptor_source in ("AlphaFold", "SWISS-MODEL")
 
@@ -287,6 +301,15 @@ def _build_pymol_script(
             lines.append("            if obj:")
             lines.append(f"                cmd.load_cgo(obj, 'int_{idx}')")
             lines.append(f"                cmd.show('cgo', 'int_{idx}')")
+            lines.append("                mid = [(pair[0][i]+pair[1][i])/2 for i in range(3)]")
+            lines.append(
+                f"                cmd.pseudoatom('dist_{idx}', pos=mid, label='%.2f'%dmin)"
+            )
+            lines.append(
+                f"                cmd.set('label_color', '{scheme.get('label_c', 'white')}', 'dist_{idx}')"
+            )
+            lines.append(f"                cmd.set('label_size', 24, 'dist_{idx}')")
+            lines.append(f"                cmd.hide('nonbonded', 'dist_{idx}')")
             lines.append("except: pass")
         lines.append("python end")
 
@@ -386,6 +409,7 @@ def render_scene_pymol(
     save_pse: str | None = None,
     color_scheme: str = "presentation_black",
     receptor_source: str = "auto",
+    show_distance_labels: bool = True,
 ) -> str:
     """
     Render a 3D scene using PyMOL CLI.
@@ -401,9 +425,12 @@ def render_scene_pymol(
         height: Image height in pixels (default 1800).
         save_pse: Optional path to save a PyMOL session (.pse) file.
         color_scheme: Colour preset — ``presentation_black`` (default),
-            ``publication_white``, or ``publication_grey``.
+            ``publication_white``, ``publication_grey``, or a journal preset
+            (``nature``, ``cell``, ``acs``, ``science``).
         receptor_source: ``"AlphaFold"``, ``"PDB"``, ``"PDB_single_chain"``,
             or ``"file"``. Determines protein coloring.
+        show_distance_labels: If True and ``scene == "interaction"``, label
+            each interaction with its distance in Å.
 
     Returns:
         Path to output PNG.
@@ -429,6 +456,7 @@ def render_scene_pymol(
         save_pse=save_pse,
         color_scheme=color_scheme,
         receptor_source=receptor_source,
+        show_distance_labels=show_distance_labels,
     )
 
     fd, script_path = tempfile.mkstemp(suffix=".pml")
@@ -437,8 +465,11 @@ def render_scene_pymol(
         fh.write(script)
 
     try:
+        # Headless PyMOL needs explicit window/buffer size; -cq alone defaults to
+        # 640x480 and ignores cmd.viewport(). Pass -W/-H to set the off-screen
+        # framebuffer to the requested ray-tracing resolution.
         success, stdout, stderr = safe_subprocess(
-            [_PYMOL_EXE, "-cq", script_path],
+            [_PYMOL_EXE, "-cq", "-W", str(width), "-H", str(height), script_path],
             timeout=300,
         )
         if not success:
@@ -450,9 +481,26 @@ def render_scene_pymol(
     if not os.path.exists(output_png):
         raise VisualizationError(f"PyMOL did not produce output: {output_png}")
 
-    logger.info(f"3D scene rendered: {output_png}")
+    # Validate that the output has the requested resolution. PyMOL silently
+    # falls back to smaller buffers on some builds; catch this before it reaches
+    # the publication PDF.
+    try:
+        from PIL import Image as _PILImage
 
-    # Optional PDF output — PIL converts PNG raster to PDF
+        with _PILImage.open(output_png) as _img:
+            actual_size = _img.size
+    except Exception as exc:
+        logger.warning(f"Could not validate rendered image size: {exc}")
+        actual_size = (0, 0)
+    if actual_size != (width, height):
+        logger.warning(
+            f"PyMOL rendered {output_png} at {actual_size}, expected ({width}, {height}). "
+            "This usually means the PyMOL build ignored -W/-H flags."
+        )
+
+    logger.info(f"3D scene rendered: {output_png} ({actual_size[0]}x{actual_size[1]})")
+
+    # Optional PDF output — PIL converts PNG raster to PDF at the requested DPI.
     if output_pdf:
         ensure_dir(os.path.dirname(output_pdf) or ".")
         try:
@@ -733,12 +781,43 @@ def _compute_label_positions(
     return positions
 
 
+def _draw_molecule_svg(
+    mol: Any,
+    highlight_atoms: set[int],
+    highlight_atom_colors: dict[int, tuple[float, float, float]],
+    highlight_bonds: set[int],
+    highlight_bond_colors: dict[int, tuple[float, float, float]],
+    width: int,
+    height: int,
+) -> str:
+    """Render an RDKit molecule to SVG with highlighted atoms/bonds."""
+    from rdkit.Chem import Draw
+
+    drawer = Draw.MolDraw2DSVG(width, height)
+    drawer.drawOptions().highlightRadius = 0.30
+    drawer.drawOptions().clearBackground = True
+    drawer.drawOptions().bondLineWidth = 3
+    if highlight_atoms:
+        drawer.DrawMolecule(
+            mol,
+            highlightAtoms=list(highlight_atoms),
+            highlightAtomColors=highlight_atom_colors,
+            highlightBonds=list(highlight_bonds) if highlight_bonds else None,
+            highlightBondColors=highlight_bond_colors if highlight_bonds else None,
+        )
+    else:
+        drawer.DrawMolecule(mol)
+    drawer.FinishDrawing()
+    return drawer.GetDrawingText()
+
+
 def render_interactions_2d(
     receptor_pdb: str,
     ligand_pdbqt: str,
     interactions: list[dict[str, Any]],
     output_png: str,
     output_pdf: str | None = None,
+    output_svg: str | None = None,
     width: int = 1800,
     height: int = 1400,
     dpi: int = DEFAULT_DPI,
@@ -755,7 +834,8 @@ def render_interactions_2d(
         ligand_pdbqt: Ligand PDBQT (parsed for structure).
         interactions: List of interaction dicts from detect_interactions().
         output_png: Output PNG path.
-        output_pdf: Optional output PDF path (high-DPI vector via PIL).
+        output_pdf: Optional output PDF path (high-DPI raster via PIL).
+        output_svg: Optional output SVG path (true vector molecule diagram).
         width: Canvas width in pixels.
         height: Canvas height in pixels.
         dpi: Image DPI.
@@ -803,12 +883,13 @@ def render_interactions_2d(
     for inter in interactions:
         key = (inter.get("type"), inter.get("resn"), inter.get("resi"), inter.get("chain"))
         if key not in interaction_groups:
+            itype = inter.get("type")
             interaction_groups[key] = {
-                "type": inter.get("type"),
+                "type": itype,
                 "resn": inter.get("resn"),
                 "resi": inter.get("resi"),
                 "chain": inter.get("chain"),
-                "color": inter.get("color"),
+                "color": inter.get("color") or INTERACTION_COLORS.get(itype, "grey"),
                 "distance": inter.get("distance"),
                 "rdkit_atoms": set(),
             }
@@ -1208,7 +1289,7 @@ def render_interactions_2d(
     img.save(output_png, dpi=(dpi, dpi))
     logger.info(f"2D interaction diagram rendered: {output_png}")
 
-    # Optional PDF output — PIL converts the same high-DPI bitmap to PDF
+    # Optional PDF output — PIL converts the same high-DPI bitmap to PDF.
     if output_pdf:
         ensure_dir(os.path.dirname(output_pdf) or ".")
         try:
@@ -1217,6 +1298,26 @@ def render_interactions_2d(
             logger.info(f"2D interaction diagram (PDF): {output_pdf}")
         except (OSError, TypeError, ValueError) as exc:
             logger.warning(f"2D PDF output skipped: {exc}")
+
+    # Optional SVG output — true vector rendering of the highlighted molecule.
+    # Residue labels are not yet overlaid; this provides a publication-quality
+    # starting layer that can be edited in Illustrator/Inkscape.
+    if output_svg:
+        ensure_dir(os.path.dirname(output_svg) or ".")
+        try:
+            svg_text = _draw_molecule_svg(
+                mol,
+                highlight_atoms,
+                highlight_atom_colors,
+                highlight_bonds,
+                highlight_bond_colors,
+                canvas_w,
+                canvas_h,
+            )
+            Path(output_svg).write_text(svg_text, encoding="utf-8")
+            logger.info(f"2D interaction diagram (SVG): {output_svg}")
+        except (OSError, TypeError, ValueError) as exc:
+            logger.warning(f"2D SVG output skipped: {exc}")
 
     return output_png
 
@@ -1280,14 +1381,20 @@ def composite_summary(
             images.append(img)
 
     nrows = (len(images) + ncols - 1) // ncols
+    # Use a consistent column width (the widest scaled panel) so panels align,
+    # but allow each row to have its own height to avoid excessive whitespace
+    # when 3D (4:3) and 2D (tall) images are mixed.
     panel_w = max(img.width for img in images)
-    panel_h = max(img.height for img in images)
+    row_heights: list[int] = []
+    for row in range(nrows):
+        row_imgs = images[row * ncols : (row + 1) * ncols]
+        row_heights.append(max(img.height for img in row_imgs))
 
     pad = 24
     title_h = 60 if figure_title else 0
     label_h = 36 if panel_titles else 0
     total_w = panel_w * ncols + pad * (ncols + 1)
-    total_h = panel_h * nrows + label_h * nrows + title_h + pad * (nrows + 1)
+    total_h = title_h + sum(row_heights) + label_h * nrows + pad * (nrows + 1)
 
     composite = Image.new("RGB", (total_w, total_h), (255, 255, 255))
     draw = ImageDraw.Draw(composite)
@@ -1317,16 +1424,16 @@ def composite_summary(
         draw.text((pad, pad), figure_title, fill=(0, 0, 0), font=title_font)
 
     y_offset = title_h + pad
-    for row in range(nrows):
+    for row, row_h in enumerate(row_heights):
         x_offset = pad
         for col in range(ncols):
             idx = row * ncols + col
             if idx >= len(images):
                 break
             img = images[idx]
-            # Center the image in its uniform cell
+            # Centre each panel in its column; top-align within the row.
             x_pos = x_offset + (panel_w - img.width) // 2
-            y_pos = y_offset + label_h + (panel_h - img.height) // 2
+            y_pos = y_offset + label_h
             composite.paste(img, (x_pos, y_pos))
 
             if panel_titles and idx < len(panel_titles):
@@ -1338,7 +1445,7 @@ def composite_summary(
                 )
 
             x_offset += panel_w + pad
-        y_offset += panel_h + label_h + pad
+        y_offset += row_h + label_h + pad
 
     ensure_dir(os.path.dirname(output_png) or ".")
     composite.save(output_png, dpi=(dpi, dpi))

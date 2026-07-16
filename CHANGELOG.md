@@ -8,6 +8,52 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **Headless PyMOL high-resolution rendering fix** (`autodock/rendering.py`).
+  `render_scene_pymol()` now passes `-W {width} -H {height}` to the PyMOL CLI,
+  preventing the silent 640×480 fallback in `-c` mode. Rendered output size is
+  validated against the requested resolution and a warning is emitted on mismatch.
+- **Adaptive composite figure layout** (`autodock/rendering.py`).
+  `composite_summary()` now uses per-row adaptive heights while keeping columns
+  aligned, eliminating the excessive whitespace caused by forcing all panels into
+  a single uniform cell size.
+- **PDF figure embedding preserves aspect ratio** (`autodock/reporting.py`).
+  Images are scaled to the full text width while maintaining their original
+  aspect ratio, avoiding the previous forced 16×12 cm stretch.
+- **2D interaction SVG vector output** (`autodock/rendering.py`,
+  `autodock/post_dock_pipeline.py`). `render_interactions_2d()` now supports
+  `output_svg` for a true vector molecule diagram, and the workflow emits
+  `2d_interactions.svg` by default.
+- **JSON NaN/Inf sanitization** (`autodock/benchmark.py`).
+  `benchmark_summary.json` and `repeat_docking_summary.json` now serialize
+  non-finite floats as `null`, ensuring strict JSON parsers can read the files.
+- **Validation metric layering** (`autodock/validation.py`, `autodock/core.py`,
+  `autodock/benchmark.py`). Redocking results now expose `success_raw`,
+  `success_min`, `success_cascade`/`rmsd_cascade`/`rescued_by`,
+  `success_consensus`/`rmsd_consensus`, and `success_rescored`/`rmsd_rescored`/
+  `rescored_by`. `success`/`rmsd` remain the final reported value after all
+  rescue tiers. Benchmark CSV and JSON summaries include the new fields and
+  per-rescue-tier counts.
+- **MM-GBSA non-finite filtering** (`autodock/rescoring.py`). Simplified MM-GBSA
+  now drops poses that yield `NaN` or `Inf` binding energies before ranking,
+  and aborts coordinate mapping when any heavy atom cannot be aligned.
+- **Distribution-based clash metrics** (`autodock/validation.py`, `autodock/core.py`).
+  `compute_clash_score()` now reports median overlap, 90th-percentile overlap,
+  fraction of atom pairs over threshold, and auto-selects a heavy-atom-only
+  (0.5 Å) or explicit-H (1.2 Å) threshold. Legacy `clash_score`, `n_clashes`,
+  and `is_acceptable` fields are preserved.
+- **3D interaction distance labels and journal presets** (`autodock/rendering.py`).
+  Interaction scenes can now annotate each dashed line with its distance in Å
+  (`show_distance_labels`). `color_scheme` accepts journal presets
+  (`nature`, `cell`, `acs`, `science`) that map to the existing publication
+  colour schemes. 2D interaction diagrams fall back to the canonical
+  `INTERACTION_COLORS` palette when no colour is provided.
+
+### Fixed
+- `METHODS.md` updated to reflect the actual implementation: removed obsolete
+  P2Rank `prob ≥ 0.5` hard cutoff, corrected clash-score definition, and
+  clarified that `consensus_affinity` is not currently computed.
+
+### Added
 - **Three-tier cascade fallback rescoring** (`autodock/validation.py`). When Vina top-1 RMSD ≥ 2.0 Å, automatically triggers tier-2 (IFP re-ranking + re-dock with 50 poses, e=8) and tier-3 (MM-GBSA on top 5 poses). Improves top-1 success from 35% → 55% (+20 pp) on 20-target benchmark with zero degradation.
 - **Flexible receptor docking** (`autodock/preparation.py`, `autodock/docking.py`, `autodock/validation.py`). Opt-in fallback (`use_flexible_receptor=True`) that detects nearby residues, prepares flexible receptor PDBQT via Meeko, and re-docks with reduced exhaustiveness. POC on 1B9S improved best RMSD from 2.11 Å → 1.05–1.21 Å @ rank #1. Disabled by default due to runtime cost (~5 min per target).
 - **MM-GBSA rescoring** (`autodock/rescoring.py`). OpenMM + OpenFF-based MM-GBSA ΔG computation for pose re-ranking. Functional for 17/20 targets after NaN bug fix.

@@ -310,6 +310,35 @@ class TestComputeClashScoreBranches:
         assert result["clash_score"] is None
         assert result["n_clashes"] is None
 
+    def test_distribution_metrics_returned(self, tmp_path):
+        rec = tmp_path / "rec.pdb"
+        rec.write_text("ATOM      1  C   ALA A   1      0.000   0.000   0.000\n")
+        lig = tmp_path / "lig.pdbqt"
+        lig.write_text("ATOM      1  C   LIG A   1      1.000   0.000   0.000\n")
+        result = val.compute_clash_score(str(lig), str(rec))
+        assert result["median_overlap_A"] is not None
+        assert result["p90_overlap_A"] is not None
+        assert result["fraction_over_threshold"] is not None
+        assert 0.0 <= result["fraction_over_threshold"] <= 1.0
+
+    def test_auto_threshold_heavy_atoms(self, tmp_path):
+        rec = tmp_path / "rec.pdb"
+        rec.write_text("ATOM      1  C   ALA A   1      0.000   0.000   0.000\n")
+        lig = tmp_path / "lig.pdbqt"
+        lig.write_text("ATOM      1  C   LIG A   1      0.000   0.000   0.000\n")
+        result = val.compute_clash_score(str(lig), str(rec))
+        assert result["has_explicit_H"] is False
+        assert result["threshold_A"] == 0.5
+
+    def test_auto_threshold_explicit_hydrogens(self, tmp_path):
+        rec = tmp_path / "rec.pdb"
+        rec.write_text("ATOM      1  H   ALA A   1      0.000   0.000   0.000\n")
+        lig = tmp_path / "lig.pdbqt"
+        lig.write_text("ATOM      1  H   LIG A   1      0.000   0.000   0.000\n")
+        result = val.compute_clash_score(str(lig), str(rec))
+        assert result["has_explicit_H"] is True
+        assert result["threshold_A"] == 1.2
+
 
 class TestComputeRmsdBranches:
     def test_no_rdkit_returns_none(self, tmp_path):
