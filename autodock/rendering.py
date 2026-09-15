@@ -463,7 +463,9 @@ def _build_pymol_script(
             # Small outward offset from the ligand center to reduce overlap
             lines.append("        com = cmd.get_extent('ligand')")
             lines.append("        lig_c = [(com[0][i]+com[1][i])/2 for i in range(3)]")
-            lines.append("        dx = anchor[0] - lig_c[0]; dy = anchor[1] - lig_c[1]; dz = anchor[2] - lig_c[2]")
+            lines.append(
+                "        dx = anchor[0] - lig_c[0]; dy = anchor[1] - lig_c[1]; dz = anchor[2] - lig_c[2]"
+            )
             lines.append("        dist = math.sqrt(dx*dx + dy*dy + dz*dz)")
             lines.append("        if dist > 0:")
             lines.append("            # Normalize and scale offset to 2.5 Å outward from ligand")
@@ -623,7 +625,10 @@ def _autocrop_png(png_path: str, margin_frac: float = 0.03) -> None:
     with Image.open(png_path) as img:
         rgb = img.convert("RGB")
     # Border colour = mode of the four corners (robust for white/grey bg).
-    corners = [rgb.getpixel(p) for p in [(0, 0), (rgb.width - 1, 0), (0, rgb.height - 1), (rgb.width - 1, rgb.height - 1)]]
+    corners = [
+        rgb.getpixel(p)
+        for p in [(0, 0), (rgb.width - 1, 0), (0, rgb.height - 1), (rgb.width - 1, rgb.height - 1)]
+    ]
     bg = max(set(corners), key=corners.count)
     diff = ImageChops.difference(rgb, Image.new("RGB", rgb.size, bg))
     bbox = diff.getbbox()
@@ -632,11 +637,18 @@ def _autocrop_png(png_path: str, margin_frac: float = 0.03) -> None:
     mx = int((bbox[2] - bbox[0]) * margin_frac)
     my = int((bbox[3] - bbox[1]) * margin_frac)
     cropped = rgb.crop(
-        (max(0, bbox[0] - mx), max(0, bbox[1] - my), min(rgb.width, bbox[2] + mx), min(rgb.height, bbox[3] + my))
+        (
+            max(0, bbox[0] - mx),
+            max(0, bbox[1] - my),
+            min(rgb.width, bbox[2] + mx),
+            min(rgb.height, bbox[3] + my),
+        )
     )
     if cropped.size != rgb.size:
         cropped.save(png_path)
-        logger.info(f"Autocropped overview figure: {png_path} → {cropped.size[0]}x{cropped.size[1]}")
+        logger.info(
+            f"Autocropped overview figure: {png_path} → {cropped.size[0]}x{cropped.size[1]}"
+        )
 
 
 def render_scene_pymol(
