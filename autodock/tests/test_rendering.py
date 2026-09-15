@@ -271,6 +271,56 @@ class TestSceneScriptHygiene:
         script = rend._build_pymol_script("rec.pdb", "lig.pdbqt", "out.png", scene="complex")
         assert "cmd.set('ray_opaque_background', 1)" in script
 
+    def test_complex_scene_orients_camera(self):
+        """Whole-complex view must orient first (no wide empty margins)."""
+        script = rend._build_pymol_script("rec.pdb", "lig.pdbqt", "out.png", scene="complex")
+        assert "cmd.orient('receptor or ligand')" in script
+        assert "cmd.zoom('(receptor or ligand)', 1.5)" in script
+
+    def test_complex_default_resolution_bump(self):
+        """Complex scene without explicit size renders at 3200x2400; explicit size wins."""
+        with (
+            patch("autodock.rendering._PYMOL_EXE", "/fake/pymol"),
+            patch("autodock.rendering.safe_subprocess") as mock_sub,
+            patch("os.path.exists", return_value=True),
+        ):
+            mock_sub.return_value = (True, "", "")
+            rend.render_scene_pymol("rec.pdb", "lig.pdbqt", "out_complex.png", scene="complex")
+            cmd = mock_sub.call_args[0][0]
+            assert cmd[cmd.index("-W") + 1] == "3200"
+            assert cmd[cmd.index("-H") + 1] == "2400"
+
+            rend.render_scene_pymol(
+                "rec.pdb",
+                "lig.pdbqt",
+                "out_complex.png",
+                scene="complex",
+                width=2400,
+                height=1800,
+            )
+            cmd = mock_sub.call_args[0][0]
+            assert cmd[cmd.index("-W") + 1] == "2400"
+            assert cmd[cmd.index("-H") + 1] == "1800"
+
+    def test_interaction_legend_overlay(self, tmp_path):
+        """Legend box is composited onto the interaction PNG (bottom-left)."""
+        from PIL import Image
+
+        png = tmp_path / "scene.png"
+        Image.new("RGB", (2400, 1800), (255, 255, 255)).save(png)
+        before = Image.open(png).convert("RGB").load()
+        assert before[20, 1800 - 20] == (255, 255, 255)
+
+        interactions = [
+            {"type": "H-bond", "resn": "ARG", "resi": 70},
+            {"type": "Hydrophobic", "resn": "LEU", "resi": 69},
+        ]
+        rend._overlay_interaction_legend(str(png), interactions)
+
+        after = Image.open(png).convert("RGB").load()
+        # Bottom-left corner now carries the semi-transparent legend box
+        assert after[20, 1800 - 20] != (255, 255, 255)
+
 
 class TestInteractionSceneLabelsAndLines:
     """Interaction scene: per-type per-atom dashed lines + pocket residue labels."""
@@ -305,7 +355,12 @@ class TestInteractionSceneLabelsAndLines:
         # One dashed line per ligand atom, colored by interaction type
         assert "targets = [(-20.7, 5.2, 47.6)]" in script
         assert "(0.0, 1.0, 1.0)" in script  # H-bond cyan
-        assert "(1.0, 0.5, 0.0)" in script  # Hydrophobic orange
+        assert "(1.0, 0.502, 0.0)" in script  # Hydrophobic orange (128/255)
+        # Dashes thinner, endpoint element preference per interaction type
+        assert "radius=0.06" in script
+        assert "('N', 'O')" in script  # H-bond prefers N/O endpoints
+        assert "('C',)" in script  # Hydrophobic prefers carbon endpoints
+        assert "_elem(a) in _pref" in script
         # Distance label only on the closest pair
         assert "cmd.pseudoatom('dist_0'" in script
 

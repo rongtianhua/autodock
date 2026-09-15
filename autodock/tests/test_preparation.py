@@ -1699,3 +1699,115 @@ class TestFpocketOnlyFallback:
         pdb.write_text("ATOM      1  CA  ALA A   1      0.000   0.000   0.000\n")
         with pytest.raises(PreparationError, match="All pocket detection methods failed"):
             prep.find_top_pockets(str(pdb))
+
+
+class TestSphereBoxOverlap:
+    """Geometric consensus helper: P2Rank sphere vs fpocket pocket box."""
+
+    def test_center_inside_box(self):
+        assert prep._sphere_box_overlap((0, 0, 0), 5.0, (1, 1, 1), (4, 4, 4)) is True
+
+    def test_edge_within_radius(self):
+        # Box x∈[4,6]; closest point (4,0,0) is 4 Å away → inside r=5
+        assert prep._sphere_box_overlap((0, 0, 0), 5.0, (5, 0, 0), (2, 2, 2)) is True
+        # Same box, smaller radius → no overlap
+        assert prep._sphere_box_overlap((0, 0, 0), 3.0, (5, 0, 0), (2, 2, 2)) is False
+
+    def test_disjoint(self):
+        assert prep._sphere_box_overlap((0, 0, 0), 4.0, (20, 0, 0), (4, 4, 4)) is False
+
+
+class TestFindTopPocketsConsensus:
+    """Dual consensus criterion, unverified traceability, extension pass."""
+
+    def _p2rank(self, n: int, x0: float = 100.0, step: float = 100.0):
+        """n P2Rank pockets on the x-axis, scores strictly descending."""
+        return [
+            {
+                "num": i + 1,
+                "center": (x0 + i * step, 0.0, 0.0),
+                "score": round(0.9 - i * 0.01, 4),
+                "radius": 10.0,
+                "druggability": round(0.9 - i * 0.01, 4),
+                "dims": (20.0, 20.0, 20.0),
+                "pocket_source": "p2rank",
+            }
+            for i in range(n)
+        ]
+
+    def _fpocket(self, center, druggability=0.6, dims=(20.0, 20.0, 20.0), num=7):
+        return {
+            "num": num,
+            "center": center,
+            "druggability": druggability,
+            "volume": 400,
+            "depth": 6.0,
+            "dims": dims,
+        }
+
+    def _run(
+        self,
+        tmp_path,
+        p2rank_pockets,
+        fpocket_pockets,
+        max_pockets=5,
+    ):
+        from unittest.mock import patch
+
+        pdb = tmp_path / "rec.pdb"
+        pdb.write_text("ATOM      1  CA  ALA A   1      0.000   0.000   0.000\n")
+        with (
+            patch("autodock.preparation.find_p2rank", return_value="/fake/prank"),
+            patch("autodock.preparation.find_conda_tool", return_value="/fake/fpocket"),
+            patch("autodock.preparation._run_p2rank_predict", return_value=p2rank_pockets),
+            patch("autodock.preparation._run_fpocket_detect", return_value=fpocket_pockets),
+            patch("autodock.preparation._parse_p2rank_residues", return_value={}),
+            patch(
+                "autodock.preparation._pocket_bfactor_flexibility",
+                return_value={"flexibility": "rigid", "induced_fit_likely": False},
+            ),
+            patch("autodock.preparation._validate_alphafold_pocket", return_value={}),
+            patch(
+                "autodock.preparation._classify_pocket_type",
+                return_value={"type": "unclassified", "distance_to_active": None},
+            ),
+        ):
+            return prep.find_top_pockets(str(pdb), max_pockets=max_pockets)
+
+    def test_loose_consensus_overlap_verifies(self, tmp_path):
+        """Centers 8 Å apart (>5) still verify when the sphere overlaps the box."""
+        p2 = self._p2rank(1, x0=0.0, step=0.0)
+        fp = [self._fpocket((8.0, 0.0, 0.0), dims=(4.0, 4.0, 4.0))]
+        pockets = self._run(tmp_path, p2, fp)
+        assert pockets[0]["fpocket_verified"] is True
+        assert pockets[0]["fpocket_match_distance"] == 8.0
+        assert pockets[0]["pocket_source"] == "fpocket"
+        # Druggability comes from the matched fpocket pocket
+        assert pockets[0]["druggability"] == 0.6
+
+    def test_unverified_keeps_own_druggability_and_is_traceable(self, tmp_path):
+        """A far fpocket pocket (30 Å) must not donate its druggability."""
+        p2 = self._p2rank(1, x0=0.0, step=0.0)
+        fp = [self._fpocket((30.0, 0.0, 0.0), druggability=0.99)]
+        pockets = self._run(tmp_path, p2, fp)
+        assert pockets[0]["fpocket_verified"] is False
+        # NOT the fpocket 0.99 — keeps the P2Rank score 0.9
+        assert pockets[0]["druggability"] == 0.9
+        assert pockets[0]["pocket_source"] == "p2rank_unverified"
+
+    def test_extension_pass_rescues_verifiable_pockets(self, tmp_path):
+        """12 P2Rank pockets, only #11 verifies → extension pass must catch it."""
+        p2 = self._p2rank(12)
+        # fpocket matches pocket #11 (center x0 + 10*step = 1100)
+        fp = [self._fpocket((1100.0, 0.0, 0.0))]
+        pockets = self._run(tmp_path, p2, fp)
+        assert len(pockets) == 5
+        assert pockets[0]["fpocket_verified"] is True
+        # Verified pocket is the P2Rank #11 candidate (center x=1100); note its
+        # reported pocket_num is the fpocket pocket id (existing behaviour for
+        # verified pockets).
+        assert pockets[0]["center"] == (1100.0, 0.0, 0.0)
+        assert pockets[0]["pocket_source"] == "fpocket"
+        # Everything else is unverified and traceable
+        assert all(p["fpocket_verified"] is False for p in pockets[1:])
+        assert all(p["pocket_source"] == "p2rank_unverified" for p in pockets[1:])

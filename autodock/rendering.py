@@ -55,6 +55,40 @@ INTERACTION_COLORS = {
     "Metal complex": "grey",
 }
 
+# RGB values for the INTERACTION_COLORS names (must match the color_map used in
+# _build_pymol_script) — reused by the PIL legend overlay on interaction scenes.
+INTERACTION_COLOR_RGB: dict[str, tuple[int, int, int]] = {
+    "cyan": (0, 255, 255),
+    "orange": (255, 128, 0),
+    "green": (0, 255, 0),
+    "purple": (255, 0, 255),
+    "red": (255, 0, 0),
+    "yellow": (255, 255, 0),
+    "blue": (0, 0, 255),
+    "grey": (128, 128, 128),
+}
+
+# Extra-resolution default for whole-complex scenes (the overview figure users
+# crop and reuse). Applied only when the caller did not request an explicit size.
+_COMPLEX_RAY_WIDTH = 3200
+_COMPLEX_RAY_HEIGHT = 2400
+
+# Element preferences for interaction-line endpoints: an H-bond line should
+# point at the residue N/O actually involved, a hydrophobic line at carbons,
+# π interactions at the aromatic C/N framework. Only a *preference* — when no
+# residue atom matches, the search falls back to all heavy atoms of the residue
+# (see _build_pymol_script).
+_DASH_TARGET_ELEMENTS: dict[str, tuple[str, ...]] = {
+    "H-bond": ("N", "O"),
+    "Water bridge": ("N", "O"),
+    "Salt bridge": ("N", "O"),
+    "Halogen bond": ("O", "N", "S"),
+    "Hydrophobic": ("C",),
+    "π-π": ("C", "N"),
+    "π-cation": ("C", "N"),
+    "Metal complex": ("N", "O", "S"),
+}
+
 # Publication-grade colour schemes aligned with Nature/Science conventions
 JOURNAL_PRESETS: dict[str, str] = {
     "nature": "publication_white",
@@ -269,6 +303,19 @@ def _build_pymol_script(
         lines.append("from pymol.cgo import CYLINDER")
         lines.append("import math")
         lines.append("")
+        # Coarse element classifier for model atoms: prefer the chempy symbol,
+        # fall back to a first-letter atom-name heuristic (CA→C, NZ→N, OE1→O,
+        # SD→S). Only used for interaction-line endpoint preference, so the
+        # rare mis-classification of e.g. "CL" is harmless.
+        lines.append("def _elem(a):")
+        lines.append(
+            "    s = (getattr(a, 'symbol', '') or getattr(a, 'elem', '') or '').strip().upper()"
+        )
+        lines.append("    if s:")
+        lines.append("        return s")
+        lines.append("    nm = ''.join(ch for ch in a.name.strip().upper() if ch.isalpha())")
+        lines.append("    return nm[:1] if nm[:1] in ('N', 'O', 'S', 'C') else 'C'")
+        lines.append("")
         lines.append(
             "def _dashed_line(p1, p2, radius=0.08, dash_len=0.4, gap_len=0.2, color=(1.0, 0.5, 0.0)):"
         )
@@ -291,16 +338,11 @@ def _build_pymol_script(
         )
         lines.append("    return cgo")
         lines.append("")
-        # Color mapping from name to RGB tuple
+        # Color mapping from name to RGB tuple — keep in sync with the
+        # INTERACTION_COLOR_RGB legend overlay in render_scene_pymol.
         color_map = {
-            "cyan": "(0.0, 1.0, 1.0)",
-            "orange": "(1.0, 0.5, 0.0)",
-            "green": "(0.0, 1.0, 0.0)",
-            "purple": "(1.0, 0.0, 1.0)",
-            "red": "(1.0, 0.0, 0.0)",
-            "yellow": "(1.0, 1.0, 0.0)",
-            "blue": "(0.0, 0.0, 1.0)",
-            "grey": "(0.5, 0.5, 0.5)",
+            name: f"({round(r / 255, 4)}, {round(g / 255, 4)}, {round(b / 255, 4)})"
+            for name, (r, g, b) in INTERACTION_COLOR_RGB.items()
         }
         for idx, inter in enumerate(interactions):
             itype = inter.get("type", "")
@@ -330,7 +372,16 @@ def _build_pymol_script(
             lines.append("        pairs = []")
             lines.append("        for t in targets:")
             lines.append("            best = None; bd = 9999")
-            lines.append("            for a in m1.atom:")
+            # Element preference: the dashed line should end at the atom class
+            # that actually mediates the interaction (H-bond → N/O, hydrophobic
+            # → C, π → C/N). Fall back to all residue atoms when the preferred
+            # class is absent (e.g. glycine has no side-chain N/O).
+            pref = _DASH_TARGET_ELEMENTS.get(itype, ())
+            lines.append(f"            _pref = {pref!r}")
+            lines.append(
+                "            pool = [a for a in m1.atom if _elem(a) in _pref] or list(m1.atom)"
+            )
+            lines.append("            for a in pool:")
             lines.append(
                 "                d = math.sqrt(sum((a.coord[i]-t[i])**2 for i in range(3)))"
             )
@@ -339,7 +390,7 @@ def _build_pymol_script(
             lines.append("                pairs.append((best, t, bd))")
             lines.append("        for pi, (c1, c2, dd) in enumerate(pairs):")
             lines.append(
-                f"            obj = _dashed_line(c1, c2, radius=0.10, dash_len=0.4,"
+                f"            obj = _dashed_line(c1, c2, radius=0.06, dash_len=0.4,"
                 f" gap_len=0.2, color={color_rgb})"
             )
             lines.append("            if obj:")
@@ -432,7 +483,11 @@ def _build_pymol_script(
     # ── Camera / viewport ──
     # Use zoom with buffer to control field of view per scene
     if scene == "complex":
-        lines.append("cmd.zoom('(receptor or ligand)', 5)")
+        # Whole-complex view: orient fills the viewport efficiently (kills the
+        # wide empty margins of a plain zoom), then a small buffer keeps both
+        # termini in frame.
+        lines.append("cmd.orient('receptor or ligand')")
+        lines.append("cmd.zoom('(receptor or ligand)', 1.5)")
     elif scene == "pocket":
         lines.append("cmd.zoom('(receptor or ligand)', 3)")
         if center:
@@ -466,6 +521,71 @@ def _build_pymol_script(
     return "\n".join(lines)
 
 
+def _overlay_interaction_legend(png_path: str, interactions: list[dict[str, Any]]) -> None:
+    """Composite an interaction-type colour legend onto a rendered PNG.
+
+    PyMOL cannot place a reliable 2D legend inside a 3D scene, so after the
+    ray-traced PNG is written a semi-transparent legend box (swatch + label
+    per present interaction type) is drawn onto the bottom-left corner with
+    PIL. Colours match INTERACTION_COLORS / INTERACTION_COLOR_RGB, i.e. the
+    dashed-line colours in the scene itself.
+
+    Args:
+        png_path: Rendered PNG (overwritten in place with the legend composited).
+        interactions: Interaction dicts (``type`` key read; deduplicated).
+    """
+    from PIL import Image, ImageDraw, ImageFont
+
+    present: list[str] = []
+    seen: set[str] = set()
+    for inter in interactions:
+        itype = inter.get("type", "")
+        if itype in INTERACTION_COLORS and itype not in seen:
+            seen.add(itype)
+            present.append(itype)
+    if not present:
+        return
+
+    with Image.open(png_path) as img:
+        rgba = img.convert("RGBA")
+    w, h = rgba.size
+
+    # Scale the legend to the rendered image so it stays legible at any size.
+    pad = max(14, w // 160)
+    row_h = max(30, h // 40)
+    box_w = max(260, w // 6)
+    box_h = pad * 2 + row_h * len(present)
+    x0, y0 = pad, h - box_h - pad
+
+    overlay = Image.new("RGBA", rgba.size, (0, 0, 0, 0))
+    odraw = ImageDraw.Draw(overlay)
+    odraw.rectangle([x0, y0, x0 + box_w, y0 + box_h], fill=(0, 0, 0, 150))
+    try:
+        font = ImageFont.truetype("DejaVuSans.ttf", size=max(16, int(row_h * 0.55)))
+    except OSError:
+        font = ImageFont.load_default()
+
+    sw = int(row_h * 0.6)
+    y_off = y0 + pad
+    for itype in present:
+        rgb = INTERACTION_COLOR_RGB[INTERACTION_COLORS[itype]]
+        odraw.rounded_rectangle(
+            [x0 + pad, y_off, x0 + pad + sw, y_off + sw],
+            radius=max(2, sw // 4),
+            fill=(*rgb, 255),
+        )
+        odraw.text(
+            (x0 + pad + sw + max(8, w // 300), y_off + (sw - int(row_h * 0.55)) // 2),
+            itype,
+            fill=(255, 255, 255, 255),
+            font=font,
+        )
+        y_off += row_h
+
+    composited = Image.alpha_composite(rgba, overlay).convert("RGB")
+    composited.save(png_path)
+
+
 def render_scene_pymol(
     receptor_pdb: str,
     ligand_pdbqt: str,
@@ -474,8 +594,8 @@ def render_scene_pymol(
     scene: str = "pocket",
     center: tuple[float, float, float] | None = None,
     interactions: list[dict[str, Any]] | None = None,
-    width: int = DEFAULT_RAY_WIDTH,
-    height: int = DEFAULT_RAY_HEIGHT,
+    width: int | None = None,
+    height: int | None = None,
     save_pse: str | None = None,
     color_scheme: str = "presentation_black",
     receptor_source: str = "auto",
@@ -491,7 +611,9 @@ def render_scene_pymol(
         scene: 'complex' | 'pocket' | 'interaction' | 'ligand_closeup'.
         center: Pocket center for camera positioning.
         interactions: List of interaction dicts (for 'interaction' scene).
-        width: Image width in pixels (default 2400).
+        width: Image width in pixels. None → 2400 (or 3200 for scene='complex'
+            — the whole-complex overview gets extra pixels unless the caller
+            requests an explicit size).
         height: Image height in pixels (default 1800).
         save_pse: Optional path to save a PyMOL session (.pse) file.
         color_scheme: Colour preset — ``presentation_black`` (default),
@@ -513,6 +635,16 @@ def render_scene_pymol(
     ensure_dir(os.path.dirname(output_png) or ".")
     if save_pse:
         ensure_dir(os.path.dirname(save_pse) or ".")
+
+    # Whole-complex scenes are the single-panel overview figure users crop and
+    # reuse, so they deserve extra pixels — but only when the caller did not
+    # request an explicit size. With None sentinels we can tell "relied on the
+    # default" apart from "explicitly asked for the default".
+    if scene == "complex" and width is None and height is None:
+        width, height = _COMPLEX_RAY_WIDTH, _COMPLEX_RAY_HEIGHT
+    else:
+        width = DEFAULT_RAY_WIDTH if width is None else width
+        height = DEFAULT_RAY_HEIGHT if height is None else height
 
     script = _build_pymol_script(
         receptor_pdb,
@@ -569,6 +701,15 @@ def render_scene_pymol(
         )
 
     logger.info(f"3D scene rendered: {output_png} ({actual_size[0]}x{actual_size[1]})")
+
+    # Interaction-scene legend: the dashed lines are colour-coded by type but
+    # the 3D scene itself has no legend. Composite one onto the PNG before the
+    # PDF conversion below (which re-opens the PNG).
+    if scene == "interaction" and interactions:
+        try:
+            _overlay_interaction_legend(output_png, interactions)
+        except Exception as exc:
+            logger.warning(f"Interaction legend overlay skipped: {exc}")
 
     # Optional PDF output — PIL converts PNG raster to PDF at the requested DPI.
     if output_pdf:
@@ -1291,19 +1432,21 @@ def render_interactions_2d(
         bbox = draw.textbbox((0, 0), label, font=font)
         label_sizes[gi] = (bbox[2] - bbox[0], bbox[3] - bbox[1])
 
-    # Draw each interaction group with LigPlot+ style graphics
-    for gi, g in enumerate(group_list):
+    def _group_geom(gi: int, g: dict[str, Any]) -> tuple | None:
+        """Shared per-group geometry; None when the group is not drawable.
+
+        Returns ``(itype, rgb_int, label, lx, ly, ax, ay, tx, ty, lw, dist_bg)``.
+        """
         atoms = [a for a in g.get("rdkit_atoms", set()) if a in atom_coords]
         if not atoms:
-            continue
-
+            return None
+        pos = label_positions.get(gi)
+        if pos is None:
+            return None
         itype = g.get("type", "")
         color_name = g.get("color", "grey")
         rgb_int = color_rgb_int.get(color_name, (128, 128, 128))
         label = f"{g['resn']}{g['resi']}"
-        pos = label_positions.get(gi)
-        if pos is None:
-            continue
         lx, ly = pos
         tw, th = label_sizes[gi]
 
@@ -1323,6 +1466,17 @@ def render_interactions_2d(
         tx, ty = int(tx), int(ty)
         lw = max(2, int(2 * scale))
         dist_bg = int(3 * scale)
+        return itype, rgb_int, label, lx, ly, ax, ay, tx, ty, lw, dist_bg
+
+    # Pass 1 — connectors, arcs and symbols for every group. Label boxes are
+    # drawn in pass 2 so that no arc or leader line overpaints another group's
+    # label (the old single-pass loop let hydrophobic arcs sweep across labels
+    # that had already been drawn).
+    for gi, g in enumerate(group_list):
+        geom = _group_geom(gi, g)
+        if geom is None:
+            continue
+        itype, rgb_int, label, lx, ly, ax, ay, tx, ty, lw, dist_bg = geom
 
         if itype == "H-bond":
             # LigPlot+ style: green dashed line with distance label
@@ -1352,12 +1506,15 @@ def render_interactions_2d(
                 )
 
         elif itype == "Hydrophobic":
-            # LigPlot+ style: red spoked arc emanating from ligand atom
+            # LigPlot+ style: red spoked arc emanating from ligand atom.
+            # Keep the arc compact (small radius, narrow span, few spokes) so
+            # it hugs the interacting atom and never sweeps across the aromatic
+            # ring or neighbouring labels when the label sits on the far side.
             angle_to_label = math.atan2(ty - ay, tx - ax)
-            arc_span = math.pi / 2.5
-            # Dynamic radius: ~35% of distance to label, with scaled minimum
+            arc_span = math.pi / 3.2
+            # Dynamic radius: ~22% of distance to label, with scaled minimum
             dist_to_label = math.hypot(tx - ax, ty - ay)
-            arc_radius = max(int(70 * scale), int(dist_to_label * 0.38))
+            arc_radius = max(int(45 * scale), int(dist_to_label * 0.22))
             _draw_spoked_arc(
                 draw,
                 ax,
@@ -1367,7 +1524,7 @@ def render_interactions_2d(
                 end_angle=angle_to_label + arc_span / 2,
                 fill=(210, 30, 50),
                 width=lw,
-                n_spokes=7,
+                n_spokes=5,
                 spoke_len=int(12 * scale),
             )
             # Leader line from arc end toward label
@@ -1482,6 +1639,12 @@ def render_interactions_2d(
             # Default: thin colored leader line
             draw.line([(ax, ay), (tx, ty)], fill=rgb_int, width=max(1, lw - 1))
 
+    # Pass 2 — rounded residue label boxes on top of all connectors.
+    for gi, g in enumerate(group_list):
+        geom = _group_geom(gi, g)
+        if geom is None:
+            continue
+        itype, rgb_int, label, lx, ly = geom[0], geom[1], geom[2], geom[3], geom[4]
         # Draw rounded label box (LigPlot+ style: prominent border)
         _draw_rounded_label(
             draw,

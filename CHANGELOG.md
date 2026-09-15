@@ -8,6 +8,47 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Fixed
+- **Pocket cross-validation: no more silent top-10 truncation**
+  (`autodock/preparation.py`). P2Rank candidates are now explicitly sorted by
+  score before shortlisting (the old code relied on CSV row order), the
+  cross-validation pool grows with the request
+  (`max(10, 2 × max_pockets)`), and when fewer than `max_pockets` shortlisted
+  pockets verify, the remaining P2Rank candidates are cross-validated in an
+  extension pass instead of being silently discarded.
+- **Pocket cross-validation: dual consensus criterion**
+  (`autodock/preparation.py`, `autodock/core.py`). A P2Rank pocket used to be
+  verified only by a 5 Å center-distance match, so real pockets whose two
+  detector centers disagreed by > 5 Å (large/irregular cavities) were
+  rejected. Verification now also passes when centers are ≤ 10 Å apart AND
+  the P2Rank sphere overlaps the fpocket pocket bounding box
+  (`_sphere_box_overlap`, `_POCKET_CONSENSUS_DISTANCE_LOOSE`).
+- **Unverified pockets: traceable source, honest druggability**
+  (`autodock/preparation.py`). Unverified pockets are now labelled
+  `p2rank_unverified`/`dogsite3_unverified` in `pocket_source` instead of
+  masquerading as verified-method pockets, and they keep their own detector
+  score for `druggability` — previously the value was borrowed from the
+  nearest fpocket pocket even when that pocket was a different cavity > 10 Å
+  away, misleading ranking and reports.
+- **3D complex scene: higher resolution, tighter camera**
+  (`autodock/rendering.py`). Whole-complex scenes now render at 3200×2400 by
+  default (only when the caller did not request an explicit size) and the
+  camera runs `cmd.orient()` with a 1.5 Å zoom buffer instead of a plain
+  zoom with 5 Å buffer, removing the wide empty margins around small
+  receptors.
+- **3D interaction scene: dashed-line endpoints, thickness, colour legend**
+  (`autodock/rendering.py`). Interaction dashes now end at the atom class
+  that actually mediates the interaction (H-bond → N/O, hydrophobic → C,
+  π → C/N; falls back to all residue heavy atoms when the preferred class is
+  absent), the dash radius is 0.06 (was 0.10), and a colour legend
+  (swatch + label per present interaction type) is composited onto the
+  bottom-left of the PNG after rendering, before PDF conversion.
+- **2D interaction diagram: hydrophobic arc overlap**
+  (`autodock/rendering.py`). Hydrophobic arcs now use a compact radius
+  (22% of the label distance, min 45×scale), a narrower span (π/3.2) and 5
+  spokes, so they hug the interacting atom instead of sweeping across
+  aromatic rings and neighbouring labels. Drawing is now two-pass (all
+  connectors/arcs first, all residue label boxes last) so no arc overpaints
+  another group's label.
 - **3D scenes: speckle pixels around the cartoon, transparent background,
   invisible labels** (`autodock/rendering.py`). PyMOL shows the `lines`
   representation by default on load, which survived as spectrum-coloured

@@ -12,6 +12,7 @@ import os
 import re
 import shutil
 import tempfile
+from collections.abc import Sequence
 from typing import Any
 
 import numpy as np
@@ -22,6 +23,7 @@ from autodock.core import (
     _DRUGGABILITY_MEDIUM,
     _P2RANK_PROB_THRESHOLD,
     _POCKET_CONSENSUS_DISTANCE,
+    _POCKET_CONSENSUS_DISTANCE_LOOSE,
     _POCKET_DEFAULT_BFACTOR,
     _SKIP_ADDITIVES,
     _SKIP_WATER,
@@ -3922,6 +3924,36 @@ def validate_electron_density(
     return result
 
 
+def _sphere_box_overlap(
+    center: Sequence[float],
+    radius: float,
+    box_center: Sequence[float],
+    dims: Sequence[float],
+) -> bool:
+    """Check whether a sphere overlaps an axis-aligned box.
+
+    Used as the geometric consensus test between a P2Rank pocket (sphere:
+    ``center`` + ``radius``) and an fpocket pocket (box: ``center`` + ``dims``,
+    the bounding box of its pocket-residue/α-sphere coordinates).  Overlap is
+    declared when the distance from the sphere center to the closest point on
+    the box is within the sphere radius.
+
+    Args:
+        center: Sphere center (x, y, z).
+        radius: Sphere radius (Å).
+        box_center: Box center (x, y, z).
+        dims: Box full extents (dx, dy, dz).
+
+    Returns:
+        True if the sphere touches or intersects the box.
+    """
+    c = np.asarray(center, dtype=float)
+    b = np.asarray(box_center, dtype=float)
+    half = np.asarray(dims, dtype=float) / 2.0
+    closest = np.clip(c, b - half, b + half)
+    return bool(np.linalg.norm(c - closest) <= radius)
+
+
 def find_top_pockets(
     receptor_pdb: str,
     ligand_pdb: str | None = None,
@@ -3937,8 +3969,9 @@ def find_top_pockets(
     Pipeline:
       1. **P2Rank** — ML-based random forest classifier as primary screen
       2. **fpocket** — geometric cavity detection (α-sphere) for cross-validation
-      3. **Cross-validation** — spatial overlap check: each P2Rank candidate
-         is verified against fpocket pockets (threshold: 5 Å center distance)
+      3. **Cross-validation** — spatial consensus check: each P2Rank candidate
+         is verified against fpocket pockets (tight: 5 Å center distance; loose:
+         ≤10 Å + P2Rank-sphere↔fpocket-box geometric overlap)
       4. **Druggability re-rank** — fpocket Drug Score re-orders verified pockets
       5. **Enhanced analysis** — per-pocket: residue IDs, druggability class,
          AlphaFold pLDDT compatibility, B-factor flexibility, pocket type
@@ -4171,22 +4204,28 @@ def find_top_pockets(
             else:
                 logger.warning("fpocket found no pockets — proceeding with P2Rank only")
 
-        # Step 3: Cross-validation — spatial overlap check ──────────────────────
-        # For each P2Rank candidate, find the nearest fpocket pocket within
-        # _POCKET_CONSENSUS_DISTANCE (5 Å). Mark fpocket_verified=True/False
-        # and carry over the fpocket druggability.
+        # Step 3: Cross-validation — spatial consensus check ──────────────────────
+        # For each P2Rank candidate, find the nearest fpocket pocket and verify
+        # with a dual criterion (tight center distance OR loose distance +
+        # geometric sphere↔box overlap). Mark fpocket_verified=True/False.
         fpocket_centers: list[tuple[np.ndarray, dict]] = []
         if fpocket_pockets:
             for fp in fpocket_pockets:
                 fpocket_centers.append((np.array(fp["center"]), fp))
 
-        # Limit P2Rank candidates to top 10 for cross-validation.
-        # P2Rank paper (Krivák & Hoksza 2018): top-5 ~88%, top-10 ~92%.
-        # With 5Å tight threshold, casting a wider net (top-10) ensures
-        # true pockets are not prematurely discarded before fpocket
-        # cross-validation. Final output is capped at max_pockets (5).
-        _P2RANK_CROSSVAL_TOPK = 10
-        p2rank_shortlist = p2rank_pockets[:_P2RANK_CROSSVAL_TOPK]
+        # Explicitly sort candidates by score (desc). P2Rank's predictions CSV
+        # is naturally ordered, but the shortlist must not silently depend on
+        # row order — sort defensively here.
+        p2rank_pockets.sort(key=lambda p: -(p.get("score") or 0.0))
+
+        # Limit P2Rank candidates for cross-validation. P2Rank paper
+        # (Krivák & Hoksza 2018): top-5 ~88%, top-10 ~92% recall. The pool
+        # grows with max_pockets so requesting more pockets never caps
+        # cross-validation below what the user asked for. Final output is
+        # still capped at max_pockets.
+        crossval_topk = max(10, max_pockets * 2)
+        p2rank_shortlist = p2rank_pockets[:crossval_topk]
+        p2rank_extension = p2rank_pockets[crossval_topk:]
         if fpocket_only:
             logger.info(
                 f"fpocket-only mode: ranking top {len(p2rank_shortlist)} pocket(s) "
@@ -4195,12 +4234,12 @@ def find_top_pockets(
         else:
             logger.info(
                 f"Cross-validating top {len(p2rank_shortlist)} P2Rank pocket(s) "
-                f"(from {len(p2rank_pockets)} total, top-{_P2RANK_CROSSVAL_TOPK} shortlist; "
+                f"(from {len(p2rank_pockets)} total, top-{crossval_topk} shortlist; "
                 f"no hard probability filter — fpocket verification is the actual filter)"
             )
 
-        candidates: list[dict[str, Any]] = []
-        for p2p in p2rank_shortlist:
+        def _crossval(p2p: dict[str, Any]) -> dict[str, Any]:
+            """Cross-validate one P2Rank candidate against the fpocket pockets."""
             p2_center = np.array(p2p["center"])
             prob = p2p.get("score")
 
@@ -4225,24 +4264,68 @@ def find_top_pockets(
                     best_dist = d
                     best_fp = fp_dict
 
-            verified = best_fp is not None and best_dist <= _POCKET_CONSENSUS_DISTANCE
+            # Dual consensus criterion:
+            #   1. tight — center-to-center distance ≤ 5 Å; or
+            #   2. loose — distance ≤ 10 Å AND the P2Rank sphere overlaps the
+            #      fpocket pocket box.  Large/irregular cavities can have
+            #      >5 Å center disagreement between two detectors while still
+            #      describing the same site; the geometric overlap test
+            #      rejects genuinely disjoint predictions.
+            verified = False
+            if best_fp is not None:
+                if best_dist <= _POCKET_CONSENSUS_DISTANCE:
+                    verified = True
+                elif best_dist <= _POCKET_CONSENSUS_DISTANCE_LOOSE and _sphere_box_overlap(
+                    p2p["center"],
+                    p2p.get("radius") or 10.0,
+                    best_fp["center"],
+                    best_fp.get("dims", (20.0, 20.0, 20.0)),
+                ):
+                    verified = True
+                    logger.info(
+                        f"Pocket #{p2p.get('num', 0)}: loose consensus — centers "
+                        f"{best_dist:.1f} Å apart but P2Rank sphere overlaps the "
+                        f"fpocket pocket box"
+                    )
 
-            # Re-rank metric: fpocket druggability if verified, else P2Rank prob
-            druggability = best_fp.get("druggability") if best_fp else p2p.get("druggability")
-            # Use the fpocket druggability for verified pockets
-            rank_score = druggability if (druggability is not None and verified) else prob
-
-            candidates.append(
-                {
-                    "p2rank_pocket": p2p,
-                    "fpocket_pocket": best_fp,
-                    "verified": verified,
-                    "match_distance": round(best_dist, 2) if best_fp else None,
-                    "druggability": druggability,
-                    "rank_score": rank_score if rank_score is not None else 0.0,
-                    "prob": prob,
-                }
+            # fpocket druggability is only meaningful for the matched (verified)
+            # pocket. For an unverified candidate the nearest fpocket pocket may
+            # be a different cavity (we have seen 12 Å false-nearest cases), so
+            # borrowing its druggability would mislead ranking and reports —
+            # keep the detector's own score instead.
+            druggability = (
+                best_fp.get("druggability")
+                if (best_fp is not None and verified)
+                else p2p.get("druggability")
             )
+            rank_score = druggability if druggability is not None else prob
+
+            return {
+                "p2rank_pocket": p2p,
+                "fpocket_pocket": best_fp if verified else None,
+                "verified": verified,
+                "match_distance": round(best_dist, 2) if best_fp else None,
+                "druggability": druggability,
+                "rank_score": rank_score if rank_score is not None else 0.0,
+                "prob": prob,
+            }
+
+        candidates = [_crossval(p2p) for p2p in p2rank_shortlist]
+
+        # Extension pass: if the shortlist yielded fewer verified pockets than
+        # requested, cross-validate the remaining P2Rank candidates instead of
+        # silently dropping them — a promising pocket just below the shortlist
+        # cut may still verify. Without this, e.g. 15 real P2Rank pockets with
+        # only 2 shortlist verifications would report 2 sites while 5 were asked.
+        if p2rank_extension and not fpocket_only:
+            n_verified = sum(1 for c in candidates if c["verified"])
+            if n_verified < max_pockets:
+                logger.info(
+                    f"Only {n_verified}/{max_pockets} shortlist pocket(s) verified — "
+                    f"cross-validating {len(p2rank_extension)} remaining "
+                    f"P2Rank candidate(s)"
+                )
+                candidates.extend(_crossval(p2p) for p2p in p2rank_extension)
 
         if not candidates:
             raise PreparationError(
@@ -4327,7 +4410,9 @@ def find_top_pockets(
                 "druggability_description": drugg_class["description"],
                 "p2rank_prob": c["prob"],
                 "pocket_num": pnum,
-                "pocket_source": "fpocket" if verified else src.get("pocket_source", "p2rank"),
+                "pocket_source": (
+                    "fpocket" if verified else f"{src.get('pocket_source', 'p2rank')}_unverified"
+                ),
                 "fpocket_verified": verified,
                 "fpocket_match_distance": c["match_distance"],
                 "volume": volume,

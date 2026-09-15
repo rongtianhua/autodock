@@ -937,9 +937,11 @@ _POCKET_MIN_DEPTH = 3.0
 # Krivák & Hoksza 2018 (Bioinformatics) define ≥0.5 as "high confidence";
 # at 0.3 recall is ~85% but precision drops to ~70% (COACH420).
 #
-# Critical design note: In this pipeline the primary selector is top-10 ranking
-# (see _P2RANK_CROSSVAL_TOPK in find_top_pockets).  ALL top-10 pockets enter
-# fpocket cross-validation regardless of score.  _P2RANK_PROB_THRESHOLD here
+# Critical design note: In this pipeline the primary selector is a top-K
+# shortlist (see find_top_pockets Step 3, K = max(10, 2*max_pockets), plus an
+# extension pass that cross-validates the remaining candidates when fewer than
+# max_pockets verified).  ALL shortlisted pockets enter fpocket
+# cross-validation regardless of score.  _P2RANK_PROB_THRESHOLD here
 # only controls a DEBUG log message — it NEVER discards pockets.
 #
 # Users who want ultra-high precision at the cost of recall can override via
@@ -955,6 +957,12 @@ _DRUGGABILITY_THRESHOLD = 0.3
 # 5Å tightly constrains false positives while allowing ~2Å per
 # method prediction error.
 _POCKET_CONSENSUS_DISTANCE = 5.0
+# Loose consensus distance (Å) — accepted ONLY together with a geometric
+# overlap test (P2Rank sphere vs fpocket pocket bounding box, see
+# _sphere_box_overlap in preparation.py).  Two detectors can disagree on the
+# center of a large/irregular cavity by more than 5 Å while still describing
+# the same site; the overlap test rejects genuinely disjoint predictions.
+_POCKET_CONSENSUS_DISTANCE_LOOSE = 10.0
 # Druggability classification thresholds (adapted from Schmidtke & Barril 2010)
 _DRUGGABILITY_HIGH = 0.7
 _DRUGGABILITY_MEDIUM = 0.3
