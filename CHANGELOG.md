@@ -35,6 +35,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   line widths/arc spokes/label borders scale with the canvas, and the
   legend rectangle is reserved during label placement so labels never
   overlap it.
+- **Config default `pocket.top_n` synced to 5** (`autodock/config.py`). The
+  config default was 3 while `run_docking_workflow(max_pockets=5)`, the CLI
+  `--max-pockets` default, and `find_top_pockets()` all use 5, so config-file
+  runs silently docked fewer pockets than every other entry point. The
+  in-code default and the `write_default_config()` template now both use 5.
 - **Silent `except` blocks now log at debug level**
   (`autodock/workflow.py`, `autodock/reporting.py`, `autodock/preparation.py`).
   `_compute_ligand_metrics()`, `reporting.py` figure-size probing, and the

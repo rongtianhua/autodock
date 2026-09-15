@@ -78,7 +78,7 @@ def _apply_defaults(cfg: dict[str, Any]) -> dict[str, Any]:
         "pocket": {
             "method": "p2rank",
             "reference_ligand": None,
-            "top_n": 3,
+            "top_n": 5,
             "min_druggability": 0.15,
             "padding": 5.0,
         },
@@ -193,7 +193,7 @@ receptor:
 pocket:
   method: "p2rank"       # p2rank | fpocket | reference
   reference_ligand: null
-  top_n: 3
+  top_n: 5
   min_druggability: 0.15
   padding: 5.0
 
