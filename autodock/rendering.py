@@ -158,6 +158,12 @@ def _build_pymol_script(
     lines.append("cmd.delete('all')")
     lines.append(f'cmd.load("{receptor_pdb}", "receptor")')
     lines.append("cmd.show('cartoon', 'receptor')")
+    # PyMOL shows the 'lines' representation by default on load; cmd.show()
+    # adds cartoon on top without removing it. On dark backgrounds the thin
+    # spectrum-coloured lines survive as scattered "speckle" pixels around the
+    # cartoon in ray-traced output — hide them explicitly.
+    lines.append("cmd.hide('lines', 'receptor')")
+    lines.append("cmd.hide('nonbonded', 'receptor')")
     lines.append("cmd.set('cartoon_side_chain_helper', 1)")
     lines.append("cmd.set('cartoon_discrete_colors', 0)")
 
@@ -187,6 +193,10 @@ def _build_pymol_script(
             lines.append(f"cmd.set('{key}', '{val}')")
         else:
             lines.append(f"cmd.set('{key}', {val})")
+    # Opaque background: PyMOL's default (ray_opaque_background=0) writes a
+    # transparent alpha channel, so the PNG renders as white-on-some-viewers
+    # and white residue/distance labels become invisible. Force a solid bg.
+    lines.append("cmd.set('ray_opaque_background', 1)")
 
     # For the interaction scene, show only the pocket-region cartoon. The old
     # approach (cartoon_transparency=1.0 outside a 15 Å "pocket_vis" selection)
@@ -302,39 +312,61 @@ def _build_pymol_script(
             color_name = INTERACTION_COLORS[itype]
             color_rgb = color_map.get(color_name, "(1.0, 0.5, 0.0)")
             prot_sel = f"receptor and resn {resn} and resi {resi} and chain {chain}"
+            # One dashed line per ligand atom involved in this interaction, each
+            # to its closest residue atom. A single closest-pair line made all
+            # interaction types of one residue overlap into one indistinguishable
+            # dash; per-atom lines keep the per-type colours readable.
+            lig_coords = [a["coords"] for a in inter.get("ligand_atoms", [])][:4]
             lines.append("try:")
             lines.append(f"    m1 = cmd.get_model('{prot_sel}')")
             lines.append("    m2 = cmd.get_model('ligand')")
             lines.append("    if m1.atom and m2.atom:")
-            lines.append("        dmin = 9999; pair = None")
-            lines.append("        for a in m1.atom:")
-            lines.append("            for b in m2.atom:")
+            if lig_coords:
+                lines.append(f"        targets = {lig_coords!r}")
+            else:
+                # Fallback: interaction record has no atom coordinates — use the
+                # ligand heavy-atom coordinates from the loaded model.
+                lines.append("        targets = [tuple(b.coord) for b in m2.atom]")
+            lines.append("        pairs = []")
+            lines.append("        for t in targets:")
+            lines.append("            best = None; bd = 9999")
+            lines.append("            for a in m1.atom:")
             lines.append(
-                "                d = cmd.get_distance(f'receptor and index {a.index}', f'ligand and index {b.index}')"
+                "                d = math.sqrt(sum((a.coord[i]-t[i])**2 for i in range(3)))"
             )
-            lines.append("                if d < dmin: dmin = d; pair = (a.coord, b.coord)")
-            lines.append("        if pair and dmin <= 4.5:")
+            lines.append("                if d < bd: bd = d; best = a.coord")
+            lines.append("            if best is not None and bd <= 4.5:")
+            lines.append("                pairs.append((best, t, bd))")
+            lines.append("        for pi, (c1, c2, dd) in enumerate(pairs):")
             lines.append(
-                f"            obj = _dashed_line(pair[0], pair[1], radius=0.10, dash_len=0.4, gap_len=0.2, color={color_rgb})"
+                f"            obj = _dashed_line(c1, c2, radius=0.10, dash_len=0.4,"
+                f" gap_len=0.2, color={color_rgb})"
             )
             lines.append("            if obj:")
-            lines.append(f"                cmd.load_cgo(obj, 'int_{idx}')")
-            lines.append(f"                cmd.show('cgo', 'int_{idx}')")
-            lines.append("                mid = [(pair[0][i]+pair[1][i])/2 for i in range(3)]")
+            lines.append(f"                cmd.load_cgo(obj, 'int_{idx}_%d' % pi)")
+            lines.append("                cmd.show('cgo', 'int_{idx}_*')")
+            # Distance label on the closest pair only (one per interaction).
+            lines.append("        if pairs:")
+            lines.append("            pairs.sort(key=lambda p: p[2])")
+            lines.append("            c1, c2, dd = pairs[0]")
+            lines.append("            mid = [(c1[i]+c2[i])/2 for i in range(3)]")
+            lines.append(f"            cmd.pseudoatom('dist_{idx}', pos=mid, label='%.2f'%dd)")
             lines.append(
-                f"                cmd.pseudoatom('dist_{idx}', pos=mid, label='%.2f'%dmin)"
+                f"            cmd.set('label_color', '{scheme.get('label_c', 'white')}', 'dist_{idx}')"
             )
-            lines.append(
-                f"                cmd.set('label_color', '{scheme.get('label_c', 'white')}', 'dist_{idx}')"
-            )
-            lines.append(f"                cmd.set('label_size', 24, 'dist_{idx}')")
-            lines.append(f"                cmd.hide('nonbonded', 'dist_{idx}')")
+            lines.append(f"            cmd.set('label_size', 30, 'dist_{idx}')")
+            lines.append(f"            cmd.hide('nonbonded', 'dist_{idx}')")
             lines.append("except: pass")
         lines.append("python end")
 
-    # ── Labels for interacting residues (directional offset to avoid overlap) ──
+    # ── Labels for interacting residues + surrounding pocket residues ──
     if scene == "interaction" and interactions:
         label_color = scheme.get("label_c", "white")
+        dim_color = "grey70" if scheme.get("bg") == "black" else "grey50"
+        lines.append("python")
+        lines.append("from pymol import cmd")
+        lines.append("import math")
+        lines.append("seen = set()")
         # De-duplicate residues so each residue gets only one label
         seen_residues: set[tuple[str, str, str]] = set()
         for idx, inter in enumerate(interactions):
@@ -372,11 +404,30 @@ def _build_pymol_script(
             lines.append(f"            cmd.translate([0, 0, 4.0], '{pseudo}')")
             # Label with residue name, number and chain: e.g. LYS211(A)
             lines.append(f"    cmd.label('{pseudo}', '\"{resn}{resi}({chain})\"')")
-            # Label style: white text, bold sans-serif
+            # Label style: bold sans-serif
             lines.append(f"    cmd.set('label_color', '{label_color}', '{pseudo}')")
             lines.append(f"    cmd.set('label_size', 40, '{pseudo}')")
             lines.append(f"    cmd.set('label_font_id', 10, '{pseudo}')")  # Sans-serif bold
+            lines.append(f"    seen.add(('{resn}', '{resi}', '{chain}'))")
             lines.append("except: pass")
+        # Surrounding pocket residues (within the 8 Å pocket window) get smaller,
+        # dimmer labels so the scene annotates the whole pocket, not just the
+        # contacting residues. Failures here must not kill the scene.
+        lines.append("try:")
+        lines.append("    m = cmd.get_model('pocket_vis and name CA')")
+        lines.append("    n_amb = 0")
+        lines.append("    for a in m.atom:")
+        lines.append("        key = (a.resn, str(a.resi), a.chain)")
+        lines.append("        if key in seen: continue")
+        lines.append("        seen.add(key)")
+        lines.append("        n_amb += 1")
+        lines.append("        nm = 'amb_lbl_%d' % n_amb")
+        lines.append("        cmd.pseudoatom(nm, pos=list(a.coord))")
+        lines.append("        cmd.label(nm, '\"%s%s\"' % (a.resn, a.resi))")
+        lines.append(f"        cmd.set('label_color', '{dim_color}', nm)")
+        lines.append("        cmd.set('label_size', 28, nm)")
+        lines.append("except: pass")
+        lines.append("python end")
 
     # ── Camera / viewport ──
     # Use zoom with buffer to control field of view per scene
@@ -650,6 +701,40 @@ def _draw_dashed_line(
         )
 
 
+def _clip_segment_to_box(
+    x1: float,
+    y1: float,
+    x2: float,
+    y2: float,
+    box: tuple[float, float, float, float],
+) -> tuple[float, float]:
+    """Return the point where the segment (x1,y1)->(x2,y2) enters ``box``.
+
+    Liang–Barsky clipping. Used to stop interaction connector lines at the
+    label border instead of drawing them underneath the label box. Falls
+    back to the original end point when the segment never reaches the box
+    or starts inside it.
+    """
+    bx1, by1, bx2, by2 = box
+    if bx1 <= x1 <= bx2 and by1 <= y1 <= by2:
+        return (x2, y2)
+    dx, dy = x2 - x1, y2 - y1
+    t0, t1 = 0.0, 1.0
+    for p, q in ((-dx, x1 - bx1), (dx, bx2 - x1), (-dy, y1 - by1), (dy, by2 - y1)):
+        if p == 0:
+            if q < 0:
+                return (x2, y2)
+        else:
+            r = q / p
+            if p < 0:
+                if r > t1:
+                    return (x2, y2)
+                t0 = max(t0, r)
+            else:
+                t1 = min(t1, r)
+    return (x1 + dx * t0, y1 + dy * t0)
+
+
 def _draw_spoked_arc(
     draw: Any,
     cx: int,
@@ -660,6 +745,7 @@ def _draw_spoked_arc(
     fill: tuple[int, int, int],
     width: int = 2,
     n_spokes: int = 7,
+    spoke_len: int = 12,
 ) -> None:
     """Draw a red spoked arc (semicircle with radial spikes) as used by
     LigPlot+ for hydrophobic contacts.
@@ -678,8 +764,8 @@ def _draw_spoked_arc(
         t = start_angle + (end_angle - start_angle) * i / (n_spokes - 1)
         sx = cx + radius * math.cos(t)
         sy = cy + radius * math.sin(t)
-        ex = cx + (radius + 12) * math.cos(t)
-        ey = cy + (radius + 12) * math.sin(t)
+        ex = cx + (radius + spoke_len) * math.cos(t)
+        ey = cy + (radius + spoke_len) * math.sin(t)
         draw.line([(int(sx), int(sy)), (int(ex), int(ey))], fill=fill, width=width)
 
 
@@ -693,6 +779,7 @@ def _draw_rounded_label(
     bg_color: tuple[int, int, int, int] = (255, 255, 255, 235),
     radius: int = 8,
     padding: int = 4,
+    border_width: int = 2,
 ) -> tuple[int, int, int, int]:
     """Draw a text label inside a rounded rectangle.
 
@@ -707,7 +794,7 @@ def _draw_rounded_label(
     y2 = y + th + padding
 
     # Subtle drop-shadow for depth
-    shadow_offset = 2
+    shadow_offset = max(2, border_width)
     draw.rounded_rectangle(
         [(x1 + shadow_offset, y1 + shadow_offset), (x2 + shadow_offset, y2 + shadow_offset)],
         radius=radius,
@@ -719,10 +806,51 @@ def _draw_rounded_label(
         radius=radius,
         fill=bg_color,
         outline=border_color,
-        width=2,
+        width=border_width,
     )
     draw.text((x, y), text, fill=(0, 0, 0), font=font)
     return (x1, y1, x2, y2)
+
+
+def _legend_layout(
+    header: tuple[str, int, int],
+    rows: list[tuple[str, int, int]],
+    canvas_w: int,
+    canvas_h: int,
+    scale: float,
+) -> dict[str, Any]:
+    """Compute legend box geometry scaled to the canvas and font size.
+
+    All paddings, row heights and the swatch scale with ``scale`` so the
+    legend stays proportional on publication-size canvases (the previous
+    fixed-pixel geometry collapsed into overlapping text once fonts were
+    scaled up). ``header``/``rows`` are ``(text, width, height)`` tuples
+    measured with the real font.
+    """
+    pad_x = int(14 * scale)
+    pad_y = int(10 * scale)
+    header_h = header[2] + int(8 * scale)
+    swatch = int(14 * scale)
+    row_gap = int(8 * scale)
+    margin = int(40 * scale)
+    max_text_w = max([header[1], *(w for _, w, _ in rows), int(80 * scale)])
+    text_h = max([*(h for _, _, h in rows), int(15 * scale)])
+    row_h = text_h + row_gap
+    box_w = int(max(120 * scale, max_text_w + pad_x * 2 + swatch + int(8 * scale)))
+    box_h = int(header_h + pad_y * 2 + row_h * len(rows))
+    x = canvas_w - box_w - margin
+    y = canvas_h - box_h - margin
+    return {
+        "x": x,
+        "y": y,
+        "w": box_w,
+        "h": box_h,
+        "pad_x": pad_x,
+        "pad_y": pad_y,
+        "header_h": header_h,
+        "swatch": swatch,
+        "row_h": row_h,
+    }
 
 
 def _compute_label_positions(
@@ -731,6 +859,7 @@ def _compute_label_positions(
     canvas_w: int,
     canvas_h: int,
     margin: int = 100,
+    reserved_rects: list[tuple[int, int, int, int]] | None = None,
 ) -> dict[int, tuple[int, int]]:
     """Compute radial label positions around ligand centre.
 
@@ -741,6 +870,9 @@ def _compute_label_positions(
     several interaction types share ONE label position. If no non-overlapping
     position can be found, the label is skipped rather than drawn on top of
     another one.
+
+    ``reserved_rects`` are canvas regions already claimed by other furniture
+    (e.g. the legend box); labels are never placed inside them.
 
     Returns mapping: group index -> (x, y) top-left of label.
     """
@@ -817,7 +949,7 @@ def _compute_label_positions(
     line_h = max(16, int(20 * scale))
 
     positions: dict[int, tuple[int, int]] = {}
-    placed: list[tuple[int, int, int, int]] = []
+    placed: list[tuple[int, int, int, int]] = list(reserved_rects or [])
 
     for mi, _gx, _gy, natural_angle in merged_info:
         g = merged[mi]
@@ -1107,8 +1239,37 @@ def render_interactions_2d(
 
     # ── LigPlot+ style residue labels ─────────────────────────────────────────
     group_list = list(interaction_groups.values())
+
+    # Legend furniture is laid out FIRST so its rectangle can be passed to the
+    # label placer as a reserved region (labels must never overlap the legend).
+    type_counts: dict[str, int] = {}
+    for g in group_list:
+        t = g.get("type")
+        if t:
+            type_counts[t] = type_counts.get(t, 0) + 1
+
+    def _measure(text: str, font: Any) -> tuple[int, int]:
+        try:
+            tb = draw.textbbox((0, 0), text, font=font)
+            return (max(1, int(tb[2] - tb[0])), max(1, int(tb[3] - tb[1])))
+        except (TypeError, ValueError):  # mocked/incomplete font backends
+            return (max(1, len(text) * 12), 16)
+
+    legend_rows = [
+        (f"{itype}: {count}", *_measure(f"{itype}: {count}", font_legend))
+        for itype, count in sorted(type_counts.items())
+    ]
+    legend_header = ("Interactions", *_measure("Interactions", font_legend))
+    legend = _legend_layout(legend_header, legend_rows, canvas_w, canvas_h, scale)
+    legend_rect = (legend["x"], legend["y"], legend["x"] + legend["w"], legend["y"] + legend["h"])
+
     label_positions = _compute_label_positions(
-        group_list, atom_coords, canvas_w, canvas_h, margin=80
+        group_list,
+        atom_coords,
+        canvas_w,
+        canvas_h,
+        margin=int(80 * scale),
+        reserved_rects=[legend_rect],
     )
 
     # LigPlot+ canonical colors (int RGB)
@@ -1154,14 +1315,23 @@ def render_interactions_2d(
         lcx = lx + tw // 2
         lcy = ly + th // 2
 
+        # Connectors stop at the label border instead of crossing under the
+        # label box; midpoint annotations sit on the visible segment.
+        lbl_pad = int(6 * scale)
+        label_box = (lx - lbl_pad, ly - lbl_pad, lx + tw + lbl_pad, ly + th + lbl_pad)
+        tx, ty = _clip_segment_to_box(ax, ay, lcx, lcy, label_box)
+        tx, ty = int(tx), int(ty)
+        lw = max(2, int(2 * scale))
+        dist_bg = int(3 * scale)
+
         if itype == "H-bond":
             # LigPlot+ style: green dashed line with distance label
-            _draw_dashed_line(draw, ax, ay, lcx, lcy, (0, 170, 0), width=2)
+            _draw_dashed_line(draw, ax, ay, tx, ty, (0, 170, 0), width=lw)
             # Distance annotation at midpoint
             dist = g.get("distance")
             if dist is not None:
-                mid_x = (ax + lcx) // 2
-                mid_y = (ay + lcy) // 2
+                mid_x = (ax + tx) // 2
+                mid_y = (ay + ty) // 2
                 dist_text = f"{dist:.1f}"
                 db = draw.textbbox((0, 0), dist_text, font=font_distance)
                 dw = db[2] - db[0]
@@ -1169,8 +1339,8 @@ def render_interactions_2d(
                 # White background for distance text
                 draw.rectangle(
                     [
-                        (mid_x - dw // 2 - 2, mid_y - dh // 2 - 2),
-                        (mid_x + dw // 2 + 2, mid_y + dh // 2 + 2),
+                        (mid_x - dw // 2 - dist_bg, mid_y - dh // 2 - dist_bg),
+                        (mid_x + dw // 2 + dist_bg, mid_y + dh // 2 + dist_bg),
                     ],
                     fill=(255, 255, 255),
                 )
@@ -1183,11 +1353,11 @@ def render_interactions_2d(
 
         elif itype == "Hydrophobic":
             # LigPlot+ style: red spoked arc emanating from ligand atom
-            angle_to_label = math.atan2(lcy - ay, lcx - ax)
+            angle_to_label = math.atan2(ty - ay, tx - ax)
             arc_span = math.pi / 2.5
-            # Dynamic radius: ~35% of distance to label, with minimum
-            dist_to_label = math.hypot(lcx - ax, lcy - ay)
-            arc_radius = max(70, int(dist_to_label * 0.38))
+            # Dynamic radius: ~35% of distance to label, with scaled minimum
+            dist_to_label = math.hypot(tx - ax, ty - ay)
+            arc_radius = max(int(70 * scale), int(dist_to_label * 0.38))
             _draw_spoked_arc(
                 draw,
                 ax,
@@ -1196,41 +1366,52 @@ def render_interactions_2d(
                 start_angle=angle_to_label - arc_span / 2,
                 end_angle=angle_to_label + arc_span / 2,
                 fill=(210, 30, 50),
-                width=2,
+                width=lw,
                 n_spokes=7,
+                spoke_len=int(12 * scale),
             )
             # Leader line from arc end toward label
             mid_arc_x = int(ax + arc_radius * math.cos(angle_to_label))
             mid_arc_y = int(ay + arc_radius * math.sin(angle_to_label))
             draw.line(
-                [(mid_arc_x, mid_arc_y), (lcx, lcy)],
+                [(mid_arc_x, mid_arc_y), (tx, ty)],
                 fill=(210, 30, 50),
-                width=1,
+                width=max(1, lw - 1),
             )
 
         elif itype == "Salt bridge":
             # Salt bridge: dashed line with +/- symbols
-            _draw_dashed_line(draw, ax, ay, lcx, lcy, (210, 30, 50), width=2)
+            _draw_dashed_line(draw, ax, ay, tx, ty, (210, 30, 50), width=lw)
             # Place charge symbols near atom and label
             charge_font = font  # reuse same font
             # Atom side: ligand charge (assume negative for saltbridge_lneg)
-            draw.text((ax - 8, ay - 12), "−", fill=(210, 30, 50), font=charge_font)
+            draw.text(
+                (ax - int(8 * scale), ay - int(12 * scale)),
+                "−",
+                fill=(210, 30, 50),
+                font=charge_font,
+            )
             # Label side: protein charge (positive)
-            draw.text((lcx + 4, lcy - 12), "+", fill=(210, 30, 50), font=charge_font)
+            draw.text(
+                (tx + int(4 * scale), ty - int(12 * scale)),
+                "+",
+                fill=(210, 30, 50),
+                font=charge_font,
+            )
 
         elif itype == "π-π":
             # π-π stacking: purple dashed arc between aromatic systems
-            _draw_dashed_line(draw, ax, ay, lcx, lcy, (140, 40, 230), width=2)
-            mid_x = (ax + lcx) // 2
-            mid_y = (ay + lcy) // 2
+            _draw_dashed_line(draw, ax, ay, tx, ty, (140, 40, 230), width=lw)
+            mid_x = (ax + tx) // 2
+            mid_y = (ay + ty) // 2
             pi_text = "π-π"
             pb = draw.textbbox((0, 0), pi_text, font=font_symbol)
             pw = pb[2] - pb[0]
             ph = pb[3] - pb[1]
             draw.rectangle(
                 [
-                    (mid_x - pw // 2 - 2, mid_y - ph // 2 - 2),
-                    (mid_x + pw // 2 + 2, mid_y + ph // 2 + 2),
+                    (mid_x - pw // 2 - dist_bg, mid_y - ph // 2 - dist_bg),
+                    (mid_x + pw // 2 + dist_bg, mid_y + ph // 2 + dist_bg),
                 ],
                 fill=(255, 255, 255),
             )
@@ -1243,17 +1424,17 @@ def render_interactions_2d(
 
         elif itype == "π-cation":
             # π-cation interaction
-            _draw_dashed_line(draw, ax, ay, lcx, lcy, (140, 40, 230), width=2)
-            mid_x = (ax + lcx) // 2
-            mid_y = (ay + lcy) // 2
+            _draw_dashed_line(draw, ax, ay, tx, ty, (140, 40, 230), width=lw)
+            mid_x = (ax + tx) // 2
+            mid_y = (ay + ty) // 2
             pc_text = "π-cat"
             pb = draw.textbbox((0, 0), pc_text, font=font_symbol)
             pw = pb[2] - pb[0]
             ph = pb[3] - pb[1]
             draw.rectangle(
                 [
-                    (mid_x - pw // 2 - 2, mid_y - ph // 2 - 2),
-                    (mid_x + pw // 2 + 2, mid_y + ph // 2 + 2),
+                    (mid_x - pw // 2 - dist_bg, mid_y - ph // 2 - dist_bg),
+                    (mid_x + pw // 2 + dist_bg, mid_y + ph // 2 + dist_bg),
                 ],
                 fill=(255, 255, 255),
             )
@@ -1267,17 +1448,17 @@ def render_interactions_2d(
         elif itype == "Water bridge":
             # Water bridge: blue dashed line via water molecule
             # Draw water as small circle at midpoint
-            mid_x = (ax + lcx) // 2
-            mid_y = (ay + lcy) // 2
-            _draw_dashed_line(draw, ax, ay, mid_x, mid_y, (40, 115, 255), width=2)
-            _draw_dashed_line(draw, mid_x, mid_y, lcx, lcy, (40, 115, 255), width=2)
+            mid_x = (ax + tx) // 2
+            mid_y = (ay + ty) // 2
+            _draw_dashed_line(draw, ax, ay, mid_x, mid_y, (40, 115, 255), width=lw)
+            _draw_dashed_line(draw, mid_x, mid_y, tx, ty, (40, 115, 255), width=lw)
             # Water molecule symbol (larger for visibility)
             w_radius = max(12, int(16 * scale))
             draw.ellipse(
                 [(mid_x - w_radius, mid_y - w_radius), (mid_x + w_radius, mid_y + w_radius)],
                 fill=(200, 220, 255),
                 outline=(40, 115, 255),
-                width=2,
+                width=lw,
             )
             wb = draw.textbbox((0, 0), "W", font=font_symbol)
             ww = wb[2] - wb[0]
@@ -1291,18 +1472,28 @@ def render_interactions_2d(
 
         elif itype == "Metal complex":
             # Metal complex: grey dashed line
-            _draw_dashed_line(draw, ax, ay, lcx, lcy, (100, 100, 100), width=2)
+            _draw_dashed_line(draw, ax, ay, tx, ty, (100, 100, 100), width=lw)
 
         elif itype == "Halogen bond":
             # Halogen bond: cyan dashed line
-            _draw_dashed_line(draw, ax, ay, lcx, lcy, (0, 190, 190), width=2)
+            _draw_dashed_line(draw, ax, ay, tx, ty, (0, 190, 190), width=lw)
 
         else:
             # Default: thin colored leader line
-            draw.line([(ax, ay), (lcx, lcy)], fill=rgb_int, width=1)
+            draw.line([(ax, ay), (tx, ty)], fill=rgb_int, width=max(1, lw - 1))
 
         # Draw rounded label box (LigPlot+ style: prominent border)
-        _draw_rounded_label(draw, lx, ly, label, font, border_color=rgb_int, radius=10, padding=5)
+        _draw_rounded_label(
+            draw,
+            lx,
+            ly,
+            label,
+            font,
+            border_color=rgb_int,
+            radius=max(6, int(8 * scale)),
+            padding=max(4, int(5 * scale)),
+            border_width=max(2, int(2 * scale)),
+        )
 
     # ── Title (top-center) ────────────────────────────────────────────────────
     title_text = "Ligand Interaction Diagram"
@@ -1314,15 +1505,8 @@ def render_interactions_2d(
     draw.text((title_x + 1, title_y + 1), title_text, fill=(180, 180, 180), font=font_legend)
     draw.text((title_x, title_y), title_text, fill=(0, 0, 0), font=font_legend)
 
-    # ── Legend box (bottom-right, with safe margin) ───────────────────────────
-    type_counts: dict[str, int] = {}
-    for g in group_list:
-        t = g.get("type")
-        if t:
-            type_counts[t] = type_counts.get(t, 0) + 1
-
+    # ── Legend box (bottom-right, geometry pre-computed before label placement) ──
     if type_counts:
-        # Compute max text width to size the legend box dynamically
         legend_display_rgb = {
             "H-bond": (0, 170, 0),
             "Hydrophobic": (210, 30, 50),
@@ -1333,41 +1517,23 @@ def render_interactions_2d(
             "Water bridge": (40, 115, 255),
             "Metal complex": (128, 128, 128),
         }
-        _text_widths: list[int] = []
-        for itype, count in sorted(type_counts.items()):
-            text = f"{itype}: {count}"
-            try:
-                tb = draw.textbbox((0, 0), text, font=font_legend)
-                _text_widths.append(int(tb[2] - tb[0]))
-            except Exception:
-                pass
-        max_text_w = max(_text_widths + [80])
-
-        legend_margin = 40  # safe margin from canvas edges
-        legend_pad_x = 14
-        legend_pad_y = 10
-        legend_row_h = 22
-        legend_header_h = 24
-        legend_w = max(120, max_text_w + legend_pad_x * 2 + 20)  # +20 for swatch
-        legend_h = legend_header_h + len(type_counts) * legend_row_h + legend_pad_y * 2
-        legend_x = canvas_w - legend_w - legend_margin
-        legend_y = canvas_h - legend_h - legend_margin
-
+        lx0, ly0 = legend["x"], legend["y"]
         draw.rounded_rectangle(
-            [(legend_x, legend_y), (legend_x + legend_w, legend_y + legend_h)],
-            radius=6,
+            [(lx0, ly0), (lx0 + legend["w"], ly0 + legend["h"])],
+            radius=max(4, int(6 * scale)),
             fill=(255, 255, 255, 240),
             outline=(100, 100, 100),
-            width=1,
+            width=max(1, int(scale)),
         )
         draw.text(
-            (legend_x + legend_pad_x, legend_y + legend_pad_y),
+            (lx0 + legend["pad_x"], ly0 + legend["pad_y"]),
             "Interactions",
             fill=(0, 0, 0),
             font=font_legend,
         )
 
-        y_off = legend_y + legend_pad_y + legend_header_h
+        y_off = ly0 + legend["pad_y"] + legend["header_h"]
+        sw = legend["swatch"]
         for itype, count in sorted(type_counts.items()):
             rgb = legend_display_rgb.get(
                 itype,
@@ -1375,17 +1541,17 @@ def render_interactions_2d(
             )
             # Swatch
             draw.rounded_rectangle(
-                [(legend_x + legend_pad_x, y_off), (legend_x + legend_pad_x + 14, y_off + 14)],
-                radius=3,
+                [(lx0 + legend["pad_x"], y_off), (lx0 + legend["pad_x"] + sw, y_off + sw)],
+                radius=max(2, int(3 * scale)),
                 fill=rgb,
             )
             draw.text(
-                (legend_x + legend_pad_x + 20, y_off),
+                (lx0 + legend["pad_x"] + sw + int(6 * scale), y_off),
                 f"{itype}: {count}",
                 fill=(0, 0, 0),
                 font=font_legend,
             )
-            y_off += legend_row_h
+            y_off += legend["row_h"]
 
     ensure_dir(os.path.dirname(output_png) or ".")
     img.save(output_png, dpi=(dpi, dpi))
@@ -1473,8 +1639,12 @@ def composite_summary(
         raise VisualizationError("No valid panel images found")
 
     # ── Scale all panels to a uniform maximum width ──
+    # Convert("RGB") flattens any residual alpha channel (e.g. panels rendered
+    # before ray_opaque_background was enforced) so transparent regions paste
+    # as their intended background instead of raw garbage/black.
     images: list[Image.Image] = []
     for img in raw_images:
+        img = img.convert("RGB")
         if img.width > max_panel_width:
             ratio = max_panel_width / img.width
             new_h = int(img.height * ratio)

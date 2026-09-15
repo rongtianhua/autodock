@@ -51,7 +51,8 @@ class TestBuildPymolScript:
             center=(1.0, 2.0, 3.0),
             interactions=intx,
         )
-        assert "distance" in script.lower()
+        assert "_dashed_line" in script
+        assert "targets" in script
 
     def test_pocket_scene(self):
         script = rend._build_pymol_script(
@@ -256,6 +257,153 @@ class TestInteractionScenePocketCartoon:
         assert "cmd.set('cartoon_transparency', 1.0" not in script
         # Pocket side chains visible as sticks
         assert "cmd.show('sticks', 'pocket_vis" in script
+
+
+class TestSceneScriptHygiene:
+    """Scene-wide fixes: no leftover lines specks, opaque background."""
+
+    def test_lines_representation_hidden(self):
+        script = rend._build_pymol_script("rec.pdb", "lig.pdbqt", "out.png", scene="complex")
+        assert "cmd.hide('lines', 'receptor')" in script
+        assert "cmd.hide('nonbonded', 'receptor')" in script
+
+    def test_ray_opaque_background(self):
+        script = rend._build_pymol_script("rec.pdb", "lig.pdbqt", "out.png", scene="complex")
+        assert "cmd.set('ray_opaque_background', 1)" in script
+
+
+class TestInteractionSceneLabelsAndLines:
+    """Interaction scene: per-type per-atom dashed lines + pocket residue labels."""
+
+    def _interactions(self):
+        return [
+            {
+                "type": "H-bond",
+                "resn": "ARG",
+                "resi": 70,
+                "chain": "A",
+                "ligand_atoms": [{"coords": (-20.7, 5.2, 47.6)}],
+            },
+            {
+                "type": "Hydrophobic",
+                "resn": "LEU",
+                "resi": 69,
+                "chain": "A",
+                "ligand_atoms": [{"coords": (-12.6, 2.2, 46.3)}],
+            },
+        ]
+
+    def test_per_atom_dashed_lines_with_type_colors(self):
+        script = rend._build_pymol_script(
+            "rec.pdb",
+            "lig.pdbqt",
+            "out.png",
+            scene="interaction",
+            center=(0.0, 0.0, 0.0),
+            interactions=self._interactions(),
+        )
+        # One dashed line per ligand atom, colored by interaction type
+        assert "targets = [(-20.7, 5.2, 47.6)]" in script
+        assert "(0.0, 1.0, 1.0)" in script  # H-bond cyan
+        assert "(1.0, 0.5, 0.0)" in script  # Hydrophobic orange
+        # Distance label only on the closest pair
+        assert "cmd.pseudoatom('dist_0'" in script
+
+    def test_generated_python_blocks_compile(self):
+        """Every 'python ... python end' block must be syntactically valid."""
+        script = rend._build_pymol_script(
+            "rec.pdb",
+            "lig.pdbqt",
+            "out.png",
+            scene="interaction",
+            center=(0.0, 0.0, 0.0),
+            interactions=self._interactions(),
+        )
+        blocks = []
+        in_block = False
+        for line in script.splitlines():
+            if line.strip() == "python":
+                in_block = True
+                blocks.append([])
+                continue
+            if line.strip() == "python end":
+                in_block = False
+                continue
+            if in_block:
+                blocks[-1].append(line)
+        assert blocks, "expected at least one python block"
+        for block in blocks:
+            compile("\n".join(block), "<pymol-python-block>", "exec")
+
+    def test_surrounding_pocket_residues_labelled(self):
+        script = rend._build_pymol_script(
+            "rec.pdb",
+            "lig.pdbqt",
+            "out.png",
+            scene="interaction",
+            center=(0.0, 0.0, 0.0),
+            interactions=self._interactions(),
+        )
+        assert "pocket_vis and name CA" in script
+        assert "amb_lbl_" in script
+        # Interacting residues get the prominent label, surroundings the dim one
+        assert "grey70" in script
+
+
+class TestClipSegmentToBox:
+    def test_enters_box(self):
+        # Segment from (0,0) to (100,0); box starts at x=50
+        x, y = rend._clip_segment_to_box(0, 0, 100, 0, (50, -10, 60, 10))
+        assert x == pytest.approx(50)
+        assert y == pytest.approx(0)
+
+    def test_no_intersection_returns_end(self):
+        x, y = rend._clip_segment_to_box(0, 0, 10, 0, (50, -10, 60, 10))
+        assert (x, y) == (10, 0)
+
+    def test_start_inside_box_returns_end(self):
+        x, y = rend._clip_segment_to_box(55, 0, 100, 0, (50, -10, 60, 10))
+        assert (x, y) == (100, 0)
+
+
+class TestLegendLayout:
+    def test_geometry_scales_with_canvas(self):
+        header = ("Interactions", 120, 20)
+        rows = [("H-bond: 1", 90, 18), ("Hydrophobic: 4", 150, 18)]
+        small = rend._legend_layout(header, rows, 1800, 1400, scale=1.0)
+        large = rend._legend_layout(header, rows, 5400, 4200, scale=3.6)
+        # Box must contain all rows + header at any scale
+        for layout in (small, large):
+            assert layout["h"] >= layout["header_h"] + layout["row_h"] * len(rows)
+            assert layout["w"] >= 150 + layout["pad_x"] * 2
+        # Larger canvas → proportionally larger legend
+        assert large["row_h"] > small["row_h"]
+        assert large["pad_x"] > small["pad_x"]
+        # Box stays inside the canvas
+        assert large["x"] + large["w"] <= 5400
+        assert large["y"] + large["h"] <= 4200
+
+
+class TestComputeLabelPositionsReserved:
+    def test_labels_avoid_reserved_rect(self):
+        groups = [
+            {"type": "H-bond", "resn": "ARG", "resi": i, "chain": "A", "rdkit_atoms": {i}}
+            for i in range(4)
+        ]
+        atom_coords = {0: (100, 100), 1: (1100, 100), 2: (100, 800), 3: (1100, 800)}
+        canvas_w, canvas_h = 1200, 900
+        # Legend-like reserved region bottom-right
+        reserved = [(canvas_w - 300, canvas_h - 200, canvas_w - 10, canvas_h - 10)]
+        pos = rend._compute_label_positions(
+            groups, atom_coords, canvas_w, canvas_h, margin=80, reserved_rects=reserved
+        )
+        assert pos
+        est_tw, est_th = 120, 30
+        for x, y in pos.values():
+            box = (x - 6, y - 6, x + est_tw + 6, y + est_th + 6)
+            rx1, ry1, rx2, ry2 = reserved[0]
+            overlaps = not (box[2] < rx1 or box[0] > rx2 or box[3] < ry1 or box[1] > ry2)
+            assert not overlaps, f"label at {(x, y)} overlaps reserved rect"
 
 
 class TestComputeLabelPositions:

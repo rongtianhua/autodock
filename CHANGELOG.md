@@ -8,6 +8,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Fixed
+- **3D scenes: speckle pixels around the cartoon, transparent background,
+  invisible labels** (`autodock/rendering.py`). PyMOL shows the `lines`
+  representation by default on load, which survived as spectrum-coloured
+  specks around the cartoon on dark backgrounds — now hidden explicitly.
+  Ray-traced PNGs carried a transparent alpha channel, so viewers
+  composited them onto white and white residue/distance labels became
+  invisible; `ray_opaque_background=1` forces a solid background.
+  `composite_summary()` also flattens panels to RGB before pasting.
+- **3D interaction scene: per-type dashed lines and pocket residue labels**
+  (`autodock/rendering.py`). Interaction dashed lines are now drawn per
+  ligand atom (each to its closest residue atom) instead of a single
+  closest-pair line that made all types of one residue overlap into one
+  indistinguishable dash, so per-type colours (cyan H-bond, orange
+  hydrophobic, …) are readable. Non-interacting pocket residues (8 Å
+  window) now get small dim labels alongside the prominent interacting
+  residue labels; the residue-label block is wrapped in an explicit
+  `python`/`python end` pair and the generated blocks are compile-checked
+  in tests.
+- **2D interaction diagram: legend collapse and connector overlap**
+  (`autodock/rendering.py`). Legend paddings/row heights were fixed pixels
+  while fonts scaled with canvas size, so on publication canvases the text
+  piled up outside the box; all legend geometry now scales with the canvas
+  and is measured with the real font. Connector lines/arcs are clipped at
+  the label border (Liang–Barsky) instead of crossing under the label,
+  line widths/arc spokes/label borders scale with the canvas, and the
+  legend rectangle is reserved during label placement so labels never
+  overlap it.
 - **Silent `except` blocks now log at debug level**
   (`autodock/workflow.py`, `autodock/reporting.py`, `autodock/preparation.py`).
   `_compute_ligand_metrics()`, `reporting.py` figure-size probing, and the
