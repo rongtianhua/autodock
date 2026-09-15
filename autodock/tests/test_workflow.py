@@ -1541,3 +1541,87 @@ class TestCovalentCheck:
             covalent_check=False,
         )
         assert not any("Covalent warhead" in w for w in result.warnings)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Resume params fingerprint
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+class TestResumeParamsFingerprint:
+    """Changing docking parameters between runs must invalidate the checkpoint."""
+
+    _FINGERPRINT = {
+        "receptor_id": "1A30",
+        "ligand_smiles": "C=CC(=O)N",
+        "ligand_source": "smiles",
+        "seed": 42,
+        "exhaustiveness": 32,
+        "n_poses": 20,
+        "multi_conformer": False,
+        "n_conformers": 10,
+        "scoring_function": "vina",
+        "energy_range": 3.0,
+        "ph": 7.4,
+        "fix_protonation": True,
+        "max_pockets": 5,
+        "pocket_padding": 5.0,
+    }
+
+    def _run(self, tmp_path, caplog, load_state_return):
+        with (
+            patch("autodock.workflow.get_environment_status", return_value={}),
+            patch("autodock.workflow.set_log_level"),
+            patch("autodock.workflow.time.perf_counter", side_effect=[0.0, 1.0]),
+            patch("autodock.workflow._load_state", return_value=load_state_return) as mock_load,
+            patch("autodock.workflow._save_state") as mock_save,
+            patch("autodock.fetchers.fetch_protein_structure") as mock_fetch,
+            patch("autodock.fetchers.get_pdb_assembly_info") as mock_asm,
+            patch("autodock.preparation.prepare_receptor"),
+            patch("autodock.preparation.find_top_pockets") as mock_pockets,
+            patch("autodock.preparation.prepare_ligand"),
+            patch("autodock.docking.dock_ligand") as mock_dock,
+            patch("autodock.validation.compute_clash_score"),
+            patch("autodock.validation.validate_pose_with_posebusters"),
+            patch("autodock.post_dock_pipeline.post_process_docking"),
+            patch("autodock.analysis.compute_ligand_efficiency") as mock_le,
+        ):
+            mock_fetch.return_value = str(tmp_path / "1A30.cif")
+            mock_asm.return_value = {
+                "is_monomeric": True,
+                "asymmetric_chains": ["A"],
+                "oligomeric_count": 1,
+            }
+            mock_pockets.return_value = [_make_pocket(0)]
+            mock_le.return_value = {"le": 0.35, "le_rb": 0.18, "lle": 4.5, "lem": 0.12}
+            pose_file = tmp_path / "best_pose.pdbqt"
+            pose_file.write_text("ATOM\n")
+            mock_dock.return_value = _make_docking_result(-7.5, best_pose_pdbqt=str(pose_file))
+            with caplog.at_level("WARNING"):
+                result = wf.run_docking_workflow(
+                    receptor_id="1A30",
+                    receptor_source="auto",
+                    ligand_smiles="C=CC(=O)N",
+                    ligand_name="acrylamide",
+                    output_dir=str(tmp_path / "out"),
+                    resume=True,
+                )
+        return result, mock_load, mock_save
+
+    def test_stale_fingerprint_resets_checkpoint(self, tmp_path, caplog):
+        """A changed parameter must log a warning and reset the checkpoint."""
+        stale_state = {"params_fingerprint": {**self._FINGERPRINT, "seed": 7}, "step_1": True}
+        result, _, mock_save = self._run(tmp_path, caplog, load_state_return=stale_state)
+        assert result.errors == []
+        assert any("Docking parameters changed" in r.message for r in caplog.records)
+        saved_state = mock_save.call_args[0][1]
+        assert saved_state["params_fingerprint"] == self._FINGERPRINT
+
+    def test_matching_fingerprint_keeps_checkpoint(self, tmp_path, caplog):
+        """Unchanged parameters must keep the existing checkpoint."""
+        good_state = {"params_fingerprint": dict(self._FINGERPRINT), "step_1": True}
+        result, _, mock_save = self._run(tmp_path, caplog, load_state_return=good_state)
+        assert result.errors == []
+        assert not any("Docking parameters changed" in r.message for r in caplog.records)
+        saved_state = mock_save.call_args[0][1]
+        assert saved_state["params_fingerprint"] == self._FINGERPRINT

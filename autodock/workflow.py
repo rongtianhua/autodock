@@ -433,6 +433,36 @@ def run_docking_workflow(
     out_dir = os.path.abspath(output_dir)
     ensure_dir(out_dir)
     state = _load_state(out_dir) if resume else {}
+
+    # Resume safety: the checkpoint tracks completed steps but NOT the
+    # parameters they were computed with. Reusing cached steps after changing
+    # a docking-relevant parameter (e.g. a different seed for replicate runs,
+    # a different ligand with the same output name) would silently return
+    # stale results — reset the checkpoint when the fingerprint changes.
+    _params_fingerprint = {
+        "receptor_id": receptor_id,
+        "ligand_smiles": ligand_smiles,
+        "ligand_source": ligand_source,
+        "seed": seed,
+        "exhaustiveness": exhaustiveness,
+        "n_poses": n_poses,
+        "multi_conformer": multi_conformer,
+        "n_conformers": n_conformers,
+        "scoring_function": scoring_function,
+        "energy_range": energy_range,
+        "ph": ph,
+        "fix_protonation": fix_protonation,
+        "max_pockets": max_pockets,
+        "pocket_padding": pocket_padding,
+    }
+    if resume and state and state.get("params_fingerprint") != _params_fingerprint:
+        logger.warning(
+            "Docking parameters changed since the previous run in this output "
+            "directory — ignoring the checkpoint and restarting from Step 1."
+        )
+        state = {}
+    state["params_fingerprint"] = _params_fingerprint
+
     result = DockingWorkflowResult(
         receptor_name=receptor_id,
         ligand_name=ligand_name or "ligand",
@@ -1154,7 +1184,8 @@ def _compute_ligand_metrics(smiles: str) -> dict[str, Any] | None:
             "n_rotatable_bonds": Descriptors.NumRotatableBonds(mol),
             "molecular_weight": Descriptors.MolWt(mol),
         }
-    except Exception:
+    except Exception as exc:  # noqa: BLE001
+        logger.debug(f"Ligand descriptor computation failed for {smiles[:40]}: {exc}")
         return None
 
 

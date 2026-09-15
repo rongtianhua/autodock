@@ -8,6 +8,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Fixed
+- **Silent `except` blocks now log at debug level**
+  (`autodock/workflow.py`, `autodock/reporting.py`, `autodock/preparation.py`).
+  `_compute_ligand_metrics()`, `reporting.py` figure-size probing, and the
+  spiro/bridgehead detection fallback swallowed all exceptions silently,
+  making failures invisible. Each now emits a `logger.debug` record with the
+  exception details. (`covalent.py` capability probing is intentionally
+  unchanged — silence is part of that probe's contract.)
+- **Cache file hashing truncated files > 8 MB** (`autodock/cache.py`).
+  `_hash_file()` previously read at most 8 MB, so two inputs whose first
+  8 MB are identical but differ afterwards received the same cache key and
+  silently returned stale results. The default is now full-file hashing
+  (`limit_bytes=None`); the parameter remains for callers that explicitly
+  want a bounded read.
+- **Resume checkpoint ignored parameter changes** (`autodock/workflow.py`).
+  `workflow_state.json` tracked completed steps but not the parameters they
+  were computed with, so re-running with a different seed, ligand, or
+  exhaustiveness in the same output directory silently returned stale cached
+  results. The workflow now writes a `params_fingerprint` (receptor, ligand,
+  seed, exhaustiveness, poses, scoring function, pH, protonation, pocket
+  settings) into the checkpoint and resets it — with a logged warning —
+  when the fingerprint changes.
 - **3D interaction scene cartoon transparency** (`autodock/rendering.py`).
   The interaction scene used `cartoon_transparency=1.0` outside a 15 Å
   `pocket_vis` selection with `0.2` inside; on small proteins (< 5000 atoms)

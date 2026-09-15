@@ -304,7 +304,8 @@ def generate_pdf_report(
 
                 with _PILImage.open(fig_path) as _pil_img:
                     img_w_px, img_h_px = _pil_img.size
-            except Exception:
+            except Exception as exc:  # noqa: BLE001
+                logger.debug(f"Could not probe figure size {fig_path}: {exc} — using 4:3")
                 img_w_px, img_h_px = 4, 3
             aspect = img_h_px / img_w_px if img_w_px else 0.75
             fig_width = max_fig_width

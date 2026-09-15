@@ -49,8 +49,13 @@ def _hash_params(**params: Any) -> str:
     return hashlib.sha256(_canonical_json(params).encode()).hexdigest()[:16]
 
 
-def _hash_file(path: str, limit_bytes: int = 8 * 1024 * 1024) -> str:
-    """Hash the first *limit_bytes* of a file."""
+def _hash_file(path: str, limit_bytes: int | None = None) -> str:
+    """Hash a file's full content (SHA-256, first 16 hex chars).
+
+    ``limit_bytes`` optionally caps how much is read (legacy behaviour); the
+    default hashes the entire file so that edits past an arbitrary prefix
+    boundary still invalidate cache entries.
+    """
     if not os.path.isfile(path):
         return "missing"
     h = hashlib.sha256()

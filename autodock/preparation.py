@@ -2495,8 +2495,9 @@ def prepare_ligand_adaptive(
     try:
         has_spiro = rdMolDescriptors.CalcNumSpiroAtoms(mol) > 0
         has_bridge = rdMolDescriptors.CalcNumBridgeheadAtoms(mol) > 0
-    except Exception:
+    except Exception as exc:  # noqa: BLE001
         # Fallback for non-standard mol objects (e.g. mocked in tests)
+        logger.debug(f"Spiro/bridgehead detection failed ({exc}) — assuming none")
         has_spiro = False
         has_bridge = False
     needs_multi = has_macrocycle or has_spiro or has_bridge
