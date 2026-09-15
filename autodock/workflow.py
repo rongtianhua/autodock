@@ -239,18 +239,18 @@ class DockingWorkflowResult:
 def run_docking_workflow(
     # ── Receptor ──────────────────────────────────────────────────────────
     receptor_id: str | None = None,
-    receptor_source: str = "auto",
+    receptor_source: str | None = None,
     receptor_format: str = "auto",
     receptor_chain: str | None = None,
     # ── Ligand ────────────────────────────────────────────────────────────
     ligand_smiles: str | None = None,
-    ligand_source: str = "smiles",
+    ligand_source: str | None = None,
     ligand_name: str | None = None,
     ligand_sdf: str | None = None,
-    # ── Docking parameters ────────────────────────────────────────────────
-    exhaustiveness: int = 32,
-    n_poses: int = 20,
-    seed: int = 42,
+    # ── Docking parameters (None → config file → publication default) ──────
+    exhaustiveness: int | None = None,
+    n_poses: int | None = None,
+    seed: int | None = None,
     multi_conformer: bool = False,
     n_conformers: int = 10,
     # ── Advanced docking ──────────────────────────────────────────────────
@@ -258,16 +258,16 @@ def run_docking_workflow(
     energy_range: float = 3.0,
     scoring_function: str = "vina",
     # ── Pocket detection ─────────────────────────────────────────────────
-    max_pockets: int = 5,
-    pocket_padding: float = 5.0,
+    max_pockets: int | None = None,
+    pocket_padding: float | None = None,
     # ── Receptor preparation ─────────────────────────────────────────────
-    ph: float = 7.4,
-    fix_protonation: bool = True,
+    ph: float | None = None,
+    fix_protonation: bool | None = None,
     detect_af: bool = True,
     # ── Output ────────────────────────────────────────────────────────────
-    output_dir: str = "./docking_results",
+    output_dir: str | None = None,
     report_name: str | None = None,
-    log_level: str = "INFO",
+    log_level: str | None = None,
     # ── Figure rendering ─────────────────────────────────────────────────
     do_3d_figures: bool = True,
     do_2d_figures: bool = True,
@@ -329,7 +329,7 @@ def run_docking_workflow(
         pocket_padding: Box padding around pocket dimensions (Å, default 5.0).
         ph: Target pH for protonation (default 7.4).
         fix_protonation: If True, run PDB2PQR+PROPKA for active protonation
-            correction (default False).
+            correction (default True).
         detect_af: If True, auto-detect AlphaFold structures and run pLDDT
             assessment (default True).
         output_dir: Root output directory (default ``"./docking_results"``).
@@ -338,8 +338,9 @@ def run_docking_workflow(
         do_3d_figures: Render PyMOL 3D figures (complex/pocket/interaction).
         do_2d_figures: Render RDKit Cairo 2D interaction diagram.
         do_report: Generate PDF + CSV reports.
-        config_path: Optional path to a YAML config file.  Explicit keyword
-            arguments always override config values.
+        config_path: Optional path to a YAML config file.  Parameter
+            resolution order: explicit keyword argument > config file >
+            publication default.
         resume: If ``True`` (default), skip steps whose outputs already exist
             in the output directory from a previous run.
         run_posebusters: If ``True`` (default), run PoseBusters validation on
@@ -420,6 +421,33 @@ def run_docking_workflow(
         do_report = merged.get("do_report", do_report)
         run_posebusters = merged.get("run_posebusters", run_posebusters)
         covalent_check = merged.get("covalent_check", covalent_check)
+
+    # ── Publication defaults (lowest precedence) ────────────────────────────
+    # Resolution order: explicit argument > config file > fallback below.
+    # Signature defaults are None so "user did not pass" is distinguishable
+    # from "user passed the publication default".
+    if receptor_source is None:
+        receptor_source = "auto"
+    if ligand_source is None:
+        ligand_source = "smiles"
+    if exhaustiveness is None:
+        exhaustiveness = 32
+    if n_poses is None:
+        n_poses = 20
+    if seed is None:
+        seed = 42
+    if max_pockets is None:
+        max_pockets = 5
+    if pocket_padding is None:
+        pocket_padding = 5.0
+    if ph is None:
+        ph = 7.4
+    if fix_protonation is None:
+        fix_protonation = True
+    if output_dir is None:
+        output_dir = "./docking_results"
+    if log_level is None:
+        log_level = "INFO"
 
     if receptor_id is None:
         raise ValueError(
@@ -1317,13 +1345,25 @@ def main():
     parser.add_argument("--ligand-name", help="Ligand name (for output files)")
     parser.add_argument(
         "--receptor-source",
-        default="auto",
+        default=None,
         choices=["auto", "pdb", "alphafold", "file"],
-        help="Receptor source type",
+        help="Receptor source type (default: auto; config: receptor.source)",
     )
-    parser.add_argument("--exhaustiveness", type=int, default=32)
-    parser.add_argument("--n-poses", type=int, default=20)
-    parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument(
+        "--exhaustiveness",
+        type=int,
+        default=None,
+        help="Vina exhaustiveness (default: 32; config: docking.exhaustiveness)",
+    )
+    parser.add_argument(
+        "--n-poses",
+        type=int,
+        default=None,
+        help="Poses per conformer (default: 20; config: docking.num_modes)",
+    )
+    parser.add_argument(
+        "--seed", type=int, default=None, help="Random seed (default: 42; config: docking.seed)"
+    )
     parser.add_argument("--multi-conformer", action="store_true", help="Multi-conformer docking")
     parser.add_argument("--n-conformers", type=int, default=10)
     parser.add_argument("--timeout", type=int, default=600, help="Timeout per pocket in seconds")
@@ -1336,9 +1376,21 @@ def main():
         default="vina",
         help="Scoring function (default: vina)",
     )
-    parser.add_argument("--max-pockets", type=int, default=5)
-    parser.add_argument("--ph", type=float, default=7.4)
-    parser.add_argument("--fix-protonation", action="store_true")
+    parser.add_argument(
+        "--max-pockets",
+        type=int,
+        default=None,
+        help="Maximum pockets to dock (default: 5; config: pocket.top_n)",
+    )
+    parser.add_argument(
+        "--ph", type=float, default=None, help="Protonation pH (default: 7.4; config: receptor.ph)"
+    )
+    parser.add_argument(
+        "--fix-protonation",
+        action="store_true",
+        default=None,
+        help="Run PDB2PQR+PROPKA protonation correction (default: on; config: receptor.minimize)",
+    )
     parser.add_argument(
         "--receptor-multichain-strategy",
         default="auto",
@@ -1350,8 +1402,16 @@ def main():
         action="store_true",
         help="Detect covalent warheads in the ligand and annotate results",
     )
-    parser.add_argument("--outdir", default="./docking_results", help="Output directory")
-    parser.add_argument("--log-level", default="INFO")
+    parser.add_argument(
+        "--outdir",
+        default=None,
+        help="Output directory (default: ./docking_results; config: project.output_dir)",
+    )
+    parser.add_argument(
+        "--log-level",
+        default=None,
+        help="Logging level (default: INFO; config: project.log_level)",
+    )
     parser.add_argument("--no-3d", action="store_true", help="Skip 3D figures")
     parser.add_argument("--no-2d", action="store_true", help="Skip 2D figures")
     parser.add_argument("--no-report", action="store_true", help="Skip report generation")

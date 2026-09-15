@@ -112,6 +112,31 @@ class TestResolveParamsFromConfig:
         result = wf._resolve_params_from_config("dummy.yml", output_dir="/explicit")
         assert result["output_dir"] == "/explicit"
 
+    @patch("autodock.config.load_config")
+    def test_config_fills_when_kwarg_is_none(self, mock_load):
+        """None means 'not passed' — config must fill, not be ignored."""
+        mock_load.return_value = {
+            "pocket": {"top_n": 3},
+            "docking": {"exhaustiveness": 16},
+            "receptor": {"ph": 6.5},
+        }
+        result = wf._resolve_params_from_config(
+            "dummy.yml",
+            max_pockets=None,
+            exhaustiveness=None,
+            ph=None,
+        )
+        assert result["max_pockets"] == 3
+        assert result["exhaustiveness"] == 16
+        assert result["ph"] == 6.5
+
+    @patch("autodock.config.load_config")
+    def test_explicit_publication_default_still_wins_over_config(self, mock_load):
+        """Passing the publication default explicitly is an explicit choice."""
+        mock_load.return_value = {"pocket": {"top_n": 3}}
+        result = wf._resolve_params_from_config("dummy.yml", max_pockets=5)
+        assert result["max_pockets"] == 5
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Ligand metrics
