@@ -7,6 +7,56 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- **3D interaction scene cartoon transparency** (`autodock/rendering.py`).
+  The interaction scene used `cartoon_transparency=1.0` outside a 15 Å
+  `pocket_vis` selection with `0.2` inside; on small proteins (< 5000 atoms)
+  the 15 Å window covers most of the structure, so the entire cartoon rendered
+  ~80 % transparent. Transparent cartoon z-fought with the ball-and-stick
+  ligand, β-strands rendered as distorted double ribbons, and CGO dashed
+  interaction lines were visually lost. The scene now hides the receptor
+  cartoon and re-shows only an 8 Å pocket window (solid), and displays pocket
+  side chains as sticks so interacting residues are actually visible.
+  Safe because interaction lines are CGO objects, not `distance` objects, so
+  `cmd.hide("cartoon", ...)` does not affect them.
+- **2D interaction diagram label layout** (`autodock/rendering.py`).
+  `_compute_label_positions()` forced labels onto evenly spaced angular
+  sectors at a fixed 40 % of the canvas diagonal, which scattered residue
+  labels far from the ligand on large publication canvases and clipped them
+  at the canvas edge. Labels now follow the natural centroid direction of
+  each residue with collision nudging, at a distance adapted to the ligand's
+  actual 2D extent. A residue with several interaction types (e.g. H-bond +
+  hydrophobic) now shares ONE label position instead of one label per type.
+  Unplaceable labels are skipped rather than drawn overlapping.
+- **2D interaction diagram aromatic ring fill** (`autodock/rendering.py`).
+  Only interacting atoms received highlight colours; for multi-ring ligands
+  where one ring contacts the pocket (e.g. flavonoids), the non-interacting
+  ring rendered as bare line strokes and the molecule looked split in half.
+  Non-interacting aromatic atoms and aromatic-aromatic bonds now get a light
+  grey fill so the full structure reads continuously.
+- **`minimize_pose` never succeeded for conjugated ligands**
+  (`autodock/minimization.py`, `autodock/workflow.py`). The workflow only
+  passed `ligand_smiles` to `minimize_docked_pose()`, forcing a substructure
+  match between the SMILES template and the RDKit topology inferred from the
+  docked PDBQT, which fails for conjugated systems (flavonoids, quinolines,
+  indoles) where bond-order/aromaticity perception differs — every
+  minimisation attempt returned "Failed to build ligand molecule".
+  Two fixes: (1) `run_docking_workflow()` gains an optional `ligand_sdf`
+  parameter, auto-derived when `ligand_source="file"` points to an SDF/MOL
+  file; (2) `_match_heavy_atoms()` falls back to element-aware optimal
+  coordinate assignment (Hungarian + ICP-style Kabsch refinement) when
+  substructure matching fails, recovering a correct atom mapping for the
+  same molecule. Also fixed a latent `GetAtomPosition()` range error when the
+  docked mol carries explicit hydrogens.
+- **Pocket detection hard-failed when P2Rank found nothing**
+  (`autodock/preparation.py`). `find_top_pockets()` fell back to DoGSite3
+  (network) and then raised `PreparationError` without ever trying pure
+  fpocket detection, hard-failing the whole pipeline for small / low-pLDDT /
+  transmembrane receptors (observed: 20/20 pairs failed on a pLDDT ≈ 63
+  AlphaFold transmembrane target whose pocket fpocket scores 0.49). A new
+  second offline fallback tier runs fpocket, normalises its pockets, and
+  ranks them by Drug Score through the unchanged downstream pipeline.
+
 ### Added
 - **Headless PyMOL high-resolution rendering fix** (`autodock/rendering.py`).
   `render_scene_pymol()` now passes `-W {width} -H {height}` to the PyMOL CLI,

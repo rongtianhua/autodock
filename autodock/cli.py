@@ -1045,7 +1045,9 @@ def build_parser() -> argparse.ArgumentParser:
         help="Detect binding pockets",
         description=(
             "Pipeline: P2Rank ML primary (top-10) → fpocket geometric cross-validation "
-            "→ fpocket druggability re-ranking → output top-5 pockets."
+            "→ fpocket druggability re-ranking → output top-5 pockets. "
+            "Fallbacks when P2Rank finds nothing: DoGSite3 (proteins.plus API), "
+            "then fpocket-only geometric detection (offline)."
         ),
     )
     p_pocket.add_argument("receptor", help="Receptor PDB file")

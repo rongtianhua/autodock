@@ -188,12 +188,31 @@ def _build_pymol_script(
         else:
             lines.append(f"cmd.set('{key}', {val})")
 
-    # For interaction scene, use cartoon_transparency to dim non-pocket cartoon
-    # instead of cmd.hide which wipes distance objects in PyMOL 3.1.8
+    # For the interaction scene, show only the pocket-region cartoon. The old
+    # approach (cartoon_transparency=1.0 outside a 15 Å "pocket_vis" selection)
+    # made the ENTIRE cartoon semi-transparent on small proteins (< 5000 atoms,
+    # where 15 Å covers most of the structure): transparent cartoon z-fights
+    # with the ball-and-stick ligand, β-strands render as distorted double
+    # ribbons, and CGO dashed interaction lines get visually lost.
+    # cmd.hide is safe here because interaction lines are CGO objects (not
+    # "distance" objects), which hide/show of cartoon does not affect.
     if scene == "interaction" and center:
-        lines.append("cmd.select('pocket_vis', 'byres (receptor within 15.0 of ligand)')")
-        lines.append("cmd.set('cartoon_transparency', 1.0, 'receptor and not pocket_vis')")
-        lines.append("cmd.set('cartoon_transparency', 0.2, 'pocket_vis')")
+        # 8 Å window: covers the pocket plus a visual buffer around the ligand
+        # without swallowing small proteins whole (15 Å covered ~80% of a
+        # 1737-atom receptor in the wild).
+        lines.append("cmd.select('pocket_vis', 'byres (receptor within 8.0 of ligand)')")
+        lines.append("cmd.hide('cartoon', 'receptor')")
+        lines.append("cmd.show('cartoon', 'pocket_vis')")
+        lines.append("cmd.set('cartoon_transparency', 0.0, 'pocket_vis')")
+        # Pocket side chains as sticks — without these the interaction scene
+        # showed cartoon + ligand only, leaving the interacting residues
+        # invisible.
+        lines.append("cmd.show('sticks', 'pocket_vis and not (name C+N+O+CA)')")
+        lines.append("cmd.set('stick_radius', 0.12, 'pocket_vis')")
+        lines.append("cmd.color('white', 'pocket_vis and elem C')")
+        lines.append("cmd.color('red', 'pocket_vis and elem O')")
+        lines.append("cmd.color('blue', 'pocket_vis and elem N')")
+        lines.append("cmd.color('yellow', 'pocket_vis and elem S')")
     else:
         # Cartoon transparency for pocket / interaction scenes
         if scene in ("pocket", "interaction"):
@@ -521,6 +540,39 @@ def render_scene_pymol(
 # ─────────────────────────────────────────────────────────────────────────────
 
 
+def _fill_noninteracting_aromatic(
+    mol: Any,
+    highlight_atoms: set[int],
+    highlight_atom_colors: dict[int, tuple[float, float, float]],
+    highlight_bonds: set[int],
+    highlight_bond_colors: dict[int, tuple[float, float, float]],
+) -> None:
+    """Fill non-interacting aromatic atoms/bonds with a light grey background.
+
+    When only a subset of aromatic atoms interact (common for fused or
+    multi-ring ligands such as flavonoids: one ring contacts the pocket, the
+    other does not), RDKit highlights only the interacting ring. The
+    un-highlighted ring then reads as bare line strokes and the molecule
+    looks visually "split in half". Filling all non-interacting aromatic
+    atoms/bonds with light grey keeps the full structure continuous;
+    interacting atoms keep their interaction colours (they are added first,
+    so their colours win).
+    """
+    grey_bg = (0.88, 0.88, 0.88)
+    for atom_idx in range(mol.GetNumAtoms()):
+        atom = mol.GetAtomWithIdx(atom_idx)
+        if not atom.GetIsAromatic():
+            continue
+        if atom_idx not in highlight_atom_colors:
+            highlight_atoms.add(atom_idx)
+            highlight_atom_colors[atom_idx] = grey_bg
+        for bond in atom.GetBonds():
+            other = bond.GetOtherAtom(atom)
+            if other.GetIsAromatic() and bond.GetIdx() not in highlight_bond_colors:
+                highlight_bonds.add(bond.GetIdx())
+                highlight_bond_colors[bond.GetIdx()] = grey_bg
+
+
 def _parse_smiles_idx_from_pdbqt(ligand_pdbqt: str) -> dict[int, int]:
     """Parse REMARK SMILES IDX lines from PDBQT.
 
@@ -682,7 +734,14 @@ def _compute_label_positions(
 ) -> dict[int, tuple[int, int]]:
     """Compute radial label positions around ligand centre.
 
-    Uses angular sector assignment with collision nudging.
+    Labels are placed along the natural direction of each residue's atom
+    centroid (with angular nudging on collision), at a distance adapted to
+    the ligand's actual extent — not a fixed fraction of the canvas, which
+    pushed labels off-ligand on large publication canvases. Residues with
+    several interaction types share ONE label position. If no non-overlapping
+    position can be found, the label is skipped rather than drawn on top of
+    another one.
+
     Returns mapping: group index -> (x, y) top-left of label.
     """
     if not groups:
@@ -697,86 +756,121 @@ def _compute_label_positions(
     else:
         cx, cy = canvas_w / 2, canvas_h / 2
 
-    # Compute centroid angle for each group (from ligand centre)
-    group_angles: list[tuple[int, float]] = []
+    # ── Merge groups by residue: one label per (resn, resi, chain) ────────────
+    # A residue with e.g. both an H-bond and a hydrophobic contact used to get
+    # one label per interaction group (grouped by type), each anchored at a
+    # different atom centroid — producing duplicated, scattered residue labels.
+    seen_res: dict[tuple[Any, Any, Any], int] = {}
+    merged: list[dict[str, Any]] = []
+    members: list[list[int]] = []
     for i, g in enumerate(groups):
-        atoms = [a for a in g.get("rdkit_atoms", set()) if a in atom_coords]
+        key = (g.get("resn"), g.get("resi"), g.get("chain"))
+        if key in seen_res:
+            mi = seen_res[key]
+            merged[mi]["rdkit_atoms"] = merged[mi]["rdkit_atoms"] | g.get("rdkit_atoms", set())
+            members[mi].append(i)
+        else:
+            seen_res[key] = len(merged)
+            merged.append(
+                {
+                    "resn": g.get("resn"),
+                    "resi": g.get("resi"),
+                    "rdkit_atoms": set(g.get("rdkit_atoms", set())),
+                }
+            )
+            members.append([i])
+
+    # Merged centroid and natural angle per residue
+    merged_info: list[tuple[int, float, float, float]] = []  # (mi, gx, gy, angle)
+    for mi, g in enumerate(merged):
+        atoms = [a for a in g["rdkit_atoms"] if a in atom_coords]
         if not atoms:
             continue
         gx = sum(atom_coords[a][0] for a in atoms) / len(atoms)
         gy = sum(atom_coords[a][1] for a in atoms) / len(atoms)
-        angle = math.atan2(gy - cy, gx - cx)
-        group_angles.append((i, angle))
+        merged_info.append((mi, gx, gy, math.atan2(gy - cy, gx - cx)))
 
-    # Sort by angle for even distribution
-    group_angles.sort(key=lambda x: x[1])
+    # Sort by natural angle for clockwise distribution
+    merged_info.sort(key=lambda t: t[3])
 
-    # Assign sectors evenly around the circle
-    n = len(group_angles)
+    # ── Adaptive base distance from the ligand's actual 2D extent ─────────────
+    # Old behaviour: base_dist = max(canvas) * 0.40, which on a 5400×4200
+    # publication canvas puts labels ~2200 px from the ligand centre — far
+    # outside the drawn molecule and prone to clipping at the canvas edge.
+    scale = max(canvas_w, canvas_h) / 1500.0
+    numeric_x = [c[0] for c in atom_coords.values() if isinstance(c[0], (int, float))]
+    numeric_y = [c[1] for c in atom_coords.values() if isinstance(c[1], (int, float))]
+    if numeric_x:
+        ligand_extent = max(
+            max(numeric_x) - min(numeric_x),
+            max(numeric_y) - min(numeric_y),
+            1.0,
+        )
+    else:
+        # No numeric coordinates (degenerate/mocked inputs) — fall back to a
+        # conservative canvas fraction.
+        ligand_extent = max(canvas_w, canvas_h) * 0.25
+    max_radius = min(canvas_w, canvas_h) / 2 - margin
+    base_dist = min(max(ligand_extent * 1.6, 200 * scale), max(200.0, max_radius * 0.85))
+
+    char_w = max(8, int(9 * scale))
+    line_h = max(16, int(20 * scale))
+
     positions: dict[int, tuple[int, int]] = {}
     placed: list[tuple[int, int, int, int]] = []
 
-    for rank, (gi, _orig_angle) in enumerate(group_angles):
-        # Even angular spacing starting from top
-        sector_angle = 2 * math.pi * rank / n - math.pi / 2
-        g = groups[gi]
-        atoms = [a for a in g.get("rdkit_atoms", set()) if a in atom_coords]
-        if not atoms:
-            continue
-
-        # Anchor at centroid of group's atoms
-        gx = sum(atom_coords[a][0] for a in atoms) / len(atoms)
-        gy = sum(atom_coords[a][1] for a in atoms) / len(atoms)
-
-        # Estimate text size
+    for mi, _gx, _gy, natural_angle in merged_info:
+        g = merged[mi]
         label = f"{g['resn']}{g['resi']}"
-        est_tw = len(label) * 11
-        est_th = 18
+        est_tw = len(label) * char_w + 8
+        est_th = line_h
 
-        # Distance from ligand centre (not from atom)
-        base_dist = max(canvas_w, canvas_h) * 0.40
-        # H-bonds need room for dashed line + distance text
-        if g.get("type") == "H-bond":
-            base_dist *= 1.02
-        elif g.get("type") == "Hydrophobic":
-            base_dist *= 1.08
+        best_pos: tuple[int, int] | None = None
+        # Multi-pass: natural angle → angular nudges → radius expansion
+        for radius_mult in (1.0, 1.15, 1.3, 1.5):
+            for nudge_deg in (0, -12, 12, -24, 24, -38, 38, -55, 55, -75, 75):
+                angle = natural_angle + math.radians(nudge_deg)
+                radius = base_dist * radius_mult
+                lx = int(cx + radius * math.cos(angle)) - est_tw // 2
+                ly = int(cy + radius * math.sin(angle)) - est_th // 2
 
-        # Try angles with nudging for collision avoidance
-        best_pos = None
-        for nudge in range(0, 51):
-            angle = sector_angle + (nudge * 0.05 if nudge % 2 == 1 else -nudge * 0.05)
-            # Position relative to ligand centre
-            lx = int(cx + base_dist * math.cos(angle)) - est_tw // 2
-            ly = int(cy + base_dist * math.sin(angle)) - est_th // 2
+                # Margin clamp
+                lx = max(margin, min(lx, canvas_w - margin - est_tw))
+                ly = max(margin, min(ly, canvas_h - margin - est_th))
 
-            # Margin clamp
-            lx = max(margin, min(lx, canvas_w - margin - est_tw))
-            ly = max(margin, min(ly, canvas_h - margin - est_th))
-
-            box = (lx - 6, ly - 6, lx + est_tw + 6, ly + est_th + 6)
-            overlap = False
-            for bx1, by1, bx2, by2 in placed:
-                if not (box[2] < bx1 or box[0] > bx2 or box[3] < by1 or box[1] > by2):
-                    overlap = True
+                box = (lx - 6, ly - 6, lx + est_tw + 6, ly + est_th + 6)
+                overlap = any(
+                    not (box[2] < bx1 or box[0] > bx2 or box[3] < by1 or box[1] > by2)
+                    for bx1, by1, bx2, by2 in placed
+                )
+                if not overlap:
+                    best_pos = (lx, ly)
+                    placed.append(box)
                     break
-            if not overlap:
-                best_pos = (lx, ly)
-                placed.append(box)
+            if best_pos is not None:
                 break
 
         if best_pos is None:
-            # Fallback: stack vertically at right margin
-            best_pos = (canvas_w - margin - est_tw, margin + gi * 30)
-            placed.append(
-                (
-                    best_pos[0] - 6,
-                    best_pos[1] - 6,
-                    best_pos[0] + est_tw + 6,
-                    best_pos[1] + est_th + 6,
-                )
-            )
+            # Fallback: right margin, first free vertical slot
+            for free_y in range(margin, canvas_h - margin - est_th, est_th + 8):
+                lx = canvas_w - margin - est_tw
+                ly = free_y
+                box = (lx - 6, ly - 6, lx + est_tw + 6, ly + est_th + 6)
+                if not any(
+                    not (box[2] < bx1 or box[0] > bx2 or box[3] < by1 or box[1] > by2)
+                    for bx1, by1, bx2, by2 in placed
+                ):
+                    best_pos = (lx, ly)
+                    placed.append(box)
+                    break
 
-        positions[gi] = best_pos
+        if best_pos is None:
+            # Last resort: skip this label instead of drawing it overlapping
+            continue
+
+        # Share the position across all original groups of this residue
+        for oi in members[mi]:
+            positions[oi] = best_pos
 
     return positions
 
@@ -944,6 +1038,14 @@ def render_interactions_2d(
                     highlight_bonds.add(bidx)
                     if bidx not in highlight_bond_colors:
                         highlight_bond_colors[bidx] = rgb
+
+    # Fill non-interacting aromatic rings with light grey so the full
+    # structure stays visually continuous (skipped when no interaction was
+    # mapped, to avoid implying non-existent contacts).
+    if interaction_groups:
+        _fill_noninteracting_aromatic(
+            mol, highlight_atoms, highlight_atom_colors, highlight_bonds, highlight_bond_colors
+        )
 
     # ── Draw molecule with highlights ─────────────────────────────────────────
     # Scale canvas by DPI for publication-quality output (RDKit Cairo works in px)

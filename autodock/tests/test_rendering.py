@@ -232,3 +232,103 @@ class TestParsePdbqtHelpers:
         coords = rend._parse_pdbqt_coords(str(pdbqt))
         assert len(coords) == 1
         assert coords[(1.234, 2.345, 3.456)] == 1
+
+
+class TestInteractionScenePocketCartoon:
+    """3D interaction scene: pocket-window cartoon, not whole-protein transparency."""
+
+    def test_interaction_scene_hides_nonpocket_cartoon(self):
+        script = rend._build_pymol_script(
+            "rec.pdb",
+            "lig.pdbqt",
+            "out.png",
+            scene="interaction",
+            center=(1.0, 2.0, 3.0),
+            interactions=[],
+        )
+        # 8 Å pocket window — 15 Å covered ~80 % of small receptors in the wild
+        assert "within 8.0 of ligand" in script
+        assert "within 15.0 of ligand" not in script
+        # Cartoon hidden outside pocket and re-shown inside (solid), not
+        # transparency-graded over the whole protein
+        assert "cmd.hide('cartoon', 'receptor')" in script
+        assert "cmd.show('cartoon', 'pocket_vis')" in script
+        assert "cmd.set('cartoon_transparency', 1.0" not in script
+        # Pocket side chains visible as sticks
+        assert "cmd.show('sticks', 'pocket_vis" in script
+
+
+class TestComputeLabelPositions:
+    """2D label layout: one label per residue, natural direction, in-canvas."""
+
+    def test_same_residue_multiple_types_share_position(self):
+        groups = [
+            {"type": "H-bond", "resn": "PHE", "resi": 109, "chain": "A", "rdkit_atoms": {0, 1}},
+            {"type": "Hydrophobic", "resn": "PHE", "resi": 109, "chain": "A", "rdkit_atoms": {2}},
+            {"type": "H-bond", "resn": "SER", "resi": 96, "chain": "A", "rdkit_atoms": {3}},
+        ]
+        atom_coords = {0: (100, 100), 1: (130, 100), 2: (115, 140), 3: (520, 420)}
+        pos = rend._compute_label_positions(groups, atom_coords, 1200, 900, margin=80)
+        # PHE109 must get ONE shared position for both interaction types
+        assert pos[0] == pos[1]
+        # Every placeable group got a position
+        assert set(pos) == {0, 1, 2}
+
+    def test_positions_stay_inside_canvas(self):
+        import random
+
+        rng = random.Random(0)
+        atom_coords = {i: (rng.uniform(400, 800), rng.uniform(300, 600)) for i in range(8)}
+        groups = [
+            {"type": "H-bond", "resn": "ARG", "resi": 10 + i, "chain": "A", "rdkit_atoms": {i}}
+            for i in range(8)
+        ]
+        canvas_w, canvas_h = 2400, 1800
+        pos = rend._compute_label_positions(groups, atom_coords, canvas_w, canvas_h, margin=80)
+        assert len(pos) == 8
+        for x, y in pos.values():
+            assert 0 <= x <= canvas_w
+            assert 0 <= y <= canvas_h
+
+
+@pytest.mark.skipif(not _have_rdkit(), reason="rdkit not installed")
+class TestFillNoninteractingAromatic:
+    def test_noninteracting_aromatic_atoms_filled_grey(self):
+        from rdkit import Chem
+
+        mol = Chem.MolFromSmiles("c1ccccc1")
+        highlight_atoms: set[int] = set()
+        highlight_atom_colors: dict = {}
+        highlight_bonds: set[int] = set()
+        highlight_bond_colors: dict = {}
+        # Atom 0 is the "interacting" atom with an interaction colour
+        highlight_atom_colors[0] = (0.0, 0.65, 0.0)
+
+        rend._fill_noninteracting_aromatic(
+            mol, highlight_atoms, highlight_atom_colors, highlight_bonds, highlight_bond_colors
+        )
+
+        # Interacting atom keeps its colour; the rest of the ring goes grey
+        assert highlight_atom_colors[0] == (0.0, 0.65, 0.0)
+        for i in range(1, 6):
+            assert i in highlight_atoms
+            assert highlight_atom_colors[i] == (0.88, 0.88, 0.88)
+        # All aromatic-aromatic bonds filled (none pre-coloured)
+        assert len(highlight_bonds) == mol.GetNumBonds()
+        assert all(c == (0.88, 0.88, 0.88) for c in highlight_bond_colors.values())
+
+    def test_pre_coloured_bond_not_overwritten(self):
+        from rdkit import Chem
+
+        mol = Chem.MolFromSmiles("c1ccccc1")
+        highlight_atoms: set[int] = set()
+        highlight_atom_colors: dict = {}
+        highlight_bonds: set[int] = set()
+        highlight_bond_colors: dict = {0: (1.0, 0.0, 0.0)}
+
+        rend._fill_noninteracting_aromatic(
+            mol, highlight_atoms, highlight_atom_colors, highlight_bonds, highlight_bond_colors
+        )
+
+        assert highlight_bond_colors[0] == (1.0, 0.0, 0.0)
+        assert len(highlight_bonds) == mol.GetNumBonds() - 1

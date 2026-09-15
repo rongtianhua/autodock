@@ -1613,3 +1613,89 @@ class TestPrepareLigandCacheBranches:
             assert result == str(out.resolve())
             assert out.read_text() == "CACHED\n"
             mock_lc.get.assert_called_once()
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# fpocket-only fallback (P2Rank + DoGSite3 both find nothing)
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+class TestFpocketOnlyFallback:
+    """P2Rank no-pocket path must fall back to offline fpocket detection."""
+
+    @patch("autodock.preparation.find_p2rank")
+    @patch("autodock.preparation.find_conda_tool")
+    @patch("autodock.preparation._run_fpocket_detect")
+    @patch("autodock.preparation._run_dogsite3_predict")
+    @patch("autodock.preparation._run_p2rank_predict")
+    def test_fpocket_only_mode_ranks_by_druggability(
+        self, mock_p2rank, mock_dog, mock_fpocket, mock_tool, mock_prank, tmp_path
+    ):
+        mock_prank.return_value = "/fake/prank"
+        mock_tool.return_value = "/fake/fpocket"  # fpocket available
+        mock_p2rank.return_value = []  # P2Rank finds nothing
+        mock_dog.return_value = None  # DoGSite3 unavailable (offline)
+        mock_fpocket.return_value = [
+            {
+                "num": 1,
+                "druggability": 0.2,
+                "volume": 500.0,
+                "depth": 2.0,
+                "openings": 1,
+                "n_apolar": 10,
+                "n_polar": 5,
+                "center": (0.0, 0.0, 0.0),
+                "dims": (10.0, 10.0, 10.0),
+                "circularity": 0.5,
+                "aspect_ratio": 1.5,
+            },
+            {
+                "num": 3,
+                "druggability": 0.6,
+                "volume": 800.0,
+                "depth": 3.0,
+                "openings": 1,
+                "n_apolar": 12,
+                "n_polar": 4,
+                "center": (5.0, 5.0, 5.0),
+                "dims": (12.0, 12.0, 12.0),
+                "circularity": 0.6,
+                "aspect_ratio": 1.2,
+            },
+        ]
+
+        pdb = tmp_path / "rec.pdb"
+        pdb.write_text(
+            "ATOM      1  CA  ALA A   1      0.000   0.000   0.000\n"
+            "ATOM      2  CA  GLY A   2      3.800   0.000   0.000\n"
+            "ATOM      3  CA  LEU A   3      0.000   3.800   0.000\n"
+        )
+        pockets = prep.find_top_pockets(str(pdb), plddt_data={"mean_plddt": None})
+
+        assert len(pockets) == 2
+        assert all(p["pocket_source"] == "fpocket" for p in pockets)
+        assert all(p["fpocket_verified"] is True for p in pockets)
+        # Ranked by fpocket Drug Score, most druggable first (0.6 before 0.2)
+        assert pockets[0]["druggability"] == 0.6
+        assert pockets[1]["druggability"] == 0.2
+        assert pockets[0]["p2rank_prob"] is None
+        # fpocket must run exactly once — reused for cross-validation, not re-detected
+        assert mock_fpocket.call_count == 1
+
+    @patch("autodock.preparation.find_p2rank")
+    @patch("autodock.preparation.find_conda_tool")
+    @patch("autodock.preparation._run_fpocket_detect")
+    @patch("autodock.preparation._run_dogsite3_predict")
+    @patch("autodock.preparation._run_p2rank_predict")
+    def test_all_methods_fail_raises(
+        self, mock_p2rank, mock_dog, mock_fpocket, mock_tool, mock_prank, tmp_path
+    ):
+        mock_prank.return_value = "/fake/prank"
+        mock_tool.return_value = "/fake/fpocket"
+        mock_p2rank.return_value = []
+        mock_dog.return_value = None
+        mock_fpocket.return_value = []  # fpocket also finds nothing
+        pdb = tmp_path / "rec.pdb"
+        pdb.write_text("ATOM      1  CA  ALA A   1      0.000   0.000   0.000\n")
+        with pytest.raises(PreparationError, match="All pocket detection methods failed"):
+            prep.find_top_pockets(str(pdb))

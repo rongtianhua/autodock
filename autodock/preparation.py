@@ -3942,6 +3942,12 @@ def find_top_pockets(
       5. **Enhanced analysis** — per-pocket: residue IDs, druggability class,
          AlphaFold pLDDT compatibility, B-factor flexibility, pocket type
 
+    Fallbacks when P2Rank finds nothing (e.g. small, low-pLDDT or
+    transmembrane receptors): tier 1 = DoGSite3 (proteins.plus REST API,
+    requires network); tier 2 = pure fpocket geometric detection (offline).
+    In fpocket-only mode the pipeline reuses the fpocket pockets for
+    cross-validation (self-match at distance 0) and ranks by Drug Score.
+
     References:
         - Krivák & Hoksza (2018) JCIM (P2Rank)
         - Schmidtke et al. (2010) J. Mol. Biol. (fpocket)
@@ -4056,6 +4062,13 @@ def find_top_pockets(
         p2rank_available = find_p2rank() is not None
         fpocket_available = find_conda_tool("fpocket") is not None
 
+        # True when P2Rank (and DoGSite3) find nothing and we fall back to
+        # pure fpocket geometric detection. In this mode the fpocket pockets
+        # are reused for cross-validation (self-match at distance 0) instead
+        # of running fpocket a second time.
+        fpocket_only = False
+        fpocket_fallback: list[dict[str, Any]] | None = None
+
         # Step 1: P2Rank primary screen ─────────────────────────────────────────
         p2rank_pockets: list[dict[str, Any]] | None = None
         p2rank_csv_path: str | None = None
@@ -4096,15 +4109,61 @@ def find_top_pockets(
                             "pocket_source": "dogsite3",
                         }
                     )
+            if not p2rank_pockets and fpocket_available:
+                # Fallback tier 2 (offline): pure fpocket geometric detection.
+                # P2Rank's RF model is trained mostly on globular, high-pLDDT
+                # proteins and may return nothing for small, low-confidence or
+                # transmembrane receptors, while fpocket's α-sphere geometry
+                # still finds real cavities. Normalise the fpocket pockets to
+                # P2Rank-compatible candidate dicts; cross-validation then
+                # self-matches at distance 0 so the rest of the pipeline
+                # (druggability re-rank, enrichment, output) works unchanged.
+                logger.warning(
+                    "P2Rank and DoGSite3 found no pockets — "
+                    "falling back to fpocket-only geometric detection"
+                )
+                fpocket_fallback = _run_fpocket_detect(receptor_pdb)
+                if fpocket_fallback:
+                    # Pre-sort by druggability so the top-10 shortlist keeps
+                    # the most druggable cavities (no P2Rank score to rank by).
+                    fpocket_fallback.sort(key=lambda fp: -(fp.get("druggability") or 0.0))
+                    p2rank_pockets = [
+                        {
+                            "num": fp.get("num", i + 1),
+                            "center": fp["center"],
+                            "radius": None,
+                            "score": None,  # no ML probability in fpocket-only mode
+                            "druggability": fp.get("druggability"),
+                            "volume": fp.get("volume"),
+                            "depth": fp.get("depth"),
+                            "openings": fp.get("openings"),
+                            "n_apolar": fp.get("n_apolar"),
+                            "n_polar": fp.get("n_polar"),
+                            "dims": fp.get("dims", (20.0, 20.0, 20.0)),
+                            "residue_ids": [],
+                            "pocket_source": "fpocket",
+                        }
+                        for i, fp in enumerate(fpocket_fallback)
+                    ]
+                    fpocket_only = True
+                    logger.info(f"fpocket-only fallback: {len(p2rank_pockets)} pocket(s) detected")
             if not p2rank_pockets:
                 raise PreparationError(
-                    f"P2Rank found no pockets in {receptor_pdb}. "
-                    "Cannot proceed — P2Rank is the primary detection method."
+                    f"All pocket detection methods failed for {receptor_pdb}: "
+                    "P2Rank found no pockets, DoGSite3 fallback unavailable, "
+                    "and fpocket-only fallback produced nothing."
                 )
 
         # Step 2: fpocket geometric cross-validation ────────────────────────────
         fpocket_pockets: list[dict[str, Any]] | None = None
-        if fpocket_available:
+        if fpocket_only:
+            # fpocket already ran in the fallback branch — reuse its pockets
+            # instead of running the detection a second time.
+            fpocket_pockets = fpocket_fallback
+            logger.info(
+                f"fpocket cross-validation: {len(fpocket_pockets)} pocket(s) (fpocket-only mode)"
+            )
+        elif fpocket_available:
             fpocket_pockets = _run_fpocket_detect(receptor_pdb)
             if fpocket_pockets:
                 logger.info(f"fpocket cross-validation: {len(fpocket_pockets)} pocket(s) detected")
@@ -4112,8 +4171,9 @@ def find_top_pockets(
                 logger.warning("fpocket found no pockets — proceeding with P2Rank only")
 
         # Step 3: Cross-validation — spatial overlap check ──────────────────────
-        # For each P2Rank candidate, find the nearest fpocket pocket within 8 Å.
-        # Mark fpocket_verified=True/False and carry over the fpocket druggability.
+        # For each P2Rank candidate, find the nearest fpocket pocket within
+        # _POCKET_CONSENSUS_DISTANCE (5 Å). Mark fpocket_verified=True/False
+        # and carry over the fpocket druggability.
         fpocket_centers: list[tuple[np.ndarray, dict]] = []
         if fpocket_pockets:
             for fp in fpocket_pockets:
@@ -4126,10 +4186,17 @@ def find_top_pockets(
         # cross-validation. Final output is capped at max_pockets (5).
         _P2RANK_CROSSVAL_TOPK = 10
         p2rank_shortlist = p2rank_pockets[:_P2RANK_CROSSVAL_TOPK]
-        logger.info(
-            f"Cross-validating top {len(p2rank_shortlist)} P2Rank pocket(s) "
-            f"(from {len(p2rank_pockets)} total, prob ≥ {_P2RANK_PROB_THRESHOLD})"
-        )
+        if fpocket_only:
+            logger.info(
+                f"fpocket-only mode: ranking top {len(p2rank_shortlist)} pocket(s) "
+                f"(from {len(p2rank_pockets)} total) by fpocket druggability"
+            )
+        else:
+            logger.info(
+                f"Cross-validating top {len(p2rank_shortlist)} P2Rank pocket(s) "
+                f"(from {len(p2rank_pockets)} total, top-{_P2RANK_CROSSVAL_TOPK} shortlist; "
+                f"no hard probability filter — fpocket verification is the actual filter)"
+            )
 
         candidates: list[dict[str, Any]] = []
         for p2p in p2rank_shortlist:

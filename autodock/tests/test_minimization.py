@@ -7,6 +7,8 @@ and focus on API contract, parameter validation, and graceful fallback paths.
 
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 from autodock import minimization
 
 
@@ -324,3 +326,112 @@ class TestModuleAvailabilityFlags:
         assert isinstance(minimization._HAVE_OPENFF, bool)
         assert isinstance(minimization._HAVE_OPENMM, bool)
         assert isinstance(minimization._HAVE_RDKIT, bool)
+
+
+def _have_rdkit() -> bool:
+    try:
+        import importlib.util as _iu
+
+        return _iu.find_spec("rdkit") is not None
+    except (ImportError, OSError):
+        return False
+
+
+def _have_scipy() -> bool:
+    try:
+        import importlib.util as _iu
+
+        return _iu.find_spec("scipy") is not None
+    except (ImportError, OSError):
+        return False
+
+
+@pytest.mark.skipif(not _have_rdkit(), reason="rdkit not installed")
+class TestMatchHeavyAtoms:
+    """Atom mapping between template and docked topology."""
+
+    def test_substructure_fast_path(self):
+        from rdkit import Chem
+
+        template = Chem.RemoveHs(Chem.MolFromSmiles("CCO"))
+        docked = Chem.RemoveHs(Chem.MolFromSmiles("CCO"))
+        match = minimization._match_heavy_atoms(template, docked)
+        assert match is not None
+        assert len(match) == 3
+
+    def test_mismatched_atom_counts_return_none(self):
+        from rdkit import Chem
+
+        # Docked query larger than template: substructure match impossible,
+        # atom counts differ → no mapping
+        template = Chem.RemoveHs(Chem.MolFromSmiles("CC"))
+        docked = Chem.RemoveHs(Chem.MolFromSmiles("CCC"))
+        assert minimization._match_heavy_atoms(template, docked) is None
+
+    @pytest.mark.skipif(not _have_scipy(), reason="scipy not installed")
+    def test_coordinate_assignment_recovers_mapping_after_rigid_transform(self):
+        """Rotation + translation of the same molecule must still map exactly."""
+        import numpy as np
+        from rdkit import Chem
+        from rdkit.Chem import AllChem
+
+        mol = Chem.AddHs(Chem.MolFromSmiles("c1ccc(O)cc1"))  # phenol
+        AllChem.EmbedMolecule(mol, randomSeed=7)
+        template = Chem.RemoveHs(Chem.Mol(mol))
+        docked = Chem.RemoveHs(Chem.Mol(mol))
+
+        # Rigid-body transform of the docked pose
+        theta = np.deg2rad(123.0)
+        R = np.array(
+            [
+                [np.cos(theta), -np.sin(theta), 0.0],
+                [np.sin(theta), np.cos(theta), 0.0],
+                [0.0, 0.0, 1.0],
+            ]
+        )
+        shift = np.array([10.0, -5.0, 3.0])
+        conf = docked.GetConformer()
+        for i in range(docked.GetNumAtoms()):
+            p = np.array(conf.GetAtomPosition(i)) @ R + shift
+            conf.SetAtomPosition(i, p.tolist())
+
+        match = minimization._coordinate_assignment_match(template, docked)
+        assert match is not None
+
+        # The match is defined up to a rigid transform: verify the max
+        # residual AFTER optimal proper-rotation alignment, not raw distance.
+        t_coords = np.asarray(template.GetConformer().GetPositions(), dtype=float)
+        d_coords = np.asarray(docked.GetConformer().GetPositions(), dtype=float)
+        t_sel = t_coords[np.array(match)]
+        t_cen = t_sel.mean(axis=0)
+        d_cen = d_coords.mean(axis=0)
+        H = (d_coords - d_cen).T @ (t_sel - t_cen)
+        U, _, Vt = np.linalg.svd(H)
+        R = Vt.T @ U.T
+        if np.linalg.det(R) < 0:
+            Vt[-1, :] *= -1
+            R = Vt.T @ U.T
+        resid = np.linalg.norm((t_sel - t_cen) @ R + d_cen - d_coords, axis=1)
+        assert resid.max() < 0.5
+
+    @pytest.mark.skipif(not _have_scipy(), reason="scipy not installed")
+    def test_match_heavy_atoms_embeds_smiles_template_when_needed(self):
+        """SMILES template has no conformer; fallback must embed it first."""
+        from rdkit import Chem
+        from rdkit.Chem import AllChem
+
+        mol = Chem.AddHs(Chem.MolFromSmiles("c1ccccc1O"))
+        AllChem.EmbedMolecule(mol, randomSeed=3)
+        docked = Chem.RemoveHs(Chem.Mol(mol))
+        template = Chem.RemoveHs(Chem.MolFromSmiles("c1ccccc1O"))  # no conformer
+
+        match = minimization._match_heavy_atoms(template, docked)
+        assert match is not None
+        # _match_heavy_atoms embeds an internal copy; docked indices must map
+        # onto valid template indices with matching elements
+        for d_idx, t_idx in enumerate(match):
+            assert 0 <= t_idx < template.GetNumAtoms()
+            assert (
+                template.GetAtomWithIdx(t_idx).GetAtomicNum()
+                == docked.GetAtomWithIdx(d_idx).GetAtomicNum()
+            )

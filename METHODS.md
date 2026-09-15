@@ -96,14 +96,21 @@
 
 2. **fpocket 验证**（若可用）：
    - 对同一受体运行 `fpocket`，解析 `_info.txt` 获取 α-sphere 口袋。
-   - 当 P2Rank 口袋与 fpocket 口袋中心距离 ≤ 4 Å 时，标记为 `verified`。
+   - 当 P2Rank 口袋与 fpocket 口袋中心距离 ≤ 5 Å（`_POCKET_CONSENSUS_DISTANCE`）时，标记为 `verified`。
    - 验证口袋优先采用 fpocket 的几何中心与可药性评分。
 
-3. **边界框计算**：
+3. **P2Rank 无口袋时的回退链**（v1.1 新增）：
+   - 第一层：DoGSite3（proteins.plus REST API，需要网络）。
+   - 第二层：纯 fpocket 几何检测（离线）。fpocket 口袋归一化后自匹配验证
+     （距离 0），按 Drug Score 排序进入后续流程。
+   - 三层全部失败才抛出 `PreparationError`。此回退对小型、低 pLDDT 或跨膜受体
+     至关重要——P2Rank 的训练集以高 pLDDT 球状蛋白为主，对此类受体可能完全无输出。
+
+4. **边界框计算**：
    - 对每个口袋，使用 `box_size = max(dim_x, dim_y, dim_z) + 2 * box_padding`。
    - 默认最小边界框 20 Å，最大 40 Å。
 
-4. **已知活性位点（可选）**：
+5. **已知活性位点（可选）**：
    - 若提供 `known_active_site`，优先选择最近口袋并标记 `pocket_type`（orthosteric / allosteric）。
 
 ---
@@ -195,11 +202,18 @@
 
 ### 8.1 OpenMM 能量最小化
 
-`minimize_ligand()` 对最佳 pose 进行配体约束最小化：
+`minimize_docked_pose()` 对最佳 pose 进行配体约束最小化：
 
 - 使用 OpenFF 分子与 AMBER/ff14SB + 小分子力场。
-- 重原子施加位置约束（`restraint_k=500 kJ/mol/nm²`）。
-- 默认最大迭代次数 1000。
+- 重原子施加位置约束（`restraint_k=10000 kJ/mol/nm²`）。
+- 默认最大迭代次数 500；默认仅最小化配体（`include_receptor=False`），
+  完整受体链要求无缺失残基，否则能量发散。
+- 配体构建优先使用 `ligand_sdf`（拓扑与 PDBQT 同源，Kabsch 对齐）；
+  未提供时回退到 SMILES 模板。模板与 PDBQT 推断拓扑的亚结构匹配失败时
+  （共轭体系常见：黄酮、喹啉、吲哚），自动启用按元素约束的最优坐标指派
+  （Hungarian 算法 + ICP 式 Kabsch 精修）恢复原子映射。
+- `run_docking_workflow(minimize_pose=True)` 会透传 `ligand_sdf`，并在
+  `ligand_source="file"` 且输入为 SDF/MOL 时自动复用该文件。
 - 输出最小化后 pose，用于改善 PoseBusters 通过率。
 
 ### 8.2 短 MD 稳定性模拟

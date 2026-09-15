@@ -87,7 +87,7 @@ print(f"Cached receptors: {len(list(rc.cache_dir.glob('*')))}")
 | Feature | Description |
 |---------|-------------|
 | **🔬 Docking Engines** | AutoDock Vina with consensus scoring (Vina + Vinardo) |
-| **🎯 Pocket Detection** | fpocket geometric + P2Rank ML rescoring |
+| **🎯 Pocket Detection** | P2Rank ML primary (top-10) + fpocket geometric cross-validation, with DoGSite3 and fpocket-only offline fallbacks |
 | **🧬 Structure Prep** | Meeko-based PDBQT generation (modern replacement for MGLTools) |
 | **🤝 Interactions** | PLIP (primary) + ProLIF (cross-validation) for 8 interaction types |
 | **✅ Validation** | PoseBusters geometric checks + custom clash detection + RMSD |

@@ -246,6 +246,7 @@ def run_docking_workflow(
     ligand_smiles: str | None = None,
     ligand_source: str = "smiles",
     ligand_name: str | None = None,
+    ligand_sdf: str | None = None,
     # ── Docking parameters ────────────────────────────────────────────────
     exhaustiveness: int = 32,
     n_poses: int = 20,
@@ -307,6 +308,11 @@ def run_docking_workflow(
         ligand_source: ``"smiles"`` (default), ``"pubchem"`` (CID), or ``"file"`` (SDF path).
         ligand_name: Name for the ligand in output files.  Derived from SMILES
             or CID if not provided.
+        ligand_sdf: Optional path to an SDF/MOL file with the full ligand.
+            Passed to energy minimisation (takes precedence over the SMILES
+            path, which can fail substructure matching for conjugated
+            systems).  When ``ligand_source="file"`` and the input is an
+            SDF/MOL file, this is auto-derived from ``ligand_smiles``.
         exhaustiveness: Vina search thoroughness (default 32, publication grade).
         n_poses: Number of poses to generate per conformer (default 20).
         seed: Random seed for reproducibility (default 42).
@@ -992,6 +998,20 @@ def run_docking_workflow(
     # ═══════════════════════════════════════════════════════════════════════
     # Step 5d: Optional energy minimisation (best pose only)
     # ═══════════════════════════════════════════════════════════════════════
+    # Resolve SDF for minimisation: explicit param wins; otherwise, when the
+    # ligand came from an SDF/MOL file, reuse that file — its topology matches
+    # the prepared PDBQT far better than a SMILES round-trip, whose
+    # substructure match fails for many conjugated systems (flavonoids etc.).
+    if (
+        ligand_sdf is None
+        and ligand_source == "file"
+        and ligand_smiles
+        and ligand_smiles.lower().endswith((".sdf", ".mol"))
+        and os.path.isfile(ligand_smiles)
+    ):
+        ligand_sdf = ligand_smiles
+        logger.info(f"  Minimisation will reuse ligand SDF: {ligand_sdf}")
+
     if minimize_pose and result.best_result and result.best_result.best_pose_pdbqt:
         logger.info("=" * 60)
         logger.info("Step 5d: Energy minimisation (best pose)")
@@ -1005,6 +1025,7 @@ def run_docking_workflow(
                 ligand_pdbqt=result.best_result.best_pose_pdbqt,
                 output_pdb=min_out,
                 ligand_smiles=ligand_smiles,
+                ligand_sdf=ligand_sdf,
                 max_iterations=500,
             )
             if min_result.get("success"):

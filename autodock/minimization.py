@@ -27,6 +27,7 @@ primary goal for PoseBusters post-processing.
 
 from __future__ import annotations
 
+import contextlib
 import os
 import tempfile
 from typing import Any
@@ -366,6 +367,214 @@ def _minimize_complex(
 # ── Ligand building helpers ───────────────────────────────────────────────
 
 
+def _coordinate_assignment_match(
+    template_mol: Chem.Mol,
+    docked_mol: Chem.Mol,
+    max_dist: float = 4.0,
+) -> list[int] | None:
+    """Element-aware optimal assignment between template and docked heavy atoms.
+
+    Returns ``match`` where ``match[docked_idx] = template_idx`` (indices into
+    each mol's atom order), or ``None`` if no plausible assignment exists.
+
+    Runs two rounds of Hungarian optimal assignment with a Kabsch alignment
+    in between: the first (rough) assignment aligns the template onto the
+    docked pose, the second assignment on aligned coordinates resolves
+    near-symmetric ambiguities.
+    """
+    try:
+        from scipy.optimize import linear_sum_assignment
+    except ImportError:
+        logger.warning("scipy not available — coordinate-based match fallback disabled")
+        return None
+
+    n_t = template_mol.GetNumAtoms()
+    n_d = docked_mol.GetNumAtoms()
+    if n_t != n_d or n_t == 0:
+        return None
+    if not template_mol.GetNumConformers() or not docked_mol.GetNumConformers():
+        return None
+
+    elems_t = [a.GetAtomicNum() for a in template_mol.GetAtoms()]
+    elems_d = [a.GetAtomicNum() for a in docked_mol.GetAtoms()]
+
+    t_conf = template_mol.GetConformer()
+    d_conf = docked_mol.GetConformer()
+    t_coords = np.asarray(t_conf.GetPositions(), dtype=float)
+    d_coords = np.asarray(d_conf.GetPositions(), dtype=float)
+
+    def _assign(t_c: np.ndarray, d_c: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+        cost = np.full((n_t, n_d), 1e6)
+        for i in range(n_t):
+            same = [j for j in range(n_d) if elems_t[i] == elems_d[j]]
+            if same:
+                diff = t_c[i][None, :] - d_c[same]
+                cost[i, same] = np.einsum("ij,ij->i", diff, diff)
+        return linear_sum_assignment(cost)
+
+    def _kabsch(t_sel: np.ndarray, d_sel: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+        """Rotation (row-vector convention) + centers sending t_sel → d_sel."""
+        t_cen = t_sel.mean(axis=0)
+        d_cen = d_sel.mean(axis=0)
+        H = (d_sel - d_cen).T @ (t_sel - t_cen)
+        U, _, Vt = np.linalg.svd(H)
+        R = Vt.T @ U.T
+        if np.linalg.det(R) < 0:
+            Vt[-1, :] *= -1
+            R = Vt.T @ U.T
+        return R, t_cen, d_cen
+
+    # Template adjacency from explicit bonds; docked adjacency from a distance
+    # cutoff (the docked PDBQT topology may lack bond orders, but which atoms
+    # are bonded is recovered reliably from coordinates).
+    template_bonds = set()
+    for b in template_mol.GetBonds():
+        a1, a2 = b.GetBeginAtomIdx(), b.GetEndAtomIdx()
+        template_bonds.add((min(a1, a2), max(a1, a2)))
+    docked_adj = np.zeros((n_d, n_d), dtype=bool)
+    for i in range(n_d):
+        for j in range(i + 1, n_d):
+            if elems_d[i] == 1 and elems_d[j] == 1:
+                continue
+            if np.linalg.norm(d_coords[i] - d_coords[j]) < 1.8:
+                docked_adj[i, j] = docked_adj[j, i] = True
+
+    def _score(match: list[int]) -> tuple[float, int]:
+        """(max residual distance after optimal proper rotation, adjacency violations)."""
+        t_sel = t_coords[np.array(match)]
+        R, t_cen, d_cen = _kabsch(t_sel, d_coords)
+        resid = np.linalg.norm((t_sel - t_cen) @ R + d_cen - d_coords, axis=1)
+        violations = 0
+        for a1, a2 in template_bonds:
+            d1, d2 = match.index(a1), match.index(a2)
+            if not docked_adj[d1, d2]:
+                violations += 1
+        return float(resid.max()), violations
+
+    candidates: list[tuple[list[int], float, int]] = []
+
+    def _icp(start: np.ndarray) -> None:
+        """Assign → Kabsch-align → re-assign, collecting plausible matches."""
+        t_work = start.copy()
+        for _round in range(6):
+            rows, cols = _assign(t_work, d_coords)
+            if len(rows) != n_t:
+                return
+            dists = np.linalg.norm(t_work[rows] - d_coords[cols], axis=1)
+            if dists.max() <= max_dist * 2:
+                cand = [0] * n_d
+                for r, c in zip(rows, cols, strict=True):
+                    cand[c] = int(r)
+                resid_max, viol = _score(cand)
+                if resid_max <= max_dist * 2:
+                    candidates.append((cand, resid_max, viol))
+            if dists.max() <= max_dist:
+                return
+            R, t_cen, d_cen = _kabsch(t_work[rows], d_coords[cols])
+            t_work = (t_work - t_cen) @ R + d_cen
+
+    # Multi-start ICP. The raw start converges for asymmetric molecules; for
+    # near-symmetric ones (phenol, catechol) a bad first pairing can reflect
+    # the assignment and stall, so also seed from PCA principal-axis
+    # alignments (all four proper-rotation sign combinations).
+    starts = [t_coords]
+    try:
+        ct = t_coords.mean(axis=0)
+        cd = d_coords.mean(axis=0)
+        _, vt = np.linalg.eigh(np.cov((t_coords - ct).T))
+        _, vd = np.linalg.eigh(np.cov((d_coords - cd).T))
+        for s1, s2 in ((1, 1), (1, -1), (-1, 1), (-1, -1)):
+            signs = np.diag([1.0, float(s1), float(s2)])
+            R0 = vt @ signs @ vd.T
+            starts.append((t_coords - ct) @ R0 + cd)
+    except np.linalg.LinAlgError:
+        pass
+
+    for start in starts:
+        _icp(start)
+        if any(v == 0 and r <= max_dist for _, r, v in candidates):
+            break
+
+    if not candidates:
+        return None
+
+    # Prefer adjacency-consistent matches; break ties by residual distance.
+    # A small non-zero violation count is tolerated (with a warning): the
+    # whole reason this fallback exists is that the docked PDBQT topology is
+    # imperfect, so one spurious/missing inferred bond must not sink an
+    # otherwise geometrically consistent match. The residual gate is what
+    # actually protects against wrong assignments.
+    candidates.sort(key=lambda c: (c[2], c[1]))
+    best, resid_max, viol = candidates[0]
+    if resid_max > max_dist * 2:
+        logger.warning(
+            f"Coordinate assignment best residual {resid_max:.1f} Å exceeds "
+            f"2× threshold — rejecting match"
+        )
+        return None
+    if viol > 0:
+        logger.warning(
+            f"Coordinate assignment has {viol} bond-adjacency violation(s) — "
+            "docked topology inference is imperfect; accepting the geometrically "
+            "consistent match"
+        )
+    elif resid_max > max_dist:
+        logger.warning(
+            f"Coordinate assignment converged to max distance {resid_max:.1f} Å "
+            f"(threshold {max_dist:.1f} Å) — accepting best match"
+        )
+    return best
+
+
+def _match_heavy_atoms(
+    template_no_h: Chem.Mol,
+    docked_no_h: Chem.Mol,
+) -> list[int] | None:
+    """Map template heavy atoms onto docked heavy atoms (same molecule).
+
+    Primary path: exact RDKit substructure match. Fallback: element-aware
+    optimal coordinate assignment — robust when the PDBQT-derived docked
+    topology disagrees with the template on bond order / aromaticity
+    perception (common for conjugated systems: flavonoids, quinolines,
+    indoles), where substructure matching reliably fails.
+
+    Returns ``match`` where ``match[docked_idx] = template_idx``, or ``None``.
+    """
+    match = template_no_h.GetSubstructMatch(docked_no_h)
+    if match:
+        return list(match)
+
+    n_t = template_no_h.GetNumAtoms()
+    if n_t != docked_no_h.GetNumAtoms() or n_t == 0:
+        return None
+
+    # Ensure the template has 3D coordinates (SMILES templates do not).
+    template_3d = template_no_h
+    if not template_no_h.GetNumConformers():
+        from rdkit.Chem import AllChem
+
+        template_3d = Chem.Mol(template_no_h)
+        params = AllChem.ETKDGv3()
+        params.randomSeed = 42
+        try:
+            status = AllChem.EmbedMolecule(template_3d, params)
+        except (RuntimeError, ValueError):
+            status = -1
+        if status != 0:
+            logger.warning("Template coordinate embedding failed — cannot fall back")
+            return None
+        with contextlib.suppress(RuntimeError, ValueError):
+            AllChem.MMFFOptimizeMolecule(template_3d, maxIters=200)
+
+    match = _coordinate_assignment_match(template_3d, docked_no_h)
+    if match is not None:
+        logger.info(
+            "Substructure match failed — recovered atom mapping via "
+            "element-aware coordinate assignment"
+        )
+    return match
+
+
 def _build_ligand(
     ligand_pdbqt: str,
     ligand_smiles: str | None,
@@ -406,10 +615,10 @@ def _build_ligand(
             return _build_ligand_from_smiles(docked_mol, ligand_smiles)
 
         template_no_h = Chem.RemoveHs(template_mol)
-        match = template_no_h.GetSubstructMatch(docked_no_h)
-        if not match:
+        match = _match_heavy_atoms(template_no_h, docked_no_h)
+        if match is None:
             logger.warning(
-                "Substructure match failed between template SDF and docked PDBQT; "
+                "Atom matching failed between template SDF and docked PDBQT; "
                 "falling back to SMILES"
             )
             return _build_ligand_from_smiles(docked_mol, ligand_smiles)
@@ -495,21 +704,24 @@ def _build_ligand_from_smiles(
     # Map docked heavy-atom coordinates onto OpenFF molecule
     docked_no_h = Chem.RemoveHs(docked_mol)
     template_no_h = Chem.RemoveHs(Chem.MolFromSmiles(ligand_smiles))
-    match = template_no_h.GetSubstructMatch(docked_no_h)
-    if not match:
+    # Substructure match with coordinate-assignment fallback (the docked
+    # PDBQT topology inferred by RDKit can disagree with the SMILES template
+    # on bond order / aromaticity for conjugated systems).
+    match = _match_heavy_atoms(template_no_h, docked_no_h)
+    if match is None:
         logger.warning("Substructure match failed for SMILES-based ligand build")
         return None, []
 
+    # match[i] is the template atom index matching the i-th heavy atom of
+    # docked_no_h (GetSubstructMatch query-atom order). template_no_h /
+    # docked_no_h are hydrogen-stripped mols, so their atom indices ARE the
+    # heavy-atom indices — do NOT index into the parent (possibly explicit-H)
+    # docked_mol here, or GetAtomPosition() raises a RangeError.
     docked_conf = docked_no_h.GetConformer()
     coords = np.zeros((offmol.n_atoms, 3))
-
-    template_heavy = [a.GetIdx() for a in template_no_h.GetAtoms() if a.GetAtomicNum() > 1]
-    docked_heavy = [a.GetIdx() for a in docked_mol.GetAtoms() if a.GetAtomicNum() > 1]
     for i in range(len(match)):
-        docked_idx = docked_heavy[i]
-        template_idx = template_heavy[match[i]]
-        pos = docked_conf.GetAtomPosition(docked_idx)
-        coords[template_idx] = [pos.x, pos.y, pos.z]
+        pos = docked_conf.GetAtomPosition(i)
+        coords[match[i]] = [pos.x, pos.y, pos.z]
 
     # Hydrogen initial guess: offset slightly from bonded heavy atom
     rng = np.random.default_rng(42)
