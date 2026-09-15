@@ -433,32 +433,50 @@ def _build_pymol_script(
 
             lab_name = f"lab_{idx}"
             sel = f"(receptor and resn {resn} and resi {resi} and chain {chain} and name CA)"
+            res_sel = f"(receptor and resn {resn} and resi {resi} and chain {chain})"
             pseudo = f"labpos_{idx}"
             lines.append("try:")
             lines.append(f"    cmd.select('{lab_name}', '{sel}')")
-            # Create pseudoatom at CA
-            lines.append(f"    cmd.pseudoatom('{pseudo}', '{lab_name}')")
-            # Use directional offset based on residue position relative to ligand center
-            # to spread labels outward and reduce overlap
-            lines.append(f"    ca = cmd.get_model('{sel}').atom")
-            lines.append("    if ca:")
-            lines.append("        c = ca[0].coord")
+            # Anchor the label at the residue's CONTACTING atom (the heavy
+            # atom nearest to the ligand), not the CA. GLU-type residues reach
+            # back to the ligand through a long side chain while their CA
+            # backbone points outward — a CA-anchored label plus an outward
+            # offset floated in empty space, far from both the residue and its
+            # dashed interaction line. Fall back to CA when the ligand is
+            # unavailable.
+            lines.append(f"    m_res = cmd.get_model('{res_sel}')")
+            lines.append("    m_lig = cmd.get_model('ligand')")
+            lines.append("    anchor = None")
+            lines.append("    if m_res.atom and m_lig.atom:")
+            lines.append("        lig_cs = [a.coord for a in m_lig.atom]")
+            lines.append("        best_d = 1e9")
+            lines.append("        for a in m_res.atom:")
+            lines.append(
+                "            d = min(sum((a.coord[i]-c[i])**2 for i in range(3)) for c in lig_cs)"
+            )
+            lines.append("            if d < best_d: best_d = d; anchor = a.coord")
+            lines.append("    if anchor is None:")
+            lines.append(f"        ca = cmd.get_model('{sel}').atom")
+            lines.append("        if ca: anchor = ca[0].coord")
+            lines.append("    if anchor is not None:")
+            lines.append(f"        cmd.pseudoatom('{pseudo}', pos=list(anchor))")
+            # Small outward offset from the ligand center to reduce overlap
             lines.append("        com = cmd.get_extent('ligand')")
             lines.append("        lig_c = [(com[0][i]+com[1][i])/2 for i in range(3)]")
-            lines.append("        dx = c[0] - lig_c[0]; dy = c[1] - lig_c[1]; dz = c[2] - lig_c[2]")
+            lines.append("        dx = anchor[0] - lig_c[0]; dy = anchor[1] - lig_c[1]; dz = anchor[2] - lig_c[2]")
             lines.append("        dist = math.sqrt(dx*dx + dy*dy + dz*dz)")
             lines.append("        if dist > 0:")
-            lines.append("            # Normalize and scale offset to 4.0 Å outward from ligand")
-            lines.append("            scale = 4.0 / dist")
+            lines.append("            # Normalize and scale offset to 2.5 Å outward from ligand")
+            lines.append("            scale = 2.5 / dist")
             lines.append(f"            cmd.translate([dx*scale, dy*scale, dz*scale], '{pseudo}')")
             lines.append("        else:")
-            lines.append(f"            cmd.translate([0, 0, 4.0], '{pseudo}')")
+            lines.append(f"            cmd.translate([0, 0, 2.5], '{pseudo}')")
             # Label with residue name, number and chain: e.g. LYS211(A)
-            lines.append(f"    cmd.label('{pseudo}', '\"{resn}{resi}({chain})\"')")
+            lines.append(f"        cmd.label('{pseudo}', '\"{resn}{resi}({chain})\"')")
             # Label style: bold sans-serif
-            lines.append(f"    cmd.set('label_color', '{label_color}', '{pseudo}')")
-            lines.append(f"    cmd.set('label_size', 40, '{pseudo}')")
-            lines.append(f"    cmd.set('label_font_id', 10, '{pseudo}')")  # Sans-serif bold
+            lines.append(f"        cmd.set('label_color', '{label_color}', '{pseudo}')")
+            lines.append(f"        cmd.set('label_size', 40, '{pseudo}')")
+            lines.append(f"        cmd.set('label_font_id', 10, '{pseudo}')")  # Sans-serif bold
             lines.append(f"    seen.add(('{resn}', '{resi}', '{chain}'))")
             lines.append("except: pass")
         # Surrounding pocket residues (within the 8 Å pocket window) get smaller,
@@ -484,10 +502,10 @@ def _build_pymol_script(
     # Use zoom with buffer to control field of view per scene
     if scene == "complex":
         # Whole-complex view: orient fills the viewport efficiently (kills the
-        # wide empty margins of a plain zoom), then a small buffer keeps both
-        # termini in frame.
+        # wide empty margins of a plain zoom); a minimal buffer + the PNG
+        # autocrop below trims the rest of the dead space.
         lines.append("cmd.orient('receptor or ligand')")
-        lines.append("cmd.zoom('(receptor or ligand)', 1.5)")
+        lines.append("cmd.zoom('(receptor or ligand)', 1.0)")
     elif scene == "pocket":
         lines.append("cmd.zoom('(receptor or ligand)', 3)")
         if center:
@@ -584,6 +602,41 @@ def _overlay_interaction_legend(png_path: str, interactions: list[dict[str, Any]
 
     composited = Image.alpha_composite(rgba, overlay).convert("RGB")
     composited.save(png_path)
+
+
+def _autocrop_png(png_path: str, margin_frac: float = 0.03) -> None:
+    """Crop uniform-background borders off a rendered PNG, keeping a margin.
+
+    PyMOL's ``cmd.zoom`` fits the object's bounding box, so a whole-complex
+    view of a small or elongated protein always carries wide empty bands
+    (e.g. the interior of a U-shaped fold stays black no matter the zoom).
+    For the overview figure this trims the dead space instead of clipping the
+    structure. Only applied to solid-background renders (enforced by
+    ``ray_opaque_background=1``).
+
+    Args:
+        png_path: Rendered PNG (overwritten in place).
+        margin_frac: Fraction of the cropped width/height kept as margin.
+    """
+    from PIL import Image, ImageChops
+
+    with Image.open(png_path) as img:
+        rgb = img.convert("RGB")
+    # Border colour = mode of the four corners (robust for white/grey bg).
+    corners = [rgb.getpixel(p) for p in [(0, 0), (rgb.width - 1, 0), (0, rgb.height - 1), (rgb.width - 1, rgb.height - 1)]]
+    bg = max(set(corners), key=corners.count)
+    diff = ImageChops.difference(rgb, Image.new("RGB", rgb.size, bg))
+    bbox = diff.getbbox()
+    if bbox is None:
+        return
+    mx = int((bbox[2] - bbox[0]) * margin_frac)
+    my = int((bbox[3] - bbox[1]) * margin_frac)
+    cropped = rgb.crop(
+        (max(0, bbox[0] - mx), max(0, bbox[1] - my), min(rgb.width, bbox[2] + mx), min(rgb.height, bbox[3] + my))
+    )
+    if cropped.size != rgb.size:
+        cropped.save(png_path)
+        logger.info(f"Autocropped overview figure: {png_path} → {cropped.size[0]}x{cropped.size[1]}")
 
 
 def render_scene_pymol(
@@ -710,6 +763,14 @@ def render_scene_pymol(
             _overlay_interaction_legend(output_png, interactions)
         except Exception as exc:
             logger.warning(f"Interaction legend overlay skipped: {exc}")
+
+    # Whole-complex overview: trim the uniform-background borders that the
+    # bounding-box zoom inevitably leaves around small/elongated receptors.
+    if scene == "complex":
+        try:
+            _autocrop_png(output_png)
+        except Exception as exc:
+            logger.warning(f"Overview autocrop skipped: {exc}")
 
     # Optional PDF output — PIL converts PNG raster to PDF at the requested DPI.
     if output_pdf:
@@ -1378,6 +1439,12 @@ def render_interactions_2d(
         pos = drawer.GetDrawCoords(i)
         atom_coords[i] = (pos.x, pos.y)
 
+    # Ligand centroid — the reference point for outward-pointing graphics
+    # (hydrophobic arcs must emanate away from the ring centre, not toward it).
+    _all_pts = list(atom_coords.values())
+    lig_cx = sum(p[0] for p in _all_pts) / len(_all_pts)
+    lig_cy = sum(p[1] for p in _all_pts) / len(_all_pts)
+
     # ── LigPlot+ style residue labels ─────────────────────────────────────────
     group_list = list(interaction_groups.values())
 
@@ -1506,11 +1573,13 @@ def render_interactions_2d(
                 )
 
         elif itype == "Hydrophobic":
-            # LigPlot+ style: red spoked arc emanating from ligand atom.
-            # Keep the arc compact (small radius, narrow span, few spokes) so
-            # it hugs the interacting atom and never sweeps across the aromatic
-            # ring or neighbouring labels when the label sits on the far side.
-            angle_to_label = math.atan2(ty - ay, tx - ax)
+            # LigPlot+ style: red spoked arc emanating from the ligand atom.
+            # The arc must point AWAY from the ligand (ring) centre — anchored
+            # on the outward direction of the interacting atom — so it never
+            # sweeps across the aromatic ring even when the residue label sits
+            # on the far side; the leader line then runs from the arc tip to
+            # the label.
+            out_angle = math.atan2(ay - lig_cy, ax - lig_cx)
             arc_span = math.pi / 3.2
             # Dynamic radius: ~22% of distance to label, with scaled minimum
             dist_to_label = math.hypot(tx - ax, ty - ay)
@@ -1520,16 +1589,16 @@ def render_interactions_2d(
                 ax,
                 ay,
                 radius=arc_radius,
-                start_angle=angle_to_label - arc_span / 2,
-                end_angle=angle_to_label + arc_span / 2,
+                start_angle=out_angle - arc_span / 2,
+                end_angle=out_angle + arc_span / 2,
                 fill=(210, 30, 50),
                 width=lw,
                 n_spokes=5,
                 spoke_len=int(12 * scale),
             )
-            # Leader line from arc end toward label
-            mid_arc_x = int(ax + arc_radius * math.cos(angle_to_label))
-            mid_arc_y = int(ay + arc_radius * math.sin(angle_to_label))
+            # Leader line from arc tip toward label
+            mid_arc_x = int(ax + arc_radius * math.cos(out_angle))
+            mid_arc_y = int(ay + arc_radius * math.sin(out_angle))
             draw.line(
                 [(mid_arc_x, mid_arc_y), (tx, ty)],
                 fill=(210, 30, 50),

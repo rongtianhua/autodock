@@ -8,6 +8,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Fixed
+- **3D interaction scene: residue labels anchored to the contact atom**
+  (`autodock/rendering.py`). Labels were placed at the Cα and pushed 4 Å
+  along the direction away from the ligand centroid, so residues contacting
+  the ligand through a side chain that points away from the Cα (e.g. the
+  GAPT–quercetin GLU72 contact) got their label stranded far from both the
+  residue and its dashed line. Labels are now anchored to the residue heavy
+  atom closest to the ligand (the actual contact atom) with a 2.5 Å
+  outward push, falling back to Cα only when no anchor atom is found.
+- **3D complex scene: automatic whitespace cropping**
+  (`autodock/rendering.py`). `cmd.orient()` fills the view to the bounding
+  sphere, so for elongated/U-shaped receptors a smaller zoom buffer cannot
+  remove the empty margins without clipping — they are inherent to the
+  camera framing. Whole-complex scenes are now auto-cropped after ray
+  tracing (`_autocrop_png`: background-colour border detection via PIL,
+  3% margin kept), which removes the margins regardless of shape; the zoom
+  buffer is tightened to 1.0 Å.
+- **2D interaction diagram: hydrophobic arc direction**
+  (`autodock/rendering.py`). Hydrophobic arcs were centred on the angle
+  bisector toward the residue label, which could make the arc sweep across
+  the aromatic ring it contacts. Arcs are now centred on the direction
+  *away from the ligand centroid* (leader line from the arc tip to the
+  label), so they open outward from the ring system.
 - **Pocket cross-validation: no more silent top-10 truncation**
   (`autodock/preparation.py`). P2Rank candidates are now explicitly sorted by
   score before shortlisting (the old code relied on CSV row order), the

@@ -275,7 +275,7 @@ class TestSceneScriptHygiene:
         """Whole-complex view must orient first (no wide empty margins)."""
         script = rend._build_pymol_script("rec.pdb", "lig.pdbqt", "out.png", scene="complex")
         assert "cmd.orient('receptor or ligand')" in script
-        assert "cmd.zoom('(receptor or ligand)', 1.5)" in script
+        assert "cmd.zoom('(receptor or ligand)', 1.0)" in script
 
     def test_complex_default_resolution_bump(self):
         """Complex scene without explicit size renders at 3200x2400; explicit size wins."""
