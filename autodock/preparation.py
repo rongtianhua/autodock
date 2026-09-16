@@ -24,6 +24,7 @@ from autodock.core import (
     _P2RANK_PROB_THRESHOLD,
     _POCKET_CONSENSUS_DISTANCE,
     _POCKET_CONSENSUS_DISTANCE_LOOSE,
+    _POCKET_DEDUP_DISTANCE,
     _POCKET_DEFAULT_BFACTOR,
     _SKIP_ADDITIVES,
     _SKIP_WATER,
@@ -4018,6 +4019,10 @@ def find_top_pockets(
             "padding": padding,
             "max_pockets": max_pockets,
             "known_active_site": known_active_site,
+            # Result-schema version: bump when the pocket pipeline logic
+            # changes so stale entries (e.g. pre-dedup duplicates) are never
+            # reused — the cache key is content+params based, not code based.
+            "pocket_schema": 2,
         }
         cached = pc.get(receptor_pdb, **cache_params)
         if cached:
@@ -4238,6 +4243,12 @@ def find_top_pockets(
                 f"no hard probability filter — fpocket verification is the actual filter)"
             )
 
+        # fpocket pockets claimed by an already-verified P2Rank candidate.
+        # Without exclusive assignment, two nearby P2Rank predictions of the
+        # same cavity both match the SAME fpocket pocket and produce duplicate
+        # output entries (same center/box docked twice).
+        claimed_fp: set[int] = set()
+
         def _crossval(p2p: dict[str, Any]) -> dict[str, Any]:
             """Cross-validate one P2Rank candidate against the fpocket pockets."""
             p2_center = np.array(p2p["center"])
@@ -4255,14 +4266,19 @@ def find_top_pockets(
                     f"fpocket cross-validation; final rank may demote it."
                 )
 
-            # Find nearest fpocket pocket
+            # Find nearest UNCLAIMED fpocket pocket (candidates are processed
+            # in descending score order, so the best prediction claims first).
             best_dist = float("inf")
             best_fp: dict | None = None
-            for fp_c, fp_dict in fpocket_centers:
+            best_idx: int | None = None
+            for idx, (fp_c, fp_dict) in enumerate(fpocket_centers):
+                if idx in claimed_fp:
+                    continue
                 d = float(np.linalg.norm(p2_center - fp_c))
                 if d < best_dist:
                     best_dist = d
                     best_fp = fp_dict
+                    best_idx = idx
 
             # Dual consensus criterion:
             #   1. tight — center-to-center distance ≤ 5 Å; or
@@ -4287,6 +4303,8 @@ def find_top_pockets(
                         f"{best_dist:.1f} Å apart but P2Rank sphere overlaps the "
                         f"fpocket pocket box"
                     )
+                if verified and best_idx is not None:
+                    claimed_fp.add(best_idx)
 
             # fpocket druggability is only meaningful for the matched (verified)
             # pocket. For an unverified candidate the nearest fpocket pocket may
@@ -4362,7 +4380,9 @@ def find_top_pockets(
         #     druggability_score computed on own definition, semantically consistent)
         #   unverified → use P2Rank pocket (fallback, only data available)
         result: list[dict[str, Any]] = []
-        for c in candidates[:max_pockets]:
+        for c in candidates:
+            if len(result) >= max_pockets:
+                break
             verified = c["verified"]
             # Data source: fpocket for verified, P2Rank for unverified
             src = c["fpocket_pocket"] if verified else c["p2rank_pocket"]
@@ -4431,6 +4451,27 @@ def find_top_pockets(
                 "pocket_type": pocket_type_info["type"],
                 "distance_to_active": pocket_type_info["distance_to_active"],
             }
+            # Final near-duplicate guard: P2Rank routinely splits one cavity
+            # into several overlapping predictions; even with exclusive fpocket
+            # matching, an unverified candidate keeps its own P2Rank center,
+            # which can sit within a few Å of an already-kept pocket. Docking
+            # the same site twice wastes a docking slot and clutters reports.
+            is_dup = any(
+                float(
+                    np.linalg.norm(
+                        np.asarray(entry["center"], dtype=float)
+                        - np.asarray(kept["center"], dtype=float)
+                    )
+                )
+                <= _POCKET_DEDUP_DISTANCE
+                for kept in result
+            )
+            if is_dup:
+                logger.info(
+                    f"Skipping near-duplicate pocket (center={entry['center']}, "
+                    f"within {_POCKET_DEDUP_DISTANCE:.0f} Å of an already-kept pocket)"
+                )
+                continue
             result.append(entry)
 
         # Log summary
@@ -4455,6 +4496,8 @@ def find_top_pockets(
                 "padding": padding,
                 "max_pockets": max_pockets,
                 "known_active_site": known_active_site,
+                # Keep in sync with the lookup key above (schema version).
+                "pocket_schema": 2,
             }
             pc.put(receptor_pdb, result, **cache_params)
 

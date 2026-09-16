@@ -103,7 +103,9 @@ COLOR_SCHEMES: dict[str, dict[str, Any]] = {
         "receptor_c": "lightblue",
         "ligand_c": "salmon",
         "label_c": "black",
-        "pocket_surface": "lightblue",
+        # lightblue washes out to near-invisible on a white background —
+        # skyblue keeps the pocket surface readable in print.
+        "pocket_surface": "skyblue",
         "receptor_style": "cartoon",
         "receptor_transparency": 0.0,
     },
@@ -164,7 +166,7 @@ def _build_pymol_script(
     height: int = DEFAULT_RAY_HEIGHT,
     pocket_distance: float = 5.0,
     save_pse: str | None = None,
-    color_scheme: str = "presentation_black",
+    color_scheme: str = "publication_white",
     receptor_source: str = "auto",
     show_distance_labels: bool = True,
 ) -> str:
@@ -185,7 +187,7 @@ def _build_pymol_script(
         line with its distance in Å.
     """
     color_scheme = JOURNAL_PRESETS.get(color_scheme, color_scheme)
-    scheme = COLOR_SCHEMES.get(color_scheme, COLOR_SCHEMES["presentation_black"])
+    scheme = COLOR_SCHEMES.get(color_scheme, COLOR_SCHEMES["publication_white"])
     is_af = receptor_source in ("AlphaFold", "SWISS-MODEL")
 
     lines: list[str] = []
@@ -253,7 +255,10 @@ def _build_pymol_script(
         # invisible.
         lines.append("cmd.show('sticks', 'pocket_vis and not (name C+N+O+CA)')")
         lines.append("cmd.set('stick_radius', 0.12, 'pocket_vis')")
-        lines.append("cmd.color('white', 'pocket_vis and elem C')")
+        # White side-chain carbons disappear on a white background — use a
+        # mid grey there and keep white only for dark schemes.
+        stick_carbon = "white" if scheme.get("bg") == "black" else "grey50"
+        lines.append(f"cmd.color('{stick_carbon}', 'pocket_vis and elem C')")
         lines.append("cmd.color('red', 'pocket_vis and elem O')")
         lines.append("cmd.color('blue', 'pocket_vis and elem N')")
         lines.append("cmd.color('yellow', 'pocket_vis and elem S')")
@@ -266,15 +271,19 @@ def _build_pymol_script(
     # ── Pocket surface ──
     if scene == "pocket" and center:
         cx, cy, cz = center
+        # The old selection 'br. receptor and center x,y,z around 5' is not
+        # valid PyMOL selection syntax — it silently selected nothing, so the
+        # pocket surface never rendered. Anchor a pseudoatom at the pocket
+        # center and select byres around it instead.
+        lines.append(f"cmd.pseudoatom('pocket_ctr', pos=[{cx}, {cy}, {cz}], label='')")
         lines.append(
-            "cmd.select('pocket_surf',"
-            f"'br. receptor and center {cx},{cy},{cz}"
-            f" around {pocket_distance}')"
+            f"cmd.select('pocket_surf', 'byres (receptor within {pocket_distance} of pocket_ctr)')"
         )
         lines.append("cmd.show('surface', 'pocket_surf')")
         lines.append("cmd.set('transparency', 0.30, 'pocket_surf')")
         lines.append(f"cmd.color('{scheme['pocket_surface']}', 'pocket_surf and elem C')")
         lines.append("cmd.set('surface_quality', 2)")
+        lines.append("cmd.delete('pocket_ctr')")
 
     # ── Ligand: ball-and-stick with publication CPK colors ──
     # Carbon: grey (0x999999 ~ [0.6,0.6,0.6]), Oxygen: red, Nitrogen: blue,
@@ -541,7 +550,11 @@ def _build_pymol_script(
     return "\n".join(lines)
 
 
-def _overlay_interaction_legend(png_path: str, interactions: list[dict[str, Any]]) -> None:
+def _overlay_interaction_legend(
+    png_path: str,
+    interactions: list[dict[str, Any]],
+    dark_bg: bool = True,
+) -> None:
     """Composite an interaction-type colour legend onto a rendered PNG.
 
     PyMOL cannot place a reliable 2D legend inside a 3D scene, so after the
@@ -553,6 +566,9 @@ def _overlay_interaction_legend(png_path: str, interactions: list[dict[str, Any]
     Args:
         png_path: Rendered PNG (overwritten in place with the legend composited).
         interactions: Interaction dicts (``type`` key read; deduplicated).
+        dark_bg: True for dark-scene renders (translucent black box, white
+            text); False for white-scene renders (translucent white box with a
+            grey border, black text).
     """
     from PIL import Image, ImageDraw, ImageFont
 
@@ -579,7 +595,15 @@ def _overlay_interaction_legend(png_path: str, interactions: list[dict[str, Any]
 
     overlay = Image.new("RGBA", rgba.size, (0, 0, 0, 0))
     odraw = ImageDraw.Draw(overlay)
-    odraw.rectangle([x0, y0, x0 + box_w, y0 + box_h], fill=(0, 0, 0, 150))
+    if dark_bg:
+        box_fill, border_fill, text_fill = (0, 0, 0, 150), None, (255, 255, 255, 255)
+    else:
+        box_fill, border_fill, text_fill = (255, 255, 255, 210), (0, 0, 0, 120), (0, 0, 0, 255)
+    odraw.rectangle([x0, y0, x0 + box_w, y0 + box_h], fill=box_fill)
+    if border_fill is not None:
+        odraw.rectangle(
+            [x0, y0, x0 + box_w, y0 + box_h], outline=border_fill, width=max(1, w // 800)
+        )
     try:
         font = ImageFont.truetype("DejaVuSans.ttf", size=max(16, int(row_h * 0.55)))
     except OSError:
@@ -597,7 +621,7 @@ def _overlay_interaction_legend(png_path: str, interactions: list[dict[str, Any]
         odraw.text(
             (x0 + pad + sw + max(8, w // 300), y_off + (sw - int(row_h * 0.55)) // 2),
             itype,
-            fill=(255, 255, 255, 255),
+            fill=text_fill,
             font=font,
         )
         y_off += row_h
@@ -662,7 +686,7 @@ def render_scene_pymol(
     width: int | None = None,
     height: int | None = None,
     save_pse: str | None = None,
-    color_scheme: str = "presentation_black",
+    color_scheme: str = "publication_white",
     receptor_source: str = "auto",
     show_distance_labels: bool = True,
 ) -> str:
@@ -681,8 +705,8 @@ def render_scene_pymol(
             requests an explicit size).
         height: Image height in pixels (default 1800).
         save_pse: Optional path to save a PyMOL session (.pse) file.
-        color_scheme: Colour preset — ``presentation_black`` (default),
-            ``publication_white``, ``publication_grey``, or a journal preset
+        color_scheme: Colour preset — ``publication_white`` (default),
+            ``publication_grey``, ``presentation_black``, or a journal preset
             (``nature``, ``cell``, ``acs``, ``science``).
         receptor_source: ``"AlphaFold"``, ``"PDB"``, ``"PDB_single_chain"``,
             or ``"file"``. Determines protein coloring.
@@ -769,10 +793,17 @@ def render_scene_pymol(
 
     # Interaction-scene legend: the dashed lines are colour-coded by type but
     # the 3D scene itself has no legend. Composite one onto the PNG before the
-    # PDF conversion below (which re-opens the PNG).
+    # PDF conversion below (which re-opens the PNG). Legend furniture adapts to
+    # the scheme background (dark box on dark scenes, white box on white).
     if scene == "interaction" and interactions:
         try:
-            _overlay_interaction_legend(output_png, interactions)
+            _scheme = COLOR_SCHEMES.get(
+                JOURNAL_PRESETS.get(color_scheme, color_scheme),
+                COLOR_SCHEMES["publication_white"],
+            )
+            _overlay_interaction_legend(
+                output_png, interactions, dark_bg=_scheme.get("bg") == "black"
+            )
         except Exception as exc:
             logger.warning(f"Interaction legend overlay skipped: {exc}")
 
@@ -1451,11 +1482,31 @@ def render_interactions_2d(
         pos = drawer.GetDrawCoords(i)
         atom_coords[i] = (pos.x, pos.y)
 
-    # Ligand centroid — the reference point for outward-pointing graphics
-    # (hydrophobic arcs must emanate away from the ring centre, not toward it).
+    # Ligand centroid — the fallback reference point for outward-pointing
+    # graphics (hydrophobic arcs must emanate away from the ring centre,
+    # not toward it).
     _all_pts = list(atom_coords.values())
     lig_cx = sum(p[0] for p in _all_pts) / len(_all_pts)
     lig_cy = sum(p[1] for p in _all_pts) / len(_all_pts)
+
+    # Per-atom ring centroids. A hydrophobic arc anchored on a ring atom must
+    # bulge away from THAT ring's centre (outward through the atom), not away
+    # from the whole-ligand centroid — for fused ring systems the two can
+    # disagree, and the arc would otherwise sweep across a neighbouring ring.
+    atom_ring_centroid: dict[int, tuple[float, float]] = {}
+    try:
+        for ring in mol.GetRingInfo().AtomRings():
+            pts = [atom_coords[a] for a in ring if a in atom_coords]
+            if not pts:
+                continue
+            rc = (
+                sum(p[0] for p in pts) / len(pts),
+                sum(p[1] for p in pts) / len(pts),
+            )
+            for a in ring:
+                atom_ring_centroid.setdefault(a, rc)
+    except Exception:
+        atom_ring_centroid = {}
 
     # ── LigPlot+ style residue labels ─────────────────────────────────────────
     group_list = list(interaction_groups.values())
@@ -1586,16 +1637,27 @@ def render_interactions_2d(
 
         elif itype == "Hydrophobic":
             # LigPlot+ style: red spoked arc emanating from the ligand atom.
-            # The arc must point AWAY from the ligand (ring) centre — anchored
-            # on the outward direction of the interacting atom — so it never
-            # sweeps across the aromatic ring even when the residue label sits
-            # on the far side; the leader line then runs from the arc tip to
-            # the label.
-            out_angle = math.atan2(ay - lig_cy, ax - lig_cx)
-            arc_span = math.pi / 3.2
-            # Dynamic radius: ~22% of distance to label, with scaled minimum
+            # The arc's convex side (middle spoke) must point AWAY from the
+            # aromatic ring it contacts — i.e. outward through the atom, along
+            # the reverse of the atom→ring-centre line — so it never sweeps
+            # across the ring or the residue label. Fall back to the ligand
+            # centroid direction for non-ring (aliphatic) contact atoms.
+            rc = next(
+                (
+                    atom_ring_centroid[a]
+                    for a in g.get("rdkit_atoms", set())
+                    if a in atom_ring_centroid
+                ),
+                None,
+            )
+            if rc is not None:
+                out_angle = math.atan2(ay - rc[1], ax - rc[0])
+            else:
+                out_angle = math.atan2(ay - lig_cy, ax - lig_cx)
+            arc_span = math.pi / 2.5
+            # Dynamic radius: ~38% of distance to label, with scaled minimum
             dist_to_label = math.hypot(tx - ax, ty - ay)
-            arc_radius = max(int(45 * scale), int(dist_to_label * 0.22))
+            arc_radius = max(int(45 * scale), int(dist_to_label * 0.38))
             _draw_spoked_arc(
                 draw,
                 ax,
@@ -1605,7 +1667,7 @@ def render_interactions_2d(
                 end_angle=out_angle + arc_span / 2,
                 fill=(210, 30, 50),
                 width=lw,
-                n_spokes=5,
+                n_spokes=7,
                 spoke_len=int(12 * scale),
             )
             # Leader line from arc tip toward label

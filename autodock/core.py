@@ -963,6 +963,12 @@ _POCKET_CONSENSUS_DISTANCE = 5.0
 # center of a large/irregular cavity by more than 5 Å while still describing
 # the same site; the overlap test rejects genuinely disjoint predictions.
 _POCKET_CONSENSUS_DISTANCE_LOOSE = 10.0
+# Final-output dedup distance (Å). Multiple P2Rank predictions can describe
+# the same cavity (P2Rank routinely splits one site into overlapping pockets);
+# without a dedup pass two verified entries end up with the same fpocket
+# center/box and get docked twice.  3 Å is well below the tight consensus
+# distance, so genuinely distinct pockets are never merged.
+_POCKET_DEDUP_DISTANCE = 3.0
 # Druggability classification thresholds (adapted from Schmidtke & Barril 2010)
 _DRUGGABILITY_HIGH = 0.7
 _DRUGGABILITY_MEDIUM = 0.3

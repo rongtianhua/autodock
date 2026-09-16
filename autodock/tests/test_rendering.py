@@ -398,11 +398,26 @@ class TestInteractionSceneLabelsAndLines:
             scene="interaction",
             center=(0.0, 0.0, 0.0),
             interactions=self._interactions(),
+            color_scheme="presentation_black",
         )
         assert "pocket_vis and name CA" in script
         assert "amb_lbl_" in script
         # Interacting residues get the prominent label, surroundings the dim one
         assert "grey70" in script
+
+    def test_surrounding_pocket_residues_labelled_white_scheme(self):
+        # White (publication) schemes use grey50 dim labels and grey50 stick
+        # carbons so they stay visible on the white background.
+        script = rend._build_pymol_script(
+            "rec.pdb",
+            "lig.pdbqt",
+            "out.png",
+            scene="interaction",
+            center=(0.0, 0.0, 0.0),
+            interactions=self._interactions(),
+        )
+        assert "grey50" in script
+        assert "cmd.bg_color('white')" in script
 
 
 class TestClipSegmentToBox:

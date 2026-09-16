@@ -8,6 +8,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Fixed
+- **3D scenes: white background by default**
+  (`autodock/rendering.py`). All 3D figures (complex/pocket/interaction) now
+  render on a solid white background with black labels (`publication_white`
+  becomes the default colour scheme; `presentation_black` remains available).
+  Scheme-dependent details: pocket side-chain sticks use grey50 carbons
+  (white was invisible on white), the interaction-scene legend composites a
+  translucent white box with black text instead of a black box with white
+  text, and the pocket surface uses skyblue (lightblue washed out).
+- **Pocket scene: surface never rendered**
+  (`autodock/rendering.py`). The surface selection used the invalid PyMOL
+  expression `br. receptor and center x,y,z around 5`, which silently
+  selected nothing — no pocket surface appeared in any render. The script now
+  anchors a pseudoatom at the pocket center and selects
+  `byres (receptor within <d> of pocket_ctr)`.
+- **2D interaction diagram: hydrophobic arc direction (restored geometry)**
+  (`autodock/rendering.py`). Arc geometry is restored to the previous
+  parameters (radius 0.38 × label distance, span π/2.5, 7 spokes), and the
+  arc's convex side (middle spoke) now points along the reverse of the
+  atom→ring-centre line — outward through the contacting atom, away from the
+  aromatic ring — computed per-ring (falling back to the ligand centroid for
+  non-ring contact atoms), so arcs no longer sweep across rings or labels.
+- **Pocket detection: duplicate cavities docked twice**
+  (`autodock/preparation.py`, `autodock/core.py`). P2Rank routinely splits
+  one cavity into several overlapping predictions; each candidate
+  independently matched the SAME nearest fpocket pocket, so duplicate output
+  entries with identical center/box were docked separately. Cross-validation
+  is now an exclusive greedy match in descending score order (a claimed
+  fpocket pocket is removed from the pool), and a final 3 Å center-dedup
+  pass backfills `max_pockets` with the next distinct site. The pocket cache
+  key gains a `pocket_schema` version so pre-fix duplicate entries are never
+  reused.
 - **3D interaction scene: residue labels anchored to the contact atom**
   (`autodock/rendering.py`). Labels were placed at the Cα and pushed 4 Å
   along the direction away from the ligand centroid, so residues contacting
