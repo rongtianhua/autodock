@@ -9,6 +9,7 @@ from __future__ import annotations
 import contextlib
 import csv
 import json
+import math
 import os
 import shutil
 import tempfile
@@ -424,18 +425,43 @@ def _get_smiles_from_pdbqt_via_openbabel(ligand_pdbqt: str) -> str | None:
         return None
 
 
+def _parse_pdbqt_serial_xyz(ligand_pdbqt: str) -> dict[int, tuple[float, float, float]]:
+    """Parse ATOM/HETATM records of a Vina PDBQT → {serial: (x, y, z)}.
+
+    RDKit's ``MolFromPDBFile`` cannot read PDBQT (the AutoDock atom-type
+    column breaks element assignment and the parser returns None), so the
+    fixed-column parse here is the canonical coordinate source for pose
+    transfer.
+    """
+    xyz: dict[int, tuple[float, float, float]] = {}
+    with open(ligand_pdbqt) as fh:
+        for line in fh:
+            if line.startswith(("ATOM  ", "HETATM")):
+                try:
+                    serial = int(line[6:11].strip())
+                    x = float(line[30:38])
+                    y = float(line[38:46])
+                    z = float(line[46:54])
+                except ValueError:
+                    continue
+                xyz[serial] = (x, y, z)
+    return xyz
+
+
 def _build_ligand_mol_for_prolif(ligand_pdbqt: str):
     """
     Build an RDKit molecule with explicit hydrogens and docking pose coordinates.
 
     Strategy:
       1. Try REMARK SMILES from PDBQT → full molecule with correct H count.
-      2. If REMARK SMILES missing, try Open Babel → SMILES conversion.
-      3. MCS-align SMILES molecule to PDBQT coordinates.
-      4. Fallback: read PDBQT directly (incomplete H, but functional).
+      2. Transfer the docking pose via REMARK SMILES IDX (serial mapping Vina
+         echoes into every output pose) — deterministic, no MCS needed.
+      3. If REMARK SMILES missing, try Open Babel → SMILES conversion.
+      4. Fallback: generated coordinates (geometry lost, loud warning).
     """
     from rdkit import Chem
-    from rdkit.Chem import AllChem, rdFMCS
+    from rdkit.Chem import AllChem
+    from rdkit.Geometry import Point3D
 
     smiles = _parse_smiles_from_pdbqt(ligand_pdbqt)
 
@@ -450,52 +476,53 @@ def _build_ligand_mol_for_prolif(ligand_pdbqt: str):
         if mol is None:
             logger.warning(f"Could not parse SMILES from PDBQT: {smiles!r}")
         else:
+            mol_noh = Chem.Mol(mol)
+            heavy = [a.GetIdx() for a in mol_noh.GetAtoms() if a.GetAtomicNum() > 1]
+            idx_map: dict[int, int] = {}
+            try:
+                from autodock.rendering import _parse_smiles_idx_from_pdbqt
+
+                idx_map = _parse_smiles_idx_from_pdbqt(ligand_pdbqt)
+            except Exception as exc:  # pragma: no cover - defensive
+                logger.debug(f"SMILES IDX parse failed: {exc}")
+            xyz = _parse_pdbqt_serial_xyz(ligand_pdbqt)
+
+            placed = 0
+            conf = Chem.Conformer(mol_noh.GetNumAtoms())
+            for serial, sidx in idx_map.items():
+                i = sidx - 1  # REMARK SMILES IDX is 1-based
+                if i < 0 or i >= mol_noh.GetNumAtoms() or serial not in xyz:
+                    continue
+                if mol_noh.GetAtomWithIdx(i).GetAtomicNum() == 1:
+                    continue
+                conf.SetAtomPosition(i, Point3D(*xyz[serial]))
+                placed += 1
+
+            if heavy and placed >= math.ceil(0.9 * len(heavy)):
+                mol_noh.RemoveAllConformers()
+                mol_noh.AddConformer(conf, assignId=True)
+                # addCoords=True places hydrogens from the heavy-atom geometry.
+                mol_h = Chem.AddHs(mol_noh, addCoords=True)
+                logger.info(
+                    f"ProLIF ligand: docking pose transferred via REMARK SMILES IDX "
+                    f"({placed}/{len(heavy)} heavy atoms)"
+                )
+                return mol_h
+            logger.warning(
+                f"ProLIF ligand: pose transfer via SMILES IDX incomplete "
+                f"({placed}/{len(heavy)} heavy atoms)"
+            )
+            # Fallback: generate coordinates from scratch (geometry is lost)
             mol = Chem.AddHs(mol)
-            # Load PDBQT into RDKit for coordinate transfer
-            mol_pdbqt = Chem.MolFromPDBFile(ligand_pdbqt, sanitize=False)
-            if mol_pdbqt and mol_pdbqt.GetNumAtoms() > 0:
-                try:
-                    mcs = rdFMCS.FindMCS(
-                        [mol, mol_pdbqt],
-                        atomCompare=rdFMCS.AtomCompare.CompareAny,
-                        bondCompare=rdFMCS.BondCompare.CompareAny,
-                    )
-                    if mcs.numAtoms > 0:
-                        patt = Chem.MolFromSmarts(mcs.smartsString)
-                        match_lig = mol.GetSubstructMatch(patt)
-                        match_pdbqt = mol_pdbqt.GetSubstructMatch(patt)
-                        if len(match_lig) == len(match_pdbqt) and len(match_lig) > 0:
-                            coord_map = {}
-                            conf_pdbqt = mol_pdbqt.GetConformer()
-                            for i, j in zip(match_lig, match_pdbqt, strict=False):
-                                coord_map[i] = conf_pdbqt.GetAtomPosition(j)
-                            mol.RemoveAllConformers()
-                            ret = AllChem.EmbedMolecule(mol, coordMap=coord_map)
-                            if ret == 0:
-                                return mol
-                            # If coordMap fails (e.g. planar rings with missing H coords),
-                            # fall back to full ETKDG and warn
-                            mol.RemoveAllConformers()
-                            AllChem.EmbedMolecule(mol, AllChem.ETKDGv3())
-                            logger.warning(
-                                "ProLIF ligand: coordMap ETKDG failed, using generated coordinates"
-                            )
-                            return mol
-                except Exception as exc:
-                    logger.debug(f"MCS coordinate transfer failed: {exc}")
-            # If MCS fails, generate coordinates from scratch (geometry is lost)
             AllChem.EmbedMolecule(mol, AllChem.ETKDGv3())
             AllChem.MMFFOptimizeMolecule(mol)
             logger.warning("ProLIF ligand: using SMILES-generated coordinates (not docking pose)")
             return mol
 
-    # Fallback: read PDBQT directly
-    mol = Chem.MolFromPDBFile(ligand_pdbqt, sanitize=False)
-    if mol is None:
-        raise VisualizationError(f"Could not read ligand PDBQT: {ligand_pdbqt}")
-    mol = Chem.AddHs(mol, addCoords=True)
-    logger.warning("ProLIF ligand: using PDBQT direct read (hydrogens may be incomplete)")
-    return mol
+    raise VisualizationError(
+        f"Could not obtain a ligand structure for ProLIF from {ligand_pdbqt}: "
+        "no parseable REMARK SMILES and Open Babel recovery failed."
+    )
 
 
 def _build_prolif_receptor_mol(receptor_pdb: str):

@@ -444,7 +444,7 @@ def cmd_benchmark_redock(args: argparse.Namespace) -> int:
         n_poses=args.n_poses,
         seed=args.seed,
         n_workers=args.workers,
-        interaction_method=getattr(args, "method", "plip"),
+        interaction_method=getattr(args, "method", "both"),
         cascade=getattr(args, "cascade", False),
         cascade_n_poses=getattr(args, "cascade_n_poses", 50),
         remove_water=not getattr(args, "keep_waters", False),
@@ -568,7 +568,7 @@ def cmd_batch_dock(args: argparse.Namespace) -> int:
                     do_rendering=bool(receptor_pdb),
                     do_report=True,
                     copy_structures=True,
-                    interaction_method=getattr(args, "method", "plip"),
+                    interaction_method=getattr(args, "method", "both"),
                 )
                 processed_count += 1
                 print(f"  ✓ {rec_name} × {lig_name}")
@@ -1080,8 +1080,8 @@ def build_parser() -> argparse.ArgumentParser:
     p_dock.add_argument(
         "--method",
         choices=["plip", "prolif", "both"],
-        default="plip",
-        help="Interaction detection engine (default: plip)",
+        default="both",
+        help="Interaction detection engine (default: both)",
     )
     p_dock.set_defaults(func=cmd_dock)
 
@@ -1112,8 +1112,8 @@ def build_parser() -> argparse.ArgumentParser:
     p_analyze.add_argument(
         "--method",
         choices=["plip", "prolif", "both"],
-        default="plip",
-        help="Interaction detection engine (default: plip)",
+        default="both",
+        help="Interaction detection engine (default: both)",
     )
     p_analyze.set_defaults(func=cmd_analyze)
 
@@ -1138,7 +1138,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_bench.add_argument(
         "--method",
         choices=["plip", "prolif", "both"],
-        default="plip",
+        default="both",
         help="Interaction detection engine for post-docking analysis",
     )
     p_bench.add_argument(
@@ -1288,8 +1288,8 @@ def build_parser() -> argparse.ArgumentParser:
     p_run.add_argument(
         "--method",
         choices=["plip", "prolif", "both"],
-        default="plip",
-        help="Interaction detection engine (default: plip)",
+        default="both",
+        help="Interaction detection engine (default: both)",
     )
     p_run.set_defaults(func=cmd_run)
 

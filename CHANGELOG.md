@@ -7,7 +7,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- **Interaction detection now defaults to `both`** (`autodock/workflow.py`,
+  `autodock/cli.py`). The workflow previously ran PLIP alone by default, so
+  the ProLIF cross-validation and the cross-engine discrepancy report were
+  only produced on explicit opt-in. Default is now PLIP (primary) + ProLIF
+  (secondary, merged with cross-engine deduplication) for every post-docking
+  analysis; `plip`/`prolif` remain selectable.
+
 ### Fixed
+- **ProLIF analysed the wrong ligand geometry**
+  (`autodock/interactions.py`). `_build_ligand_mol_for_prolif` transferred
+  docking-pose coordinates through `Chem.MolFromPDBFile`, which always
+  returns `None` for PDBQT (the AutoDock atom-type column breaks element
+  assignment) — the MCS path was dead code and every ProLIF run silently
+  fell back to ETKDG-generated near-origin coordinates unrelated to the
+  docked pose (cross-engine agreement 0 % even at residue level). Pose
+  transfer now uses the `REMARK SMILES IDX` serial mapping that Vina echoes
+  into every output pose (deterministic, 22/22 heavy atoms on the GAPT test
+  pair), with hydrogens placed by `AddHs(addCoords=True)`. On the same pair
+  the merged result is now chemically coherent: ProLIF's duplicate contacts
+  deduplicate against PLIP and its unique VdW contact (ARG70) is retained.
+- **2D interaction diagram: chain ID in residue labels**
+  (`autodock/rendering.py`). Residue labels now read `GLU72(A)` instead of
+  `GLU72`, matching the 3D scene label format and keeping multi-chain
+  receptors unambiguous.
 - **2D interaction diagram: standard-layout vector base**
   (`autodock/rendering.py`). The 2D base structure is now drawn with CoordGen
   2D coordinates (ChemDraw-lineage template layout) in ACS 1996 style as an

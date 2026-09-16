@@ -1187,6 +1187,17 @@ def _legend_layout(
     }
 
 
+def _residue_label(item: dict[str, Any]) -> str:
+    """2D diagram residue label: ``RESN RESI`` with chain ID when available.
+
+    Mirrors the 3D scene label format (``GLU72(A)``) so multi-chain receptors
+    stay unambiguous in the 2D figure.
+    """
+    chain = item.get("chain")
+    base = f"{item.get('resn', '')}{item.get('resi', '')}"
+    return f"{base}({chain})" if chain else base
+
+
 def _compute_label_positions(
     groups: list[dict[str, Any]],
     atom_coords: dict[int, tuple[float, float]],
@@ -1241,6 +1252,7 @@ def _compute_label_positions(
                 {
                     "resn": g.get("resn"),
                     "resi": g.get("resi"),
+                    "chain": g.get("chain"),
                     "rdkit_atoms": set(g.get("rdkit_atoms", set())),
                 }
             )
@@ -1287,7 +1299,7 @@ def _compute_label_positions(
 
     for mi, _gx, _gy, natural_angle in merged_info:
         g = merged[mi]
-        label = f"{g['resn']}{g['resi']}"
+        label = _residue_label(g)
         est_tw = len(label) * char_w + 8
         est_th = line_h
 
@@ -1743,7 +1755,7 @@ def render_interactions_2d(
     # Pre-compute label sizes
     label_sizes: dict[int, tuple[int, int]] = {}
     for gi, g in enumerate(group_list):
-        label = f"{g['resn']}{g['resi']}"
+        label = _residue_label(g)
         bbox = draw.textbbox((0, 0), label, font=font)
         label_sizes[gi] = (bbox[2] - bbox[0], bbox[3] - bbox[1])
 
@@ -1761,7 +1773,7 @@ def render_interactions_2d(
         itype = g.get("type", "")
         color_name = g.get("color", "grey")
         rgb_int = color_rgb_int.get(color_name, (128, 128, 128))
-        label = f"{g['resn']}{g['resi']}"
+        label = _residue_label(g)
         lx, ly = pos
         tw, th = label_sizes[gi]
 

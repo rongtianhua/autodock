@@ -412,6 +412,40 @@ class TestDetectInteractionsProlif:
         mol = intx._build_ligand_mol_for_prolif(str(lig))
         assert mol.GetNumAtoms() >= 2
 
+    def test_build_ligand_mol_pose_transfer_via_smiles_idx(self, tmp_path):
+        """REMARK SMILES IDX must transfer the docking pose exactly (regression:
+        the old MCS path could not parse PDBQT and silently used generated
+        near-origin coordinates unrelated to the pose)."""
+        lig = tmp_path / "lig.pdbqt"
+        coords = [
+            (5.3, 7.5, 0.3),
+            (6.1, 8.6, 0.3),
+            (5.8, 9.9, 0.3),
+            (4.5, 9.9, 0.3),
+            (4.2, 8.6, 0.3),
+            (4.8, 7.5, 0.3),
+        ]
+        lines = [
+            "REMARK SMILES c1ccccc1\n",
+            "REMARK SMILES IDX 1 1 2 2 3 3 4 4 5 5 6 6\n",
+        ]
+        for i, (x, y, z) in enumerate(coords, start=1):
+            lines.append(
+                f"ATOM  {i:5d} {'C':^4s} LIG A   1    "
+                f"{x:8.3f}{y:8.3f}{z:8.3f}  1.00  0.00     0.000 C \n"
+            )
+        lig.write_text("".join(lines))
+
+        mol = intx._build_ligand_mol_for_prolif(str(lig))
+        conf = mol.GetConformer()
+        for i, (x, y, z) in enumerate(coords):
+            p = conf.GetAtomPosition(i)
+            assert abs(p.x - x) < 1e-3
+            assert abs(p.y - y) < 1e-3
+            assert abs(p.z - z) < 1e-3
+        # Benzene gets its six hydrogens on top of the transferred pose
+        assert sum(1 for a in mol.GetAtoms() if a.GetAtomicNum() == 1) == 6
+
     @patch("autodock.interactions._HAVE_RDKIT", False)
     @patch("autodock.interactions._HAVE_PROLIF", True)
     def test_prolif_missing_rdkit_raises(self):

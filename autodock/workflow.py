@@ -276,7 +276,7 @@ def run_docking_workflow(
     config_path: str | None = None,
     resume: bool = True,
     run_posebusters: bool = True,
-    interaction_method: str = "plip",
+    interaction_method: str = "both",
     max_postprocess_pockets: int = 2,
     minimize_pose: bool = False,
     # ── Multi-chain receptor strategy ───────────────────────────────────────
@@ -346,7 +346,7 @@ def run_docking_workflow(
         run_posebusters: If ``True`` (default), run PoseBusters validation on
             the best docked pose when PoseBusters is installed.
         interaction_method: Interaction backend for post-processing —
-            ``"plip"`` (default), ``"prolif"``, or ``"both"``.
+            ``"both"`` (default — PLIP primary + ProLIF cross-validation), ``"plip"``, or ``"prolif"``.
         receptor_multichain_strategy: Strategy when a PDB entry's asymmetric unit
             contains multiple chains but the biological assembly is monomeric:
             ``"auto"`` (default) — automatically extract the first chain.
@@ -1424,8 +1424,8 @@ def main():
     parser.add_argument(
         "--method",
         choices=["plip", "prolif", "both"],
-        default="plip",
-        help="Interaction detection engine (default: plip)",
+        default="both",
+        help="Interaction detection engine (default: both)",
     )
 
     args = parser.parse_args()
