@@ -63,6 +63,7 @@ validation = [
 ]
 vis = [
     "pymol-open-source>=2.5",
+    "cairosvg>=2.7",  # vector-rasterised 2D interaction diagrams (ACS 1996 style)
 ]
 dev = [
     "pytest>=8.0",

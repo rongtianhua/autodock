@@ -8,6 +8,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Fixed
+- **2D interaction diagram: standard-layout vector base**
+  (`autodock/rendering.py`). The 2D base structure is now drawn with CoordGen
+  2D coordinates (ChemDraw-lineage template layout) in ACS 1996 style as an
+  SVG vector graphic, rasterised at the exact target size with cairosvg. The
+  previous pipeline rasterised RDKit's natural-size flexi canvas (~150 px for
+  typical ligands) and upscaled 10–30× with LANCZOS, blurring bonds and
+  labels; the vector route keeps every edge crisp at publication DPI, and the
+  ChemDraw-style layout replaces the recognisably "RDKit-flavoured" drawing.
+  cairosvg added to the `vis` extra; without it the code degrades to the old
+  low-resolution flexi-Cairo path with a warning.
+- **3D rendering: post-render content validation**
+  (`autodock/rendering.py`). PyMOL exits 0 and writes a valid PNG even when a
+  selection expression is malformed and the scene silently renders blank (the
+  class of bug behind the never-rendered pocket surface). Every rendered scene
+  is now validated before legend overlay/autocrop/PDF: blank canvases and
+  content below per-scene coverage/span floors raise `VisualizationError`,
+  and selector errors on stderr are surfaced as loud warnings.
 - **3D scenes: white background by default**
   (`autodock/rendering.py`). All 3D figures (complex/pocket/interaction) now
   render on a solid white background with black labels (`publication_white`

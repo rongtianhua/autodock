@@ -68,8 +68,11 @@ class TestBuildPymolScript:
 class TestRenderScenePymol:
     @patch("autodock.rendering._PYMOL_EXE", "/fake/pymol")
     @patch("autodock.rendering.safe_subprocess")
+    @patch("autodock.rendering._validate_render_content")
     @patch("os.path.exists")
-    def test_calls_pymol_with_resolution_flags(self, mock_exists, mock_subprocess, tmp_path):
+    def test_calls_pymol_with_resolution_flags(
+        self, mock_exists, mock_validate, mock_subprocess, tmp_path
+    ):
         mock_subprocess.return_value = (True, "", "")
         mock_exists.return_value = True
         out_png = tmp_path / "scene.png"
@@ -107,35 +110,17 @@ def _have_rdkit() -> bool:
 
 @pytest.mark.skipif(not _have_rdkit(), reason="rdkit not installed")
 class TestRenderInteractions2d:
-    @patch("rdkit.Chem.MolFromSmiles")
-    @patch("rdkit.Chem.RemoveHs")
-    @patch("rdkit.Chem.AllChem.Compute2DCoords")
-    @patch("rdkit.Chem.Draw.MolDraw2DCairo")
-    @patch("PIL.Image.open")
-    @patch("PIL.ImageDraw.Draw")
-    @patch("PIL.ImageFont.truetype")
-    def test_basic(
-        self,
-        mock_font,
-        mock_draw,
-        mock_img_open,
-        mock_drawer,
-        mock_2d,
-        mock_remhs,
-        mock_mol,
-        tmp_path,
-    ):
-        mock_mol_instance = MagicMock()
-        mock_mol.return_value = mock_mol_instance
-        mock_remhs.return_value = mock_mol_instance
-        mock_drawer_instance = MagicMock()
-        mock_drawer.return_value = mock_drawer_instance
-        mock_drawer_instance.GetDrawingText.return_value = b"\x89PNG\r\n\x1a\n"
-        mock_img = MagicMock()
-        mock_img_open.return_value = mock_img
-
+    def test_basic(self, tmp_path):
+        """Happy path with a real molecule: SVG base + annotation layers saved."""
+        pytest.importorskip("cairosvg")
         ligand = tmp_path / "lig.pdbqt"
-        ligand.write_text("REMARK SMILES CC\nATOM 1 C 0 0 0\n")
+        ligand.write_text(
+            "REMARK SMILES CCO\n"
+            "REMARK SMILES IDX 1 1 2 2 3 3\n"
+            "ATOM      1  C   UNL     1       0.000   0.000   0.000\n"
+            "ATOM      2  C   UNL     1       1.000   0.000   0.000\n"
+            "ATOM      3  O   UNL     1       2.000   0.000   0.000\n"
+        )
         out = tmp_path / "out.png"
         rend.render_interactions_2d(
             "rec.pdb",
@@ -143,7 +128,42 @@ class TestRenderInteractions2d:
             interactions=[{"type": "H-bond", "resn": "SER", "resi": 1}],
             output_png=str(out),
         )
-        assert mock_img.save.called
+        assert out.exists()
+        from PIL import Image
+
+        with Image.open(out) as img:
+            assert img.size == (
+                1800 * rend.DEFAULT_DPI // 100,
+                1400 * rend.DEFAULT_DPI // 100,
+            )
+
+    def test_highlighted_interaction_maps_to_atoms(self, tmp_path):
+        """A mapped interaction must reach the drawer as atom/bond highlights."""
+        pytest.importorskip("cairosvg")
+        ligand = tmp_path / "lig.pdbqt"
+        ligand.write_text(
+            "REMARK SMILES CCO\n"
+            "REMARK SMILES IDX 1 1 2 2 3 3\n"
+            "ATOM      1  C   UNL     1       0.000   0.000   0.000\n"
+            "ATOM      2  C   UNL     1       1.000   0.000   0.000\n"
+            "ATOM      3  O   UNL     1       2.000   0.000   0.000\n"
+        )
+        out = tmp_path / "out.png"
+        interactions = [
+            {
+                "type": "H-bond",
+                "resn": "SER",
+                "resi": 1,
+                "ligand_atoms": [{"coords": (0.0, 0.0, 0.0)}],
+            }
+        ]
+        rend.render_interactions_2d(
+            "rec.pdb",
+            str(ligand),
+            interactions=interactions,
+            output_png=str(out),
+        )
+        assert out.exists()
 
     def test_parse_failure_raises(self, tmp_path):
         ligand = tmp_path / "lig.pdbqt"
@@ -282,6 +302,7 @@ class TestSceneScriptHygiene:
         with (
             patch("autodock.rendering._PYMOL_EXE", "/fake/pymol"),
             patch("autodock.rendering.safe_subprocess") as mock_sub,
+            patch("autodock.rendering._validate_render_content"),
             patch("os.path.exists", return_value=True),
         ):
             mock_sub.return_value = (True, "", "")
@@ -550,3 +571,64 @@ class TestFillNoninteractingAromatic:
 
         assert highlight_bond_colors[0] == (1.0, 0.0, 0.0)
         assert len(highlight_bonds) == mol.GetNumBonds() - 1
+
+
+class TestValidateRenderContent:
+    """Post-render content validation: PyMOL exits 0 on silent empty scenes."""
+
+    def _write_png(self, path, draw_fn, size=(400, 300)):
+        from PIL import Image, ImageDraw
+
+        img = Image.new("RGB", size, "white")
+        draw_fn(ImageDraw.Draw(img))
+        img.save(path)
+        return str(path)
+
+    def test_blank_image_raises(self, tmp_path):
+        png = self._write_png(tmp_path / "blank.png", lambda d: None)
+        with pytest.raises(VisualizationError, match="empty scene"):
+            rend._validate_render_content(png, "pocket")
+
+    def test_tiny_speck_raises_coverage(self, tmp_path):
+        def speck(d):
+            d.ellipse((10, 10, 13, 13), fill="red")
+
+        png = self._write_png(tmp_path / "speck.png", speck)
+        with pytest.raises(VisualizationError, match="implausibly little"):
+            rend._validate_render_content(png, "complex")
+
+    def test_narrow_strip_raises_span(self, tmp_path):
+        # A horizontal line: decent coverage but no vertical span.
+        def strip(d):
+            d.line((0, 150, 399, 150), fill="black", width=4)
+
+        png = self._write_png(tmp_path / "strip.png", strip)
+        with pytest.raises(VisualizationError, match="implausibly little"):
+            rend._validate_render_content(png, "pocket")
+
+    def test_realistic_scene_passes(self, tmp_path):
+        def scene(d):
+            d.rectangle((50, 40, 350, 260), outline="black", width=3)
+            d.ellipse((120, 90, 280, 210), outline="blue", width=2)
+            d.text((60, 270), "LIG", fill="black")
+
+        png = self._write_png(tmp_path / "scene.png", scene)
+        rend._validate_render_content(png, "interaction")  # must not raise
+
+    def test_black_background_corner_mode(self, tmp_path):
+        # Background inferred from corners: black-bg renders must validate too.
+        from PIL import Image, ImageDraw
+
+        img = Image.new("RGB", (400, 300), "black")
+        d = ImageDraw.Draw(img)
+        d.ellipse((100, 60, 300, 240), outline="yellow", width=3)
+        png = str(tmp_path / "dark.png")
+        img.save(png)
+        rend._validate_render_content(png, "pocket")  # must not raise
+
+    def test_unknown_scene_uses_default_floor(self, tmp_path):
+        def scene(d):
+            d.rectangle((50, 40, 350, 260), outline="black", width=3)
+
+        png = self._write_png(tmp_path / "scene.png", scene)
+        rend._validate_render_content(png, "future_scene_type")  # must not raise

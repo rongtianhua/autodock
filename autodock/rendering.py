@@ -675,6 +675,81 @@ def _autocrop_png(png_path: str, margin_frac: float = 0.03) -> None:
         )
 
 
+# Minimum non-background content for a rendered scene to be considered valid.
+# (min_coverage, min_span) — coverage is the fraction of pixels that differ from
+# the background colour; span is the fraction of the canvas width/height that
+# the content bounding box must occupy. PyMOL exits 0 even when a selection
+# error silently emptied the scene, so a structural scene that ray-traced to a
+# blank canvas must be rejected here, before legend overlay / autocrop / PDF.
+_CONTENT_THRESHOLDS: dict[str, tuple[float, float]] = {
+    "complex": (0.02, 0.30),
+    "pocket": (0.005, 0.15),
+    "interaction": (0.003, 0.10),
+    "ligand_closeup": (0.003, 0.10),
+}
+
+# PyMOL reports malformed selections on stderr but still exits 0 and writes a
+# PNG — the silent-empty-render class of bug. Surface these as warnings.
+_SELECTOR_ERROR_PATTERNS = ("selector-error", "malformed selection", "invalid selection")
+
+
+def _validate_render_content(png_path: str, scene: str) -> None:
+    """Reject a rendered PNG whose scene is empty or implausibly small.
+
+    PyMOL returns exit code 0 and writes a valid PNG even when every object in
+    the scene failed to load or a selection expression was malformed (e.g. a
+    pocket surface that silently never appeared). File existence and pixel
+    dimensions therefore say nothing about scene content; this check compares
+    the non-background pixel coverage and bounding-box span against per-scene
+    floors.
+
+    Args:
+        png_path: Rendered PNG to inspect.
+        scene: Scene kind — must be a key of ``_CONTENT_THRESHOLDS``.
+
+    Raises:
+        VisualizationError: If the image is blank or below the scene floor.
+    """
+    from PIL import Image, ImageChops
+
+    min_coverage, min_span = _CONTENT_THRESHOLDS.get(scene, (0.003, 0.10))
+    try:
+        with Image.open(png_path) as img:
+            rgb = img.convert("RGB")
+    except Exception as exc:
+        raise VisualizationError(
+            f"PyMOL output for '{scene}' could not be opened as an image " f"({png_path}): {exc}"
+        ) from exc
+    corners = [
+        rgb.getpixel(p)
+        for p in [(0, 0), (rgb.width - 1, 0), (0, rgb.height - 1), (rgb.width - 1, rgb.height - 1)]
+    ]
+    bg = max(set(corners), key=corners.count)
+    diff = ImageChops.difference(rgb, Image.new("RGB", rgb.size, bg))
+    bbox = diff.getbbox()
+    if bbox is None:
+        raise VisualizationError(
+            f"PyMOL rendered an empty scene for '{scene}' ({png_path}): every pixel "
+            "matches the background colour. This usually means a selection expression "
+            "silently matched nothing — check PyMOL stderr above for Selector-Error."
+        )
+    span_w = (bbox[2] - bbox[0]) / rgb.width
+    span_h = (bbox[3] - bbox[1]) / rgb.height
+    # Downsample the diff mask for coverage: exactness is unnecessary at 300 DPI.
+    small = diff.resize((256, 256))
+    raw = small.tobytes()
+    coverage = sum(1 for i in range(0, len(raw), 3) if raw[i] or raw[i + 1] or raw[i + 2]) / (
+        256 * 256
+    )
+    if coverage < min_coverage or min(span_w, span_h) < min_span:
+        raise VisualizationError(
+            f"PyMOL scene '{scene}' ({png_path}) rendered with implausibly little "
+            f"content: coverage {coverage:.2%} (floor {min_coverage:.2%}), span "
+            f"{span_w:.2f}x{span_h:.2f} (floor {min_span:.2f}). Likely a silent "
+            "selection/load failure — treat the figure as invalid."
+        )
+
+
 def render_scene_pymol(
     receptor_pdb: str,
     ligand_pdbqt: str,
@@ -765,12 +840,26 @@ def render_scene_pymol(
         )
         if not success:
             raise VisualizationError(f"PyMOL rendering failed: {stderr[:500]}")
+        # Selector errors are non-fatal for PyMOL (exit 0, PNG still written)
+        # but fatal for figure correctness — surface them loudly.
+        _stderr_lower = (stderr or "").lower()
+        if any(pat in _stderr_lower for pat in _SELECTOR_ERROR_PATTERNS):
+            logger.warning(
+                f"PyMOL reported a selection error while rendering {output_png}: "
+                f"{stderr[:500].strip()}"
+            )
     finally:
         with contextlib.suppress(Exception):
             os.remove(script_path)
 
     if not os.path.exists(output_png):
         raise VisualizationError(f"PyMOL did not produce output: {output_png}")
+
+    # Content validation: PyMOL exits 0 even when the scene silently rendered
+    # blank (e.g. malformed selection → no surface/object). Run before the
+    # legend overlay and autocrop so a bad render fails instead of being
+    # decorated and shipped.
+    _validate_render_content(output_png, scene)
 
     # Validate that the output has the requested resolution. PyMOL silently
     # falls back to smaller buffers on some builds; catch this before it reaches
@@ -1428,26 +1517,128 @@ def render_interactions_2d(
     # Scale canvas by DPI for publication-quality output (RDKit Cairo works in px)
     canvas_w = int(width * dpi / 100)
     canvas_h = int(height * dpi / 100)
-    drawer = Draw.MolDraw2DCairo(canvas_w, canvas_h)
-    drawer.drawOptions().highlightRadius = 0.30
-    drawer.drawOptions().clearBackground = True
-    drawer.drawOptions().bondLineWidth = 3  # Thicker bonds for publication quality
 
-    if highlight_atoms:
-        drawer.DrawMolecule(
-            mol,
-            highlightAtoms=list(highlight_atoms),
-            highlightAtomColors=highlight_atom_colors,
-            highlightBonds=list(highlight_bonds) if highlight_bonds else None,
-            highlightBondColors=highlight_bond_colors if highlight_bonds else None,
+    # Standard-layout pipeline (v3): CoordGen 2D coordinates (ChemDraw-lineage
+    # template library — the de-facto "standard" chemical drawing layout, with
+    # axis-aligned rings and even bond lengths) drawn in ACS 1996 style as an
+    # SVG vector graphic, then rasterised at the exact target size with
+    # cairosvg. Earlier versions rasterised RDKit's tiny natural-size flexi
+    # canvas (~150 px) and upscaled ~10-30x with LANCZOS, which blurred bonds
+    # and labels; the vector route keeps every edge crisp at any DPI.
+    try:
+        from rdkit.Chem import rdCoordGen
+
+        mol = Chem.Mol(mol)
+        rdCoordGen.AddCoords(mol)
+    except Exception as exc:
+        logger.warning(f"CoordGen layout failed ({exc}) — falling back to RDKit depictor")
+        from rdkit.Chem import rdDepictor
+
+        rdDepictor.Compute2DCoords(mol)
+
+    def _mean_bond_length(mol: Chem.Mol) -> float:
+        conf = mol.GetConformer()
+        lengths = []
+        for bond in mol.GetBonds():
+            p1 = conf.GetAtomPosition(bond.GetBeginAtomIdx())
+            p2 = conf.GetAtomPosition(bond.GetEndAtomIdx())
+            lengths.append(math.hypot(p1.x - p2.x, p1.y - p2.y))
+        return sum(lengths) / len(lengths) if lengths else 1.0
+
+    _mol_img: Image.Image | None = None
+    _mol_w = _mol_h = 0
+    _raw_coords: dict[int, tuple[float, float]] = {}
+    try:
+        import io
+        import re
+
+        import cairosvg
+
+        _svg_drawer = Draw.MolDraw2DSVG(-1, -1)  # flexi canvas: content-sized viewBox
+        Draw.SetACS1996Mode(_svg_drawer.drawOptions(), _mean_bond_length(mol))
+        _svg_drawer.drawOptions().clearBackground = False
+        if highlight_atoms:
+            _svg_drawer.DrawMolecule(
+                mol,
+                highlightAtoms=list(highlight_atoms),
+                highlightBonds=list(highlight_bonds) if highlight_bonds else None,
+                highlightAtomColors=highlight_atom_colors or None,
+                highlightBondColors=highlight_bond_colors or None,
+            )
+        else:
+            _svg_drawer.DrawMolecule(mol)
+        _svg_drawer.FinishDrawing()
+        _svg_text = _svg_drawer.GetDrawingText()
+
+        _vb = re.search(r"viewBox\s*=\s*['\"]\s*[\d.]+\s+[\d.]+\s+([\d.]+)\s+([\d.]+)", _svg_text)
+        _mol_w = float(_vb.group(1)) if _vb else 145.0
+        _mol_h = float(_vb.group(2)) if _vb else 79.0
+        for i in range(mol.GetNumAtoms()):
+            pos = _svg_drawer.GetDrawCoords(i)
+            _raw_coords[i] = (pos.x, pos.y)
+        _vector_base = (_svg_text, _mol_w, _mol_h)
+    except ImportError:
+        logger.warning(
+            "cairosvg not installed — falling back to low-resolution flexi-Cairo 2D base "
+            "(pip install cairosvg for crisp vector-rasterised structures)"
         )
-    else:
-        drawer.DrawMolecule(mol)
-    drawer.FinishDrawing()
-    png_data = drawer.GetDrawingText()
+        _vector_base = None
+        flexi = Draw.MolDraw2DCairo(-1, -1)
+        flexi.drawOptions().clearBackground = True
+        if highlight_atoms:
+            Draw.DrawMoleculeACS1996(
+                flexi,
+                mol,
+                "",
+                list(highlight_atoms),
+                list(highlight_bonds) if highlight_bonds else None,
+                highlight_atom_colors or None,
+                highlight_bond_colors or None,
+            )
+        else:
+            Draw.DrawMoleculeACS1996(flexi, mol)
+        flexi.FinishDrawing()
+        _mol_img = Image.open(io.BytesIO(flexi.GetDrawingText())).convert("RGB")
+        _mol_w, _mol_h = _mol_img.size
+        for i in range(mol.GetNumAtoms()):
+            pos = flexi.GetDrawCoords(i)
+            _raw_coords[i] = (pos.x, pos.y)
 
-    img = Image.open(__import__("io").BytesIO(png_data))
+    # Fit the molecule into the central area, leaving margins for residue
+    # labels (sides/top) and the interaction legend (bottom-right).
+    margin = int(0.10 * min(canvas_w, canvas_h))
+    _target_w = canvas_w - 2 * margin
+    _target_h = canvas_h - 2 * margin
+    _s = min(_target_w / _mol_w, _target_h / _mol_h)
+    _new_w = max(1, int(_mol_w * _s))
+    _new_h = max(1, int(_mol_h * _s))
+    _ox = (canvas_w - _new_w) // 2
+    _oy = (canvas_h - _new_h) // 2
+
+    if _vector_base is not None:
+        # Rasterise the SVG at exactly the pasted size — vector-crisp, no resize.
+        import io
+
+        import cairosvg
+
+        _svg_text, _, _ = _vector_base
+        _png_bytes = cairosvg.svg2png(
+            bytestring=_svg_text.encode(),
+            output_width=_new_w,
+            output_height=_new_h,
+            background_color="white",
+        )
+        mol_img = Image.open(io.BytesIO(_png_bytes)).convert("RGB")
+    else:
+        mol_img = _mol_img.resize((_new_w, _new_h), Image.LANCZOS)  # type: ignore[union-attr]
+
+    img = Image.new("RGB", (canvas_w, canvas_h), "white")
+    img.paste(mol_img, (_ox, _oy))
     draw = ImageDraw.Draw(img)
+
+    atom_coords: dict[int, tuple[float, float]] = {
+        i: (_ox + x * _s, _oy + y * _s) for i, (x, y) in _raw_coords.items()
+    }
 
     # ── Fonts (publication hierarchy) ─────────────────────────────────────────
     def _load_font(size: int):
@@ -1475,12 +1666,6 @@ def render_interactions_2d(
     font_legend = _load_font(max(12, int(15 * scale)))
     font_symbol = _load_font(max(16, int(22 * scale)))
     font = font_label
-
-    # ── Collect atom 2D coordinates from RDKit drawer ─────────────────────────
-    atom_coords: dict[int, tuple[float, float]] = {}
-    for i in range(mol.GetNumAtoms()):
-        pos = drawer.GetDrawCoords(i)
-        atom_coords[i] = (pos.x, pos.y)
 
     # Ligand centroid — the fallback reference point for outward-pointing
     # graphics (hydrophobic arcs must emanate away from the ring centre,
