@@ -460,6 +460,13 @@ def _build_pymol_script(
             lines.append("        lig_cs = [a.coord for a in m_lig.atom]")
             lines.append("        best_d = 1e9")
             lines.append("        for a in m_res.atom:")
+            # Heavy atoms only: anchoring on a hydrogen (e.g. a backbone N-H
+            # pointing at the ligand) extrapolates the label past the pocket
+            # rim and leaves it floating near unrelated fragments.
+            lines.append("            nm = a.name.strip()")
+            lines.append(
+                "            if nm.startswith('H') or (nm[:1].isdigit() and nm[1:2] == 'H'): continue"
+            )
             lines.append(
                 "            d = min(sum((a.coord[i]-c[i])**2 for i in range(3)) for c in lig_cs)"
             )
@@ -477,11 +484,11 @@ def _build_pymol_script(
             )
             lines.append("        dist = math.sqrt(dx*dx + dy*dy + dz*dz)")
             lines.append("        if dist > 0:")
-            lines.append("            # Normalize and scale offset to 2.5 Å outward from ligand")
-            lines.append("            scale = 2.5 / dist")
+            lines.append("            # Normalize and scale offset to 1.0 Å outward from ligand")
+            lines.append("            scale = 1.0 / dist")
             lines.append(f"            cmd.translate([dx*scale, dy*scale, dz*scale], '{pseudo}')")
             lines.append("        else:")
-            lines.append(f"            cmd.translate([0, 0, 2.5], '{pseudo}')")
+            lines.append(f"            cmd.translate([0, 0, 1.0], '{pseudo}')")
             # Label with residue name, number and chain: e.g. LYS211(A)
             lines.append(f"        cmd.label('{pseudo}', '\"{resn}{resi}({chain})\"')")
             # Label style: bold sans-serif
@@ -558,10 +565,11 @@ def _overlay_interaction_legend(
     """Composite an interaction-type colour legend onto a rendered PNG.
 
     PyMOL cannot place a reliable 2D legend inside a 3D scene, so after the
-    ray-traced PNG is written a semi-transparent legend box (swatch + label
-    per present interaction type) is drawn onto the bottom-left corner with
-    PIL. Colours match INTERACTION_COLORS / INTERACTION_COLOR_RGB, i.e. the
-    dashed-line colours in the scene itself.
+    ray-traced PNG is written a semi-transparent legend box is drawn onto the
+    bottom-right corner with PIL. Each row shows a short DASHED colour sample
+    (matching the dashed interaction lines in the scene itself — no filled
+    swatches) plus the interaction-type label. Colours match
+    INTERACTION_COLORS / INTERACTION_COLOR_RGB.
 
     Args:
         png_path: Rendered PNG (overwritten in place with the legend composited).
@@ -588,10 +596,26 @@ def _overlay_interaction_legend(
 
     # Scale the legend to the rendered image so it stays legible at any size.
     pad = max(14, w // 160)
-    row_h = max(30, h // 40)
-    box_w = max(260, w // 6)
+    row_h = max(36, h // 34)
+    try:
+        font = ImageFont.truetype("DejaVuSans.ttf", size=max(20, int(row_h * 0.62)))
+    except OSError:
+        font = ImageFont.load_default()
+
+    sw = int(row_h * 0.8)  # dashed-sample length
+    sample_gap = max(8, w // 300)
+
+    def _text_w(text: str) -> int:
+        try:
+            tb = font.getbbox(text)
+            return int(tb[2] - tb[0])
+        except (TypeError, ValueError, AttributeError):
+            return len(text) * 12
+
+    text_w = max(_text_w(t) for t in present)
+    box_w = pad * 2 + sw + sample_gap + text_w
     box_h = pad * 2 + row_h * len(present)
-    x0, y0 = pad, h - box_h - pad
+    x0, y0 = w - box_w - pad, h - box_h - pad
 
     overlay = Image.new("RGBA", rgba.size, (0, 0, 0, 0))
     odraw = ImageDraw.Draw(overlay)
@@ -604,22 +628,24 @@ def _overlay_interaction_legend(
         odraw.rectangle(
             [x0, y0, x0 + box_w, y0 + box_h], outline=border_fill, width=max(1, w // 800)
         )
-    try:
-        font = ImageFont.truetype("DejaVuSans.ttf", size=max(16, int(row_h * 0.55)))
-    except OSError:
-        font = ImageFont.load_default()
 
-    sw = int(row_h * 0.6)
+    def _draw_dash_sample(x1: int, y_mid: int, x2: int, rgb: tuple[int, int, int]) -> None:
+        """Short dashed segment — the same visual language as the 3D scene."""
+        lw = max(2, row_h // 12)
+        dash = max(6, sw // 3)
+        gap = max(4, sw // 5)
+        x = x1
+        while x < x2:
+            x_end = min(x + dash, x2)
+            odraw.line([(x, y_mid), (x_end, y_mid)], fill=(*rgb, 255), width=lw)
+            x = x_end + gap
+
     y_off = y0 + pad
     for itype in present:
         rgb = INTERACTION_COLOR_RGB[INTERACTION_COLORS[itype]]
-        odraw.rounded_rectangle(
-            [x0 + pad, y_off, x0 + pad + sw, y_off + sw],
-            radius=max(2, sw // 4),
-            fill=(*rgb, 255),
-        )
+        _draw_dash_sample(x0 + pad, y_off + sw // 2, x0 + pad + sw, tuple(int(c) for c in rgb))
         odraw.text(
-            (x0 + pad + sw + max(8, w // 300), y_off + (sw - int(row_h * 0.55)) // 2),
+            (x0 + pad + sw + sample_gap, y_off + (sw - int(row_h * 0.62)) // 2),
             itype,
             fill=text_fill,
             font=font,
@@ -923,39 +949,6 @@ def render_scene_pymol(
 # ─────────────────────────────────────────────────────────────────────────────
 # RDKit 2D Interaction Diagram
 # ─────────────────────────────────────────────────────────────────────────────
-
-
-def _fill_noninteracting_aromatic(
-    mol: Any,
-    highlight_atoms: set[int],
-    highlight_atom_colors: dict[int, tuple[float, float, float]],
-    highlight_bonds: set[int],
-    highlight_bond_colors: dict[int, tuple[float, float, float]],
-) -> None:
-    """Fill non-interacting aromatic atoms/bonds with a light grey background.
-
-    When only a subset of aromatic atoms interact (common for fused or
-    multi-ring ligands such as flavonoids: one ring contacts the pocket, the
-    other does not), RDKit highlights only the interacting ring. The
-    un-highlighted ring then reads as bare line strokes and the molecule
-    looks visually "split in half". Filling all non-interacting aromatic
-    atoms/bonds with light grey keeps the full structure continuous;
-    interacting atoms keep their interaction colours (they are added first,
-    so their colours win).
-    """
-    grey_bg = (0.88, 0.88, 0.88)
-    for atom_idx in range(mol.GetNumAtoms()):
-        atom = mol.GetAtomWithIdx(atom_idx)
-        if not atom.GetIsAromatic():
-            continue
-        if atom_idx not in highlight_atom_colors:
-            highlight_atoms.add(atom_idx)
-            highlight_atom_colors[atom_idx] = grey_bg
-        for bond in atom.GetBonds():
-            other = bond.GetOtherAtom(atom)
-            if other.GetIsAromatic() and bond.GetIdx() not in highlight_bond_colors:
-                highlight_bonds.add(bond.GetIdx())
-                highlight_bond_colors[bond.GetIdx()] = grey_bg
 
 
 def _parse_smiles_idx_from_pdbqt(ligand_pdbqt: str) -> dict[int, int]:
@@ -1294,6 +1287,19 @@ def _compute_label_positions(
     char_w = max(8, int(9 * scale))
     line_h = max(16, int(20 * scale))
 
+    # Projection radius: for a given direction, the farthest ligand atom along
+    # that direction. Labels are placed just outside the molecule's actual
+    # silhouette in that direction, so they hug the structure instead of
+    # sitting at a fixed radius (which overlapped elongated ligands).
+    center = (cx, cy)
+
+    def _proj_radius(angle: float, clearance: float) -> float:
+        dx, dy = math.cos(angle), math.sin(angle)
+        proj = max((c[0] - center[0]) * dx + (c[1] - center[1]) * dy for c in atom_coords.values())
+        # Never closer than base_dist*0.45 so thin directions still leave room
+        # for the label box itself; never beyond base_dist (old fixed ring).
+        return min(max(proj + clearance, base_dist * 0.45), base_dist)
+
     positions: dict[int, tuple[int, int]] = {}
     placed: list[tuple[int, int, int, int]] = list(reserved_rects or [])
 
@@ -1308,7 +1314,9 @@ def _compute_label_positions(
         for radius_mult in (1.0, 1.15, 1.3, 1.5):
             for nudge_deg in (0, -12, 12, -24, 24, -38, 38, -55, 55, -75, 75):
                 angle = natural_angle + math.radians(nudge_deg)
-                radius = base_dist * radius_mult
+                clearance = max(30 * scale, est_th)
+                # Extra separation per pass to resolve label-label collisions
+                radius = _proj_radius(angle, clearance) + (radius_mult - 1.0) * 60 * scale
                 lx = int(cx + radius * math.cos(angle)) - est_tw // 2
                 ly = int(cy + radius * math.sin(angle)) - est_th // 2
 
@@ -1517,14 +1525,6 @@ def render_interactions_2d(
                     if bidx not in highlight_bond_colors:
                         highlight_bond_colors[bidx] = rgb
 
-    # Fill non-interacting aromatic rings with light grey so the full
-    # structure stays visually continuous (skipped when no interaction was
-    # mapped, to avoid implying non-existent contacts).
-    if interaction_groups:
-        _fill_noninteracting_aromatic(
-            mol, highlight_atoms, highlight_atom_colors, highlight_bonds, highlight_bond_colors
-        )
-
     # ── Draw molecule with highlights ─────────────────────────────────────────
     # Scale canvas by DPI for publication-quality output (RDKit Cairo works in px)
     canvas_w = int(width * dpi / 100)
@@ -1671,12 +1671,12 @@ def render_interactions_2d(
                     continue
         return ImageFont.load_default()
 
-    # Scaled font sizes based on canvas (reference: 1200x900 -> 16px label)
+    # Scaled font sizes based on canvas (reference: 1500px canvas -> ~24px label)
     scale = max(canvas_w, canvas_h) / 1500
-    font_label = _load_font(max(14, int(18 * scale)))
-    font_distance = _load_font(max(11, int(13 * scale)))
-    font_legend = _load_font(max(12, int(15 * scale)))
-    font_symbol = _load_font(max(16, int(22 * scale)))
+    font_label = _load_font(max(16, int(24 * scale)))
+    font_distance = _load_font(max(13, int(16 * scale)))
+    font_legend = _load_font(max(14, int(18 * scale)))
+    font_symbol = _load_font(max(18, int(26 * scale)))
     font = font_label
 
     # Ligand centroid — the fallback reference point for outward-pointing
@@ -1690,7 +1690,11 @@ def render_interactions_2d(
     # bulge away from THAT ring's centre (outward through the atom), not away
     # from the whole-ligand centroid — for fused ring systems the two can
     # disagree, and the arc would otherwise sweep across a neighbouring ring.
+    # Atoms shared by several rings (fused systems) get the MEAN of all their
+    # ring centroids, which lies inside the fused core: the arc then points
+    # away from BOTH rings simultaneously instead of away from only one.
     atom_ring_centroid: dict[int, tuple[float, float]] = {}
+    _rc_acc: dict[int, list[float]] = {}
     try:
         for ring in mol.GetRingInfo().AtomRings():
             pts = [atom_coords[a] for a in ring if a in atom_coords]
@@ -1701,7 +1705,15 @@ def render_interactions_2d(
                 sum(p[1] for p in pts) / len(pts),
             )
             for a in ring:
-                atom_ring_centroid.setdefault(a, rc)
+                if a not in atom_coords:
+                    continue
+                acc = _rc_acc.setdefault(a, [0.0, 0.0, 0.0])
+                acc[0] += rc[0]
+                acc[1] += rc[1]
+                acc[2] += 1.0
+        atom_ring_centroid = {
+            a: (acc[0] / acc[2], acc[1] / acc[2]) for a, acc in _rc_acc.items() if acc[2] > 0
+        }
     except Exception:
         atom_ring_centroid = {}
 
@@ -1842,7 +1854,7 @@ def render_interactions_2d(
             rc = next(
                 (
                     atom_ring_centroid[a]
-                    for a in g.get("rdkit_atoms", set())
+                    for a in sorted(g.get("rdkit_atoms", set()))
                     if a in atom_ring_centroid
                 ),
                 None,

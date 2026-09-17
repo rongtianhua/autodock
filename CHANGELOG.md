@@ -8,6 +8,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Changed
+- **2D interaction diagram: projection-based label placement and larger fonts**
+  (`autodock/rendering.py`). Residue labels were placed on a fixed-radius ring
+  around the ligand centroid, which overlapped elongated structures; they are
+  now placed just outside the molecule's actual silhouette along each label's
+  angular direction. Label/distance/legend/symbol fonts are ~30 % larger.
+- **3D interaction legend restyled** (`autodock/rendering.py`). The composited
+  legend moves to the bottom-right corner, uses larger text, and shows short
+  dashed colour samples matching the dashed interaction lines in the scene
+  instead of filled square swatches.
+- **Non-interacting aromatic rings no longer grey-filled**
+  (`autodock/rendering.py`). The previous release tinted non-interacting
+  aromatic atoms/bonds light grey for visual continuity; this is not standard
+  in publication interaction diagrams (LigPlot+/PoseView/Discovery Studio draw
+  uninvolved rings as plain bonds), so the fill and its helper were removed.
+- **Dual-engine interaction outputs: per-engine CSV tables**
+  (`autodock/interactions.py`). With `method="both"` the merged
+  `interactions.csv` loses engine attribution; each engine's untouched result
+  is now additionally written as `interactions_plip.csv` /
+  `interactions_prolif.csv` next to the discrepancy report for auditing.
 - **Interaction detection now defaults to `both`** (`autodock/workflow.py`,
   `autodock/cli.py`). The workflow previously ran PLIP alone by default, so
   the ProLIF cross-validation and the cross-engine discrepancy report were
@@ -16,6 +35,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   analysis; `plip`/`prolif` remain selectable.
 
 ### Fixed
+- **3D residue labels anchored on hydrogens floated away from their residue**
+  (`autodock/rendering.py`). The label anchor picked the residue atom nearest
+  the ligand with no element filter, so a backbone N-H pointing at the ligand
+  (e.g. GLU72 in the GAPT pair) became the anchor and the 2.5 Å outward offset
+  pushed the label past the pocket rim, leaving it visually detached from both
+  the residue and its dashed line. Anchors are now heavy atoms only and the
+  offset is reduced to 1.0 Å.
+- **2D hydrophobic arcs on fused-ring atoms swept across a neighbouring ring**
+  (`autodock/rendering.py`). The per-atom ring centroid kept only the first
+  ring containing the atom, so for fused systems the arc pointed away from
+  one ring but across the other. Shared atoms now use the mean of all their
+  ring centroids, pointing the arc outward from the fused core, and the arc
+  anchor atom is chosen deterministically (lowest atom index).
+- **Receptor PDBQT histidine residues mangled by Open Babel**
+  (`autodock/preparation.py`). The `-xr` rigid-receptor conversion can
+  truncate HID/HIE to `ID`/`IE` and drop the chain-ID column, corrupting every
+  atom of those residues in the prepared PDBQT. A post-write pass rewrites
+  `ID`→`HID`, `IE`→`HIE` and restores a missing chain ID as `A`, applied to
+  both the Meeko and the Open Babel fallback paths.
 - **ProLIF analysed the wrong ligand geometry**
   (`autodock/interactions.py`). `_build_ligand_mol_for_prolif` transferred
   docking-pose coordinates through `Chem.MolFromPDBFile`, which always

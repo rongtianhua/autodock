@@ -1378,6 +1378,7 @@ def prepare_receptor(
     ensure_dir(os.path.dirname(output_pdbqt) or ".")
     with open(output_pdbqt, "w") as fh:
         fh.write(rigid_pdbqt)
+    _fix_histidine_resnames(output_pdbqt)
 
     # ── Report generation ────────────────────────────────────────────────
     if output_report_json is not None:
@@ -1471,6 +1472,47 @@ def prepare_receptor(
     return os.path.abspath(output_pdbqt)
 
 
+def _fix_histidine_resnames(pdbqt_path: str) -> None:
+    """Repair histidine residue names mangled by the PDBQT writer.
+
+    Open Babel's rigid-receptor conversion (-xr) can truncate protonated
+    histidine names (HID/HIE) to 'ID'/'IE' and drop the chain-ID column,
+    corrupting every atom of those residues (e.g. ``ATOM  704  N  ID  71``).
+    Vina itself does not read residue names, but any downstream consumer that
+    maps atoms back to the receptor PDBQT sees broken residues. Rewrite
+    'ID'→'HID', 'IE'→'HIE' and restore a missing chain ID as 'A'.
+    """
+    try:
+        with open(pdbqt_path) as fh:
+            lines = fh.readlines()
+    except OSError as exc:
+        logger.warning(f"Histidine resname check skipped (read failed): {exc}")
+        return
+    fixed = 0
+    chain_fixed = 0
+    out: list[str] = []
+    for line in lines:
+        if line.startswith(("ATOM  ", "HETATM")) and len(line) >= 22:
+            resn = line[17:20].strip()
+            if resn in ("ID", "IE"):
+                line = line[:17] + ("HID" if resn == "ID" else "HIE") + line[20:]
+                fixed += 1
+                if line[21] == " ":
+                    line = line[:21] + "A" + line[22:]
+                    chain_fixed += 1
+        out.append(line)
+    if fixed:
+        try:
+            with open(pdbqt_path, "w") as fh:
+                fh.writelines(out)
+            logger.warning(
+                f"Repaired {fixed} histidine residue names in {pdbqt_path} "
+                f"({chain_fixed} chain IDs restored) — writer had mangled HID/HIE"
+            )
+        except OSError as exc:
+            logger.warning(f"Histidine resname repair failed: {exc}")
+
+
 def _prepare_receptor_with_obabel(
     pdb_file: str,
     output_pdbqt: str,
@@ -1502,6 +1544,7 @@ def _prepare_receptor_with_obabel(
             os.remove(in_path)
     if not success:
         raise PreparationError("Open Babel receptor preparation failed")
+    _fix_histidine_resnames(output_pdbqt)
     logger.info(f"Receptor prepared (Open Babel fallback): {output_pdbqt}")
     return os.path.abspath(output_pdbqt)
 

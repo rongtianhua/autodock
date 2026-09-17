@@ -324,13 +324,13 @@ class TestSceneScriptHygiene:
             assert cmd[cmd.index("-H") + 1] == "1800"
 
     def test_interaction_legend_overlay(self, tmp_path):
-        """Legend box is composited onto the interaction PNG (bottom-left)."""
+        """Legend box is composited onto the interaction PNG (bottom-right)."""
         from PIL import Image
 
         png = tmp_path / "scene.png"
         Image.new("RGB", (2400, 1800), (255, 255, 255)).save(png)
         before = Image.open(png).convert("RGB").load()
-        assert before[20, 1800 - 20] == (255, 255, 255)
+        assert before[2400 - 20, 1800 - 20] == (255, 255, 255)
 
         interactions = [
             {"type": "H-bond", "resn": "ARG", "resi": 70},
@@ -339,8 +339,10 @@ class TestSceneScriptHygiene:
         rend._overlay_interaction_legend(str(png), interactions)
 
         after = Image.open(png).convert("RGB").load()
-        # Bottom-left corner now carries the semi-transparent legend box
-        assert after[20, 1800 - 20] != (255, 255, 255)
+        # Bottom-right corner now carries the semi-transparent legend box
+        assert after[2400 - 20, 1800 - 20] != (255, 255, 255)
+        # Bottom-left corner stays untouched
+        assert after[20, 1800 - 20] == (255, 255, 255)
 
 
 class TestInteractionSceneLabelsAndLines:
@@ -528,49 +530,6 @@ class TestComputeLabelPositions:
         for x, y in pos.values():
             assert 0 <= x <= canvas_w
             assert 0 <= y <= canvas_h
-
-
-@pytest.mark.skipif(not _have_rdkit(), reason="rdkit not installed")
-class TestFillNoninteractingAromatic:
-    def test_noninteracting_aromatic_atoms_filled_grey(self):
-        from rdkit import Chem
-
-        mol = Chem.MolFromSmiles("c1ccccc1")
-        highlight_atoms: set[int] = set()
-        highlight_atom_colors: dict = {}
-        highlight_bonds: set[int] = set()
-        highlight_bond_colors: dict = {}
-        # Atom 0 is the "interacting" atom with an interaction colour
-        highlight_atom_colors[0] = (0.0, 0.65, 0.0)
-
-        rend._fill_noninteracting_aromatic(
-            mol, highlight_atoms, highlight_atom_colors, highlight_bonds, highlight_bond_colors
-        )
-
-        # Interacting atom keeps its colour; the rest of the ring goes grey
-        assert highlight_atom_colors[0] == (0.0, 0.65, 0.0)
-        for i in range(1, 6):
-            assert i in highlight_atoms
-            assert highlight_atom_colors[i] == (0.88, 0.88, 0.88)
-        # All aromatic-aromatic bonds filled (none pre-coloured)
-        assert len(highlight_bonds) == mol.GetNumBonds()
-        assert all(c == (0.88, 0.88, 0.88) for c in highlight_bond_colors.values())
-
-    def test_pre_coloured_bond_not_overwritten(self):
-        from rdkit import Chem
-
-        mol = Chem.MolFromSmiles("c1ccccc1")
-        highlight_atoms: set[int] = set()
-        highlight_atom_colors: dict = {}
-        highlight_bonds: set[int] = set()
-        highlight_bond_colors: dict = {0: (1.0, 0.0, 0.0)}
-
-        rend._fill_noninteracting_aromatic(
-            mol, highlight_atoms, highlight_atom_colors, highlight_bonds, highlight_bond_colors
-        )
-
-        assert highlight_bond_colors[0] == (1.0, 0.0, 0.0)
-        assert len(highlight_bonds) == mol.GetNumBonds() - 1
 
 
 class TestValidateRenderContent:

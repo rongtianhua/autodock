@@ -982,6 +982,24 @@ def detect_interactions(
     # Discrepancy report for method="both"
     if method == "both" and (plip_intx or prolif_intx):
         _generate_interaction_discrepancy_report(plip_intx, prolif_intx, output_dir=output_dir)
+        # Per-engine raw tables: the merged interactions.csv loses engine
+        # attribution, so write each engine's untouched result next to it for
+        # auditing / downstream engine-specific analysis.
+        if output_dir:
+            import csv
+
+            for engine, engine_intx in (("plip", plip_intx), ("prolif", prolif_intx)):
+                if not engine_intx:
+                    continue
+                try:
+                    engine_path = os.path.join(output_dir, f"interactions_{engine}.csv")
+                    with open(engine_path, "w", newline="") as fh:
+                        w = csv.DictWriter(fh, fieldnames=engine_intx[0].keys())
+                        w.writeheader()
+                        w.writerows(engine_intx)
+                    logger.info(f"{engine.upper()} interactions saved: {engine_path}")
+                except (OSError, TypeError, ValueError) as exc:
+                    logger.warning(f"{engine.upper()} interaction CSV failed: {exc}")
 
     return merged
 

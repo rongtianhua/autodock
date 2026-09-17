@@ -1811,3 +1811,65 @@ class TestFindTopPocketsConsensus:
         # Everything else is unverified and traceable
         assert all(p["fpocket_verified"] is False for p in pockets[1:])
         assert all(p["pocket_source"] == "p2rank_unverified" for p in pockets[1:])
+
+
+class TestFixHistidineResnames:
+    """Open Babel can mangle HID/HIE to ID/IE and drop the chain column."""
+
+    @staticmethod
+    def _atom_line(serial: int, name: str, resn: str, chain: str, resi: int) -> str:
+        return (
+            "ATOM  "
+            + f"{serial:5d}"
+            + " "
+            + f"{name:<4}"
+            + " "
+            + f"{resn:>3}"
+            + " "
+            + chain
+            + f"{resi:4d}"
+            + "    "
+            + f"{11.111:8.3f}{22.222:8.3f}{33.333:8.3f}"
+            f"{0.0:6.2f}{0.0:6.2f}" + f"{'':>10}" + f"{'-0.347':>8}" + " " + "N" + "\n"
+        )
+
+    def _mangled_pdbqt(self, tmp_path):
+        good = [
+            self._atom_line(1, "N", "HID", "A", 71),
+            self._atom_line(2, "CA", "HID", "A", 71),
+            self._atom_line(3, "N", "HIE", "A", 72),
+            self._atom_line(4, "CA", "HIS", "B", 80),
+        ]
+        # Mangle like the Open Babel writer does: truncate resName, drop chain
+        mangled = [
+            good[0][:17] + " ID" + good[0][20:21] + " " + good[0][22:],
+            good[1][:17] + " ID" + good[1][20:21] + " " + good[1][22:],
+            good[2][:17] + " IE" + good[2][20:21] + " " + good[2][22:],
+            good[3],
+        ]
+        p = tmp_path / "rec.pdbqt"
+        p.write_text("REMARK  header\n" + "".join(mangled) + "END\n")
+        return p
+
+    def test_id_ie_rewritten_and_chain_restored(self, tmp_path):
+        p = self._mangled_pdbqt(tmp_path)
+        prep._fix_histidine_resnames(str(p))
+        out = p.read_text().splitlines()
+        # Lines 1-2: ID -> HID, missing chain restored as A
+        assert out[1][17:20] == "HID"
+        assert out[1][21] == "A"
+        assert out[2][17:20] == "HID"
+        assert out[2][21] == "A"
+        # Line 3: IE -> HIE
+        assert out[3][17:20] == "HIE"
+        assert out[3][21] == "A"
+        # Line 4: legitimate HIS untouched, existing chain preserved
+        assert out[4][17:20] == "HIS"
+        assert out[4][21] == "B"
+
+    def test_clean_file_untouched(self, tmp_path):
+        p = tmp_path / "clean.pdbqt"
+        p.write_text(self._atom_line(4, "CA", "HIS", "A", 80))
+        before = p.read_text()
+        prep._fix_histidine_resnames(str(p))
+        assert p.read_text() == before
