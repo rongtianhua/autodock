@@ -181,7 +181,8 @@ def _build_pymol_script(
     receptor_source:
         ``"AlphaFold"``, ``"PDB"``, ``"PDB_single_chain"``, or ``"file"``.
         Determines protein coloring: AlphaFold → pLDDT (B-factor) rainbow;
-        PDB → chainbow (N→C blue→red).
+        PDB → one distinct color per chain when multi-chain, else chainbow
+        (N→C blue→red).
     show_distance_labels:
         If True and ``scene == "interaction"``, annotate each dashed interaction
         line with its distance in Å.
@@ -211,8 +212,25 @@ def _build_pymol_script(
         #                      high B-factor (high confidence, pLDDT 100) → blue
         lines.append("cmd.spectrum('b', 'rainbow_rev', 'receptor', minimum=0, maximum=100)")
     else:
-        # PDB / crystal: chainbow (N-terminus blue → C-terminus red)
-        lines.append("cmd.spectrum('count', 'rainbow', 'receptor')")
+        # PDB / crystal: one distinct color per chain when the structure is
+        # multi-chain (the strategy used by CB-Dock and most online docking
+        # platforms); single-chain structures keep the chainbow ramp
+        # (N-terminus blue → C-terminus red).
+        lines.append("python")
+        lines.append("from pymol import cmd")
+        lines.append(
+            "_chains = sorted({a.chain for a in cmd.get_model('receptor').atom if a.chain.strip()})"
+        )
+        lines.append("if len(_chains) > 1:")
+        lines.append(
+            "    _palette = ['green', 'cyan', 'magenta', 'orange', 'blue', "
+            "'purple', 'yellow', 'pink']"
+        )
+        lines.append("    for _i, _ch in enumerate(_chains):")
+        lines.append("        cmd.color(_palette[_i % len(_palette)], 'receptor and chain ' + _ch)")
+        lines.append("else:")
+        lines.append("    cmd.spectrum('count', 'rainbow', 'receptor')")
+        lines.append("python end")
 
     # ── Load ligand AFTER spectrum ──
     lines.append(f'cmd.load("{ligand_pdbqt}", "ligand")')
@@ -252,16 +270,20 @@ def _build_pymol_script(
         lines.append("cmd.set('cartoon_transparency', 0.0, 'pocket_vis')")
         # Pocket side chains as sticks — without these the interaction scene
         # showed cartoon + ligand only, leaving the interacting residues
-        # invisible.
-        lines.append("cmd.show('sticks', 'pocket_vis and not (name C+N+O+CA)')")
-        lines.append("cmd.set('stick_radius', 0.12, 'pocket_vis')")
+        # invisible. Sticks use a TIGHTER window (6 Å) than the cartoon: an
+        # 8 Å byres window admits residues whose CA is near the ligand but
+        # whose side chain points away — their orphaned sticks float at the
+        # frame edge with no interaction to explain them.
+        lines.append("cmd.select('stick_vis', 'byres (receptor within 6.0 of ligand)')")
+        lines.append("cmd.show('sticks', 'stick_vis and not (name C+N+O+CA)')")
+        lines.append("cmd.set('stick_radius', 0.12, 'stick_vis')")
         # White side-chain carbons disappear on a white background — use a
         # mid grey there and keep white only for dark schemes.
         stick_carbon = "white" if scheme.get("bg") == "black" else "grey50"
-        lines.append(f"cmd.color('{stick_carbon}', 'pocket_vis and elem C')")
-        lines.append("cmd.color('red', 'pocket_vis and elem O')")
-        lines.append("cmd.color('blue', 'pocket_vis and elem N')")
-        lines.append("cmd.color('yellow', 'pocket_vis and elem S')")
+        lines.append(f"cmd.color('{stick_carbon}', 'stick_vis and elem C')")
+        lines.append("cmd.color('red', 'stick_vis and elem O')")
+        lines.append("cmd.color('blue', 'stick_vis and elem N')")
+        lines.append("cmd.color('yellow', 'stick_vis and elem S')")
     else:
         # Cartoon transparency for pocket / interaction scenes
         if scene in ("pocket", "interaction"):
@@ -1180,15 +1202,18 @@ def _legend_layout(
     }
 
 
-def _residue_label(item: dict[str, Any]) -> str:
+def _residue_label(item: dict[str, Any], show_chain: bool = True) -> str:
     """2D diagram residue label: ``RESN RESI`` with chain ID when available.
 
-    Mirrors the 3D scene label format (``GLU72(A)``) so multi-chain receptors
-    stay unambiguous in the 2D figure.
+    Mirrors the 3D scene label format (``GLU72(A)``). The chain suffix is
+    appended only when *show_chain* is set — callers drop it for single-chain
+    receptors, where ``(A)`` is noise on every label.
     """
     chain = item.get("chain")
     base = f"{item.get('resn', '')}{item.get('resi', '')}"
-    return f"{base}({chain})" if chain else base
+    if chain and show_chain:
+        return f"{base}({chain})"
+    return base
 
 
 def _compute_label_positions(
@@ -1198,6 +1223,8 @@ def _compute_label_positions(
     canvas_h: int,
     margin: int = 100,
     reserved_rects: list[tuple[int, int, int, int]] | None = None,
+    show_chain: bool = True,
+    inflate: dict[int, float] | None = None,
 ) -> dict[int, tuple[int, int]]:
     """Compute radial label positions around ligand centre.
 
@@ -1291,11 +1318,16 @@ def _compute_label_positions(
     # that direction. Labels are placed just outside the molecule's actual
     # silhouette in that direction, so they hug the structure instead of
     # sitting at a fixed radius (which overlapped elongated ligands).
+    # ``inflate`` adds per-atom extra margin (used for hetero atoms, whose
+    # rendered element labels — OH, NH — extend beyond the atom centre).
     center = (cx, cy)
 
     def _proj_radius(angle: float, clearance: float) -> float:
         dx, dy = math.cos(angle), math.sin(angle)
-        proj = max((c[0] - center[0]) * dx + (c[1] - center[1]) * dy for c in atom_coords.values())
+        proj = max(
+            (c[0] - center[0]) * dx + (c[1] - center[1]) * dy + (inflate or {}).get(a, 0.0)
+            for a, c in atom_coords.items()
+        )
         # Never closer than base_dist*0.45 so thin directions still leave room
         # for the label box itself; never beyond base_dist (old fixed ring).
         return min(max(proj + clearance, base_dist * 0.45), base_dist)
@@ -1305,7 +1337,7 @@ def _compute_label_positions(
 
     for mi, _gx, _gy, natural_angle in merged_info:
         g = merged[mi]
-        label = _residue_label(g)
+        label = _residue_label(g, show_chain=show_chain)
         est_tw = len(label) * char_w + 8
         est_th = line_h
 
@@ -1314,7 +1346,7 @@ def _compute_label_positions(
         for radius_mult in (1.0, 1.15, 1.3, 1.5):
             for nudge_deg in (0, -12, 12, -24, 24, -38, 38, -55, 55, -75, 75):
                 angle = natural_angle + math.radians(nudge_deg)
-                clearance = max(30 * scale, est_th)
+                clearance = max(45 * scale, est_th + 12 * scale)
                 # Extra separation per pass to resolve label-label collisions
                 radius = _proj_radius(angle, clearance) + (radius_mult - 1.0) * 60 * scale
                 lx = int(cx + radius * math.cos(angle)) - est_tw // 2
@@ -1743,6 +1775,24 @@ def render_interactions_2d(
     legend = _legend_layout(legend_header, legend_rows, canvas_w, canvas_h, scale)
     legend_rect = (legend["x"], legend["y"], legend["x"] + legend["w"], legend["y"] + legend["h"])
 
+    # Chain suffix: keep it only when the interactions actually span more than
+    # one chain — for single-chain receptors "(A)" on every label is noise.
+    chains_present = {g.get("chain") for g in group_list if g.get("chain")}
+    show_chain = len(chains_present) > 1
+
+    # Hetero atoms carry rendered element labels (OH, NH, SH) that extend
+    # beyond the atom centre — inflate their footprint so residue labels are
+    # placed outside the drawn text, not on top of it.
+    hetero_inflate: dict[int, float] = {}
+    try:
+        hetero_inflate = {
+            a.GetIdx(): 26.0 * scale
+            for a in mol.GetAtoms()
+            if a.GetSymbol() in ("N", "O", "S", "P")
+        }
+    except Exception:
+        hetero_inflate = {}
+
     label_positions = _compute_label_positions(
         group_list,
         atom_coords,
@@ -1750,6 +1800,8 @@ def render_interactions_2d(
         canvas_h,
         margin=int(80 * scale),
         reserved_rects=[legend_rect],
+        show_chain=show_chain,
+        inflate=hetero_inflate,
     )
 
     # LigPlot+ canonical colors (int RGB)
@@ -1767,7 +1819,7 @@ def render_interactions_2d(
     # Pre-compute label sizes
     label_sizes: dict[int, tuple[int, int]] = {}
     for gi, g in enumerate(group_list):
-        label = _residue_label(g)
+        label = _residue_label(g, show_chain=show_chain)
         bbox = draw.textbbox((0, 0), label, font=font)
         label_sizes[gi] = (bbox[2] - bbox[0], bbox[3] - bbox[1])
 
@@ -1785,7 +1837,7 @@ def render_interactions_2d(
         itype = g.get("type", "")
         color_name = g.get("color", "grey")
         rgb_int = color_rgb_int.get(color_name, (128, 128, 128))
-        label = _residue_label(g)
+        label = _residue_label(g, show_chain=show_chain)
         lx, ly = pos
         tw, th = label_sizes[gi]
 

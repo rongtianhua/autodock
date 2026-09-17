@@ -8,6 +8,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Changed
+- **2D diagram: single-chain receptors drop the chain suffix on residue
+  labels** (`autodock/rendering.py`). Labels read `GLU72` instead of
+  `GLU72(A)` when every interaction is on one chain; the suffix is kept
+  whenever interactions span multiple chains.
+- **2D diagram: labels placed outside hetero-atom label text**
+  (`autodock/rendering.py`). Residue labels could land on the drawn OH/NH
+  element labels (ARG70 vs the 3'/4' hydroxyls) or on interaction highlights
+  (LEU69); hetero atoms (N/O/S/P) now contribute an inflated footprint to the
+  projection-radius placement and the base clearance is ~50 % larger, so
+  labels and their hydrophobic arcs sit further out along their radial
+  direction.
+- **3D interaction scene: side-chain sticks use a tighter 6 Å window**
+  (`autodock/rendering.py`). Sticks previously covered the whole 8 Å
+  `byres` cartoon window, admitting residues whose CA is near the ligand but
+  whose side chain points away — orphaned sticks at the frame edge with no
+  interaction to explain them. Cartoon and surrounding-residue labels keep
+  the 8 Å window.
+- **3D scenes: multi-chain crystal structures colored per chain**
+  (`autodock/rendering.py`). Non-AlphaFold structures previously always used
+  the chainbow ramp (N→C blue→red), which blends chains into each other.
+  When the receptor has more than one chain, each chain now gets a distinct
+  color (green/cyan/magenta/orange/…, the CB-Dock strategy); single-chain
+  structures keep the chainbow ramp. AlphaFold/SWISS-MODEL pLDDT coloring is
+  unchanged.
 - **2D interaction diagram: projection-based label placement and larger fonts**
   (`autodock/rendering.py`). Residue labels were placed on a fixed-radius ring
   around the ligand centroid, which overlapped elongated structures; they are

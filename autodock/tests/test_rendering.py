@@ -275,8 +275,11 @@ class TestInteractionScenePocketCartoon:
         assert "cmd.hide('cartoon', 'receptor')" in script
         assert "cmd.show('cartoon', 'pocket_vis')" in script
         assert "cmd.set('cartoon_transparency', 1.0" not in script
-        # Pocket side chains visible as sticks
-        assert "cmd.show('sticks', 'pocket_vis" in script
+        # Pocket side chains visible as sticks (tighter 6 Å window than the
+        # 8 Å cartoon — side chains of 8 Å-window residues can point away
+        # from the ligand and orphan sticks at the frame edge)
+        assert "cmd.show('sticks', 'stick_vis" in script
+        assert "within 6.0 of ligand" in script
 
 
 class TestSceneScriptHygiene:
