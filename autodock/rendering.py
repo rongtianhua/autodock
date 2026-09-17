@@ -70,8 +70,8 @@ INTERACTION_COLOR_RGB: dict[str, tuple[int, int, int]] = {
 
 # Extra-resolution default for whole-complex scenes (the overview figure users
 # crop and reuse). Applied only when the caller did not request an explicit size.
-_COMPLEX_RAY_WIDTH = 3200
-_COMPLEX_RAY_HEIGHT = 2400
+_COMPLEX_RAY_WIDTH = 4000
+_COMPLEX_RAY_HEIGHT = 3000
 
 # Element preferences for interaction-line endpoints: an H-bond line should
 # point at the residue N/O actually involved, a hydrophobic line at carbons,
@@ -829,10 +829,10 @@ def render_scene_pymol(
         scene: 'complex' | 'pocket' | 'interaction' | 'ligand_closeup'.
         center: Pocket center for camera positioning.
         interactions: List of interaction dicts (for 'interaction' scene).
-        width: Image width in pixels. None → 2400 (or 3200 for scene='complex'
+        width: Image width in pixels. None → 3000 (or 4000 for scene='complex'
             — the whole-complex overview gets extra pixels unless the caller
             requests an explicit size).
-        height: Image height in pixels (default 1800).
+        height: Image height in pixels (default 2250).
         save_pse: Optional path to save a PyMOL session (.pse) file.
         color_scheme: Colour preset — ``publication_white`` (default),
             ``publication_grey``, ``presentation_black``, or a journal preset

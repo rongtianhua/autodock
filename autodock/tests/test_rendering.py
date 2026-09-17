@@ -301,7 +301,7 @@ class TestSceneScriptHygiene:
         assert "cmd.zoom('(receptor or ligand)', 1.0)" in script
 
     def test_complex_default_resolution_bump(self):
-        """Complex scene without explicit size renders at 3200x2400; explicit size wins."""
+        """Complex scene without explicit size renders at 4000x3000; explicit size wins."""
         with (
             patch("autodock.rendering._PYMOL_EXE", "/fake/pymol"),
             patch("autodock.rendering.safe_subprocess") as mock_sub,
@@ -311,8 +311,8 @@ class TestSceneScriptHygiene:
             mock_sub.return_value = (True, "", "")
             rend.render_scene_pymol("rec.pdb", "lig.pdbqt", "out_complex.png", scene="complex")
             cmd = mock_sub.call_args[0][0]
-            assert cmd[cmd.index("-W") + 1] == "3200"
-            assert cmd[cmd.index("-H") + 1] == "2400"
+            assert cmd[cmd.index("-W") + 1] == "4000"
+            assert cmd[cmd.index("-H") + 1] == "3000"
 
             rend.render_scene_pymol(
                 "rec.pdb",

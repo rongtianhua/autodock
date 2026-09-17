@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- **3D default render resolution raised to 3000×2250 (whole-complex 4000×3000)**
+  (`autodock/core.py`, `autodock/rendering.py`). The previous 2400×1800 default
+  was adequate for double-column print but left little headroom for full-page
+  figures; the new defaults give 25×19 cm / 34×25 cm physical sizes at the
+  unchanged 300 dpi. Cost is ~1.5× ray-tracing time; saved `.pse` sessions
+  still allow re-rendering at any resolution.
+
 ### Added
 - **ProLIF native interaction figures in every pair output**
   (`autodock/interactions.py`, `autodock/post_dock_pipeline.py`). When the
