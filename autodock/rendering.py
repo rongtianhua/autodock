@@ -230,7 +230,12 @@ def _build_pymol_script(
         lines.append("    for _i, _ch in enumerate(_chains):")
         lines.append("        cmd.color(_palette[_i % len(_palette)], 'receptor and chain ' + _ch)")
         lines.append("else:")
-        lines.append("    cmd.color('grey80', 'receptor')")
+        # Neutral grey-blue: keeps the cartoon distinct from the ligand's
+        # grey ball-and-stick carbons (grey80 vs grey carbons read as one
+        # object in print), without the garish look of chainbow or the
+        # white-background wash-out of pure lightblue.
+        lines.append("    cmd.set_color('receptor_greyblue', [0.58, 0.64, 0.72])")
+        lines.append("    cmd.color('receptor_greyblue', 'receptor')")
         lines.append("python end")
 
     # ── Load ligand AFTER spectrum ──
@@ -1958,7 +1963,9 @@ def render_interactions_2d(
             # nudge, placement fixes), detaching the arc from its atom. The
             # leader line below already spans any label distance, so a
             # constant molecule-scale ornament stays put across docking pairs.
-            arc_radius = max(int(20 * scale), int(mean_bond_px * 0.85))
+            # 0.55 keeps the arc just outside the highlight ellipse, hugging
+            # the contact atom (0.85 left a visible gap after de-coupling).
+            arc_radius = max(int(20 * scale), int(mean_bond_px * 0.55))
             _draw_spoked_arc(
                 draw,
                 ax,

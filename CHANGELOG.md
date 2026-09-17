@@ -8,6 +8,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Changed
+- **2D diagram: hydrophobic arcs hug the contact atom tighter**
+  (`autodock/rendering.py`). After de-coupling from the label distance the
+  0.85×bond-length radius left a visible gap between the arc and the
+  highlight ellipse; the factor is now 0.55 so the arc sits just outside
+  its contact atom.
+- **3D scenes: single-chain cartoon switches from grey80 to a neutral
+  grey-blue** (`autodock/rendering.py`). The ligand's ball-and-stick
+  carbons are themselves grey, so a grey cartoon read as one object in the
+  overall view; the custom `receptor_greyblue` [0.58, 0.64, 0.72] keeps
+  the receptor distinct while staying publication-neutral. Multi-chain
+  per-chain colors and AlphaFold pLDDT coloring are unchanged.
 - **2D diagram: single-chain receptors drop the chain suffix on residue
   labels** (`autodock/rendering.py`). Labels read `GLU72` instead of
   `GLU72(A)` when every interaction is on one chain; the suffix is kept
