@@ -40,10 +40,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   label in those directions froze at the same clamped radius, silently
   defeating the clearance/hetero-inflation changes (verified pixel-level:
   LEU69/ARG70 moved 0 px). The ceiling is now canvas-bounded
-  (`max_radius * 0.95`); hetero-atom inflation raised 26→34×scale. On the
-  GAPT pair LEU69 now clears its highlight (+93 px), ARG70 drops below the
-  hydroxyl ellipses (+71 px), and the LEU69 hydrophobic arc grows with the
-  label distance as designed.
+  (`max_radius * 1.5`); hetero-atom inflation raised 26→34×scale. On the
+  GAPT pair LEU69 clears its highlight, ARG70 drops below the hydroxyl
+  ellipses.
+- **2D diagram: labels placed by text-box edge, not as a point**
+  (`autodock/rendering.py`). The placer treated each label as a zero-width
+  point: the radius covered only the highlight outline plus padding, and the
+  text box's half-width then reached back into the highlighted region.
+  Labels are now positioned so the *near edge* of their text box clears the
+  outline (`box_margin = est_tw/2·|cosθ| + est_th/2·|sinθ|`), using the
+  real font metrics (`draw.textbbox`) instead of the `len × char_w` guess.
+- **2D diagram: hydrophobic arcs fixed to bond-length size, decoupled from
+  label distance** (`autodock/rendering.py`). Arc radius was
+  `max(45×scale, dist_to_label × 0.38)`: as soon as label placement pushed
+  a residue label outward, its arc ballooned and detached from the contact
+  atom (GLU72/ILE73 on the GAPT pair). Arcs are now sized from the canvas
+  bond length (`max(20×scale, mean_bond_px × 0.85)`), making them a
+  fixed-size molecular-scale ornament regardless of where the label lands;
+  the label stays linked via its leader line. Rendered output is therefore
+  stable across docking pairs.
 - **2D interaction diagram: projection-based label placement and larger fonts**
   (`autodock/rendering.py`). Residue labels were placed on a fixed-radius ring
   around the ligand centroid, which overlapped elongated structures; they are

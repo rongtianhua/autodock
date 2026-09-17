@@ -1226,6 +1226,7 @@ def _compute_label_positions(
     reserved_rects: list[tuple[int, int, int, int]] | None = None,
     show_chain: bool = True,
     inflate: dict[int, float] | None = None,
+    text_measure: Any = None,
 ) -> dict[int, tuple[int, int]]:
     """Compute radial label positions around ligand centre.
 
@@ -1330,10 +1331,11 @@ def _compute_label_positions(
             for a, c in atom_coords.items()
         )
         # Floor keeps thin directions outside the label box; the ceiling is
-        # canvas-bounded (NOT base_dist — capping at base_dist froze every
-        # label at the same radius on elongated ligands, silently cancelling
-        # the projection for directions along the molecular long axis).
-        return min(max(proj + clearance, base_dist * 0.45), max_radius * 0.95)
+        # loose on purpose — the per-axis margin clamp (not the radius) is the
+        # real canvas bound. An earlier ceiling at base_dist froze every label
+        # at one radius on elongated ligands, silently cancelling the
+        # clearance/hetero-inflation adjustments.
+        return min(max(proj + clearance, base_dist * 0.45), max_radius * 1.5)
 
     positions: dict[int, tuple[int, int]] = {}
     placed: list[tuple[int, int, int, int]] = list(reserved_rects or [])
@@ -1341,7 +1343,13 @@ def _compute_label_positions(
     for mi, _gx, _gy, natural_angle in merged_info:
         g = merged[mi]
         label = _residue_label(g, show_chain=show_chain)
-        est_tw = len(label) * char_w + 8
+        if text_measure is not None:
+            try:
+                est_tw = int(text_measure(label)) + 12
+            except Exception:
+                est_tw = len(label) * char_w + 8
+        else:
+            est_tw = len(label) * char_w + 8
         est_th = line_h
 
         best_pos: tuple[int, int] | None = None
@@ -1349,9 +1357,15 @@ def _compute_label_positions(
         for radius_mult in (1.0, 1.15, 1.3, 1.5):
             for nudge_deg in (0, -12, 12, -24, 24, -38, 38, -55, 55, -75, 75):
                 angle = natural_angle + math.radians(nudge_deg)
+                # Place the label BOX so its near edge clears the silhouette:
+                # the radius must absorb half the box extent along the radial
+                # direction, not just reach the silhouette with a point.
+                box_margin = est_tw / 2 * abs(math.cos(angle)) + est_th / 2 * abs(math.sin(angle))
                 clearance = max(45 * scale, est_th + 12 * scale)
                 # Extra separation per pass to resolve label-label collisions
-                radius = _proj_radius(angle, clearance) + (radius_mult - 1.0) * 60 * scale
+                radius = (
+                    _proj_radius(angle, clearance + box_margin) + (radius_mult - 1.0) * 60 * scale
+                )
                 lx = int(cx + radius * math.cos(angle)) - est_tw // 2
                 ly = int(cy + radius * math.sin(angle)) - est_th // 2
 
@@ -1796,6 +1810,13 @@ def render_interactions_2d(
     except Exception:
         hetero_inflate = {}
 
+    def _text_w(t: str) -> int:
+        try:
+            tb = draw.textbbox((0, 0), t, font=font_label)
+            return max(1, int(tb[2] - tb[0]))
+        except (TypeError, ValueError):
+            return len(t) * 12
+
     label_positions = _compute_label_positions(
         group_list,
         atom_coords,
@@ -1805,7 +1826,19 @@ def render_interactions_2d(
         reserved_rects=[legend_rect],
         show_chain=show_chain,
         inflate=hetero_inflate,
+        text_measure=_text_w,
     )
+
+    # Mean bond length in CANVAS pixels — the molecule-scale yardstick for
+    # fixed-size ornaments (hydrophobic arcs). Tying ornament size to the
+    # molecule (not to label distances) keeps figures consistent across
+    # docking pairs regardless of where labels end up.
+    _bond_px = [
+        math.hypot(atom_coords[a1][0] - atom_coords[a2][0], atom_coords[a1][1] - atom_coords[a2][1])
+        for (a1, a2) in bond_lookup
+        if a1 in atom_coords and a2 in atom_coords
+    ]
+    mean_bond_px = sum(_bond_px) / len(_bond_px) if _bond_px else 45.0 * scale
 
     # LigPlot+ canonical colors (int RGB)
     color_rgb_int = {
@@ -1919,9 +1952,13 @@ def render_interactions_2d(
             else:
                 out_angle = math.atan2(ay - lig_cy, ax - lig_cx)
             arc_span = math.pi / 2.5
-            # Dynamic radius: ~38% of distance to label, with scaled minimum
-            dist_to_label = math.hypot(tx - ax, ty - ay)
-            arc_radius = max(int(45 * scale), int(dist_to_label * 0.38))
+            # FIXED arc size tied to the molecule's own bond length — NOT to
+            # the label distance. The old 0.38×dist_to_label rule inflated
+            # the arc whenever a label moved outward (big ligand, collision
+            # nudge, placement fixes), detaching the arc from its atom. The
+            # leader line below already spans any label distance, so a
+            # constant molecule-scale ornament stays put across docking pairs.
+            arc_radius = max(int(20 * scale), int(mean_bond_px * 0.85))
             _draw_spoked_arc(
                 draw,
                 ax,
