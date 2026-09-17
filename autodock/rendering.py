@@ -181,8 +181,8 @@ def _build_pymol_script(
     receptor_source:
         ``"AlphaFold"``, ``"PDB"``, ``"PDB_single_chain"``, or ``"file"``.
         Determines protein coloring: AlphaFold → pLDDT (B-factor) rainbow;
-        PDB → one distinct color per chain when multi-chain, else chainbow
-        (N→C blue→red).
+        PDB → one distinct color per chain when multi-chain, neutral grey
+        for single-chain structures.
     show_distance_labels:
         If True and ``scene == "interaction"``, annotate each dashed interaction
         line with its distance in Å.
@@ -214,8 +214,9 @@ def _build_pymol_script(
     else:
         # PDB / crystal: one distinct color per chain when the structure is
         # multi-chain (the strategy used by CB-Dock and most online docking
-        # platforms); single-chain structures keep the chainbow ramp
-        # (N-terminus blue → C-terminus red).
+        # platforms). Single-chain structures get a neutral grey — the old
+        # chainbow ramp (N→C blue→red) encodes no structural property, is not
+        # publication convention, and reads as garish on white backgrounds.
         lines.append("python")
         lines.append("from pymol import cmd")
         lines.append(
@@ -229,7 +230,7 @@ def _build_pymol_script(
         lines.append("    for _i, _ch in enumerate(_chains):")
         lines.append("        cmd.color(_palette[_i % len(_palette)], 'receptor and chain ' + _ch)")
         lines.append("else:")
-        lines.append("    cmd.spectrum('count', 'rainbow', 'receptor')")
+        lines.append("    cmd.color('grey80', 'receptor')")
         lines.append("python end")
 
     # ── Load ligand AFTER spectrum ──
@@ -1328,9 +1329,11 @@ def _compute_label_positions(
             (c[0] - center[0]) * dx + (c[1] - center[1]) * dy + (inflate or {}).get(a, 0.0)
             for a, c in atom_coords.items()
         )
-        # Never closer than base_dist*0.45 so thin directions still leave room
-        # for the label box itself; never beyond base_dist (old fixed ring).
-        return min(max(proj + clearance, base_dist * 0.45), base_dist)
+        # Floor keeps thin directions outside the label box; the ceiling is
+        # canvas-bounded (NOT base_dist — capping at base_dist froze every
+        # label at the same radius on elongated ligands, silently cancelling
+        # the projection for directions along the molecular long axis).
+        return min(max(proj + clearance, base_dist * 0.45), max_radius * 0.95)
 
     positions: dict[int, tuple[int, int]] = {}
     placed: list[tuple[int, int, int, int]] = list(reserved_rects or [])
@@ -1786,7 +1789,7 @@ def render_interactions_2d(
     hetero_inflate: dict[int, float] = {}
     try:
         hetero_inflate = {
-            a.GetIdx(): 26.0 * scale
+            a.GetIdx(): 34.0 * scale
             for a in mol.GetAtoms()
             if a.GetSymbol() in ("N", "O", "S", "P")
         }

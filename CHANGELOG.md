@@ -25,13 +25,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   whose side chain points away — orphaned sticks at the frame edge with no
   interaction to explain them. Cartoon and surrounding-residue labels keep
   the 8 Å window.
-- **3D scenes: multi-chain crystal structures colored per chain**
-  (`autodock/rendering.py`). Non-AlphaFold structures previously always used
-  the chainbow ramp (N→C blue→red), which blends chains into each other.
-  When the receptor has more than one chain, each chain now gets a distinct
-  color (green/cyan/magenta/orange/…, the CB-Dock strategy); single-chain
-  structures keep the chainbow ramp. AlphaFold/SWISS-MODEL pLDDT coloring is
-  unchanged.
+- **3D scenes: multi-chain crystal structures colored per chain; single-chain
+  gets neutral grey** (`autodock/rendering.py`). Non-AlphaFold structures
+  previously always used the chainbow ramp (N→C blue→red), which blends
+  chains into each other and, for single chains, encodes no structural
+  property at all. When the receptor has more than one chain, each chain now
+  gets a distinct color (green/cyan/magenta/orange/…, the CB-Dock strategy);
+  single-chain structures get a plain `grey80` cartoon. AlphaFold/SWISS-MODEL
+  pLDDT coloring is unchanged.
+- **2D diagram: label-radius ceiling no longer cancels the projection**
+  (`autodock/rendering.py`). The projection-based placer capped its radius at
+  `base_dist`, which on elongated ligands (e.g. quercetin on a publication
+  canvas) is *below* the molecular projection along the long axis — every
+  label in those directions froze at the same clamped radius, silently
+  defeating the clearance/hetero-inflation changes (verified pixel-level:
+  LEU69/ARG70 moved 0 px). The ceiling is now canvas-bounded
+  (`max_radius * 0.95`); hetero-atom inflation raised 26→34×scale. On the
+  GAPT pair LEU69 now clears its highlight (+93 px), ARG70 drops below the
+  hydroxyl ellipses (+71 px), and the LEU69 hydrophobic arc grows with the
+  label distance as designed.
 - **2D interaction diagram: projection-based label placement and larger fonts**
   (`autodock/rendering.py`). Residue labels were placed on a fixed-radius ring
   around the ligand centroid, which overlapped elongated structures; they are
