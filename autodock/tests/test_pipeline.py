@@ -2,6 +2,7 @@
 
 import json
 import os
+from unittest.mock import patch
 
 from autodock import post_dock_pipeline as pipeline
 from autodock.core import DockingResult
@@ -151,6 +152,62 @@ class TestPostProcessDocking:
         assert "1.50" in summary
         assert "PASS" in summary
         assert "3" in summary
+
+    @patch("autodock.interactions.render_prolif_figure")
+    def test_prolif_native_figure_with_both_method(self, mock_prolif_fig, tmp_path):
+        """interaction_method='both' must trigger the native ProLIF figure."""
+        rec_pdb = tmp_path / "rec.pdb"
+        rec_pdb.write_text("RECPDB")
+        best = tmp_path / "best.pdbqt"
+        best.write_text("BEST")
+        mock_prolif_fig.return_value = {
+            "lignetwork_html": str(tmp_path / "2d_prolif_network.html"),
+            "barcode_png": str(tmp_path / "2d_prolif_barcode.png"),
+            "barcode_pdf": str(tmp_path / "2d_prolif_barcode.pdf"),
+        }
+
+        result = self._make_result(
+            interactions=[{"type": "H-bond", "residue": "ALA:1"}],
+            best_pose_pdbqt=str(best),
+        )
+        pair_root = tmp_path / "pair"
+        out = pipeline.post_process_docking(
+            result,
+            str(pair_root),
+            receptor_pdb=str(rec_pdb),
+            do_interactions=True,
+            do_rendering=False,
+            do_report=False,
+            copy_structures=False,
+            interaction_method="both",
+        )
+        assert mock_prolif_fig.call_count == 1
+        assert "fig_prolif_lignetwork_html" in out
+        assert "fig_prolif_barcode_png" in out
+        assert "fig_prolif_barcode_pdf" in out
+
+    @patch("autodock.interactions.render_prolif_figure")
+    def test_no_prolif_figure_with_plip_only(self, mock_prolif_fig, tmp_path):
+        rec_pdb = tmp_path / "rec.pdb"
+        rec_pdb.write_text("RECPDB")
+        best = tmp_path / "best.pdbqt"
+        best.write_text("BEST")
+        result = self._make_result(
+            interactions=[{"type": "H-bond", "residue": "ALA:1"}],
+            best_pose_pdbqt=str(best),
+        )
+        pair_root = tmp_path / "pair"
+        pipeline.post_process_docking(
+            result,
+            str(pair_root),
+            receptor_pdb=str(rec_pdb),
+            do_interactions=True,
+            do_rendering=False,
+            do_report=False,
+            copy_structures=False,
+            interaction_method="plip",
+        )
+        assert mock_prolif_fig.call_count == 0
 
 
 class TestReadDockingResults:

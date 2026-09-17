@@ -7,7 +7,41 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **ProLIF native interaction figures in every pair output**
+  (`autodock/interactions.py`, `autodock/post_dock_pipeline.py`). When the
+  interaction method includes ProLIF (``"both"`` default), the pipeline now
+  writes ProLIF's own visualisations to ``03_figures/``:
+  ``2d_prolif_network.html`` — the interactive LigNetwork, ProLIF's canonical
+  2D interaction figure (its ``save_png`` is Jupyter-only, so HTML is the
+  primary artefact); and ``2d_prolif_barcode.png/.pdf`` (300 dpi) — the
+  residue × interaction-type barcode. The underlying ``Fingerprint`` object
+  must carry the post-run ``ifp`` attribute for ``plot_barcode`` /
+  ``plot_lignetwork``; ``render_prolif_figure`` sets it explicitly because
+  ``Fingerprint.generate`` returns but does not store it.
+
 ### Changed
+- **Unseeded ensemble docking now draws a random base seed**
+  (`autodock/docking.py`). ``dock_ensemble(seed=None)`` previously fell back
+  to the global default (42), making two unseeded ensembles bit-for-bit
+  identical — defeating the purpose of independent re-validation. The base
+  is now drawn from the OS CSPRNG and recorded in
+  ``summary["base_seed"]`` (each repeat still uses ``base_seed + i``), so
+  unseeded replicate experiments are genuinely independent yet reproducible
+  after the fact. ``batch_dock`` intentionally keeps the deterministic
+  default (matrix reproducibility is desirable there).
+- **Batch docking rejects duplicate input basenames**
+  (`autodock/cli.py`). Receptor/ligand names, per-pair output directories,
+  and the heatmap are all keyed by file basename; two same-basename inputs
+  previously silently overwrote each other in the dict and dropped matrix
+  rows. ``cmd_batch_dock`` now aborts with an explicit error, and logs a
+  WARNING naming any receptor whose ``--receptor-pdb-dir`` lacks a
+  same-basename ``.pdb/.cif`` (those pairs dock without interactions).
+- **AGENTS.md test-layer documentation synced with reality**. The
+  slow/integration/requires_vina/requires_rdkit markers are registered in
+  ``pyproject.toml`` but currently unused by any test — the full suite
+  (~968 cases, ~90 s) is the CI layer; the doc now says so instead of
+  describing a fast/full split that does not exist.
 - **2D diagram: hydrophobic arcs hug the contact atom tighter**
   (`autodock/rendering.py`). After de-coupling from the label distance the
   0.85×bond-length radius left a visible gap between the arc and the

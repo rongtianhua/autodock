@@ -502,11 +502,23 @@ def cmd_batch_dock(args: argparse.Namespace) -> int:
     receptors: dict[str, str] = {}
     for path in args.receptors:
         name = os.path.splitext(os.path.basename(path))[0]
+        if name in receptors:
+            raise ValueError(
+                f"Duplicate receptor basename '{name}' ({receptors[name]!r} vs {path!r}) "
+                "— batch output directories and the heatmap are keyed by basename, "
+                "so rename one of the files before running."
+            )
         receptors[name] = path
 
     ligands: dict[str, str] = {}
     for path in args.ligands:
         name = os.path.splitext(os.path.basename(path))[0]
+        if name in ligands:
+            raise ValueError(
+                f"Duplicate ligand basename '{name}' ({ligands[name]!r} vs {path!r}) "
+                "— batch output directories and the heatmap are keyed by basename, "
+                "so rename one of the files before running."
+            )
         ligands[name] = path
 
     # Map receptor names to PDB files (getattr for test compat)
@@ -520,6 +532,14 @@ def cmd_batch_dock(args: argparse.Namespace) -> int:
                 if os.path.isfile(candidate):
                     receptor_pdb_map[rec_name] = candidate
                     break
+        missing = [n for n in receptors if n not in receptor_pdb_map]
+        if missing:
+            logger.warning(
+                f"No {'.pdb/.cif'} found in {pdb_dir} for receptor(s) {missing} — "
+                "these pairs will be docked WITHOUT interaction analysis and figures. "
+                "Receptor PDB files must share the PDBQT basename "
+                "(e.g. rec1.pdbqt + rec1.pdb)."
+            )
 
     results = batch_dock(
         receptors,

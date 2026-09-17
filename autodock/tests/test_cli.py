@@ -7,6 +7,8 @@ import logging
 import os
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 from autodock import cli
 from autodock.core import autodock_logger
 from autodock.docking import DockingResult
@@ -881,6 +883,71 @@ class TestCmdReport:
 # ────────────────────────────────
 # 13. cmd_virtual_screen
 # ────────────────────────────────
+class TestCmdBatchDock:
+    def _pockets_json(self, tmp_path, names):
+        import json
+
+        p = tmp_path / "pockets.json"
+        p.write_text(
+            json.dumps({n: {"center": [0, 0, 0], "box_size": [20, 20, 20]} for n in names})
+        )
+        return str(p)
+
+    def test_duplicate_receptor_basename_aborts(self, tmp_path):
+        dir_a = tmp_path / "a"
+        dir_b = tmp_path / "b"
+        dir_a.mkdir()
+        dir_b.mkdir()
+        rec_a = dir_a / "rec1.pdbqt"
+        rec_b = dir_b / "rec1.pdbqt"
+        rec_a.write_text("x")
+        rec_b.write_text("x")
+        lig = tmp_path / "lig1.pdbqt"
+        lig.write_text("x")
+
+        args = _ns(
+            pockets=self._pockets_json(tmp_path, ["rec1"]),
+            receptors=[str(rec_a), str(rec_b)],
+            ligands=[str(lig)],
+            receptor_pdb_dir=None,
+            outdir=str(tmp_path / "out"),
+            exhaustiveness=32,
+            n_poses=20,
+            seed=42,
+            workers=1,
+            method="both",
+        )
+        with pytest.raises(ValueError, match="Duplicate receptor basename"):
+            cli.cmd_batch_dock(args)
+
+    def test_duplicate_ligand_basename_aborts(self, tmp_path):
+        rec = tmp_path / "rec1.pdbqt"
+        rec.write_text("x")
+        dir_a = tmp_path / "la"
+        dir_b = tmp_path / "lb"
+        dir_a.mkdir()
+        dir_b.mkdir()
+        lig_a = dir_a / "lig1.pdbqt"
+        lig_b = dir_b / "lig1.pdbqt"
+        lig_a.write_text("x")
+        lig_b.write_text("x")
+
+        args = _ns(
+            pockets=self._pockets_json(tmp_path, ["rec1"]),
+            receptors=[str(rec)],
+            ligands=[str(lig_a), str(lig_b)],
+            receptor_pdb_dir=None,
+            outdir=str(tmp_path / "out"),
+            exhaustiveness=32,
+            n_poses=20,
+            seed=42,
+            workers=1,
+            method="both",
+        )
+        with pytest.raises(ValueError, match="Duplicate ligand basename"):
+            cli.cmd_batch_dock(args)
+
+
 class TestCmdVirtualScreen:
     @patch("autodock.docking.virtual_screen")
     @patch("autodock.preparation.find_top_pockets")

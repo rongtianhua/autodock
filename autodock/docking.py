@@ -1515,7 +1515,11 @@ def dock_ensemble(
         receptor_pdbqt, ligand_pdbqt, center, box_size: Standard docking params.
         n_repeats: Number of independent docking runs (default 10).
         exhaustiveness, n_poses, energy_range, timeout: Vina parameters.
-        seed: Base random seed.  Each repeat uses seed + i.
+        seed: Base random seed.  Each repeat uses seed + i.  If ``None``
+            (default), a random base is drawn from the OS CSPRNG and recorded
+            in ``summary['base_seed']`` so the run stays reproducible after
+            the fact — pass an explicit ``seed`` only when you need a
+            bit-for-bit reproducible ensemble.
         output_dir: Root directory for all repeat outputs.
         compound_name, receptor_pdb: Provenance.
 
@@ -1532,9 +1536,23 @@ def dock_ensemble(
     if n_repeats < 2:
         raise ValueError("n_repeats must be >= 2 for ensemble statistics.")
 
-    base_seed = _get_vina_seed(seed)
     name = compound_name or Path(ligand_pdbqt).stem
-    logger.info(f"Ensemble docking: {name}, {n_repeats} repeats, base_seed={base_seed}")
+    if seed is None:
+        # Independent replicate experiments must not share a seed sequence:
+        # a fixed default would make two unseeded ensemble invocations
+        # bit-for-bit identical, defeating the purpose of re-validation.
+        # Draw a random base from the OS CSPRNG and record it in the summary
+        # so the run remains reproducible after the fact.
+        import random as _random
+
+        base_seed = _random.SystemRandom().randint(0, 2_147_483_647 - n_repeats)
+        logger.info(
+            f"Ensemble docking: {name}, {n_repeats} repeats, random base_seed={base_seed} "
+            "(recorded in summary; pass seed= to reproduce)"
+        )
+    else:
+        base_seed = int(seed)
+        logger.info(f"Ensemble docking: {name}, {n_repeats} repeats, base_seed={base_seed}")
 
     repeats: list[DockingResult] = []
     for i in range(n_repeats):
@@ -1673,6 +1691,7 @@ def dock_ensemble(
         "repeats": repeats,
         "n_repeats": n_repeats,
         "n_successful": len(valid_repeats),
+        "base_seed": base_seed,
         "ensemble_best_affinity_mean": energy_mean,
         "ensemble_best_affinity_std": energy_std,
         "ensemble_best_affinity_min": (float(np.min(affinities)) if affinities.size > 0 else None),

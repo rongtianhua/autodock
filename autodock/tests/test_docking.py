@@ -542,6 +542,73 @@ class TestDockEnsemble:
                 n_repeats=3,
             )
 
+    @patch("autodock.docking.dock_ligand")
+    def test_unseeded_ensemble_draws_random_base_seed(self, mock_dock, tmp_path):
+        """seed=None must draw a random base seed (recorded in the summary)
+        so two unseeded ensembles are independent yet reproducible."""
+        rec = tmp_path / "rec.pdbqt"
+        rec.write_text(
+            "ATOM      1  N   SER A   1      0.000   0.000   0.000  1.00 20.00      A    N\n" * 5
+            + "ENDMDL\n"
+        )
+        lig = tmp_path / "lig.pdbqt"
+        lig.write_text(
+            "ATOM      1  C   LIG A   1      1.000   2.000   3.000  1.00 20.00      A    C\n" * 5
+            + "ENDMDL\n"
+        )
+        pose_files = []
+        for i in range(2):
+            p = tmp_path / f"pose_{i}.pdbqt"
+            p.write_text(
+                f"ATOM      1  C   LIG A   1      {1 + i}.000   2.000   3.000  1.00 20.00      A    C\n"
+                * 5
+                + "ENDMDL\n"
+            )
+            pose_files.append(str(p))
+
+        seeds_seen: list[int] = []
+
+        def make_result(*args, **kwargs):
+            idx = mock_dock.call_count - 1
+            seeds_seen.append(kwargs.get("seed"))
+            return DockingResult(
+                compound_name=f"lig_repeat{idx + 1}",
+                receptor=str(rec),
+                center=(0, 0, 0),
+                box_size=(20, 20, 20),
+                best_affinity=-7.0 - idx * 0.1,
+                best_pose_pdbqt=pose_files[idx],
+                seed=kwargs.get("seed"),
+            )
+
+        mock_dock.side_effect = make_result
+
+        summary = docking.dock_ensemble(
+            str(rec),
+            str(lig),
+            (0, 0, 0),
+            (20, 20, 20),
+            n_repeats=2,
+            seed=None,
+        )
+        base = summary["base_seed"]
+        assert isinstance(base, int)
+        assert seeds_seen == [base, base + 1]
+        # A second unseeded invocation must draw a different base (astronomically
+        # unlikely to collide; SystemRandom makes it genuinely random).
+        mock_dock.reset_mock()
+        seeds_seen.clear()
+        mock_dock.side_effect = make_result
+        summary2 = docking.dock_ensemble(
+            str(rec),
+            str(lig),
+            (0, 0, 0),
+            (20, 20, 20),
+            n_repeats=2,
+            seed=None,
+        )
+        assert summary2["base_seed"] != base
+
 
 class TestCountPdbqtAtoms:
     def test_missing_file_raises(self):

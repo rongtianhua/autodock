@@ -176,6 +176,30 @@ def post_process_docking(
             fh.write("\n".join(summary_lines) + "\n")
         outputs["interaction_summary_txt"] = summary_path
 
+    # ── 2b. ProLIF native interaction figure ────────────────────────────────
+    # The interactive LigNetwork HTML is ProLIF's canonical 2D interaction
+    # figure (its save_png is Jupyter-only). Rendered whenever the ProLIF
+    # engine contributed to the interaction set (method "prolif" or "both").
+    if (
+        do_interactions
+        and interaction_method in ("prolif", "both")
+        and receptor_pdb
+        and result.best_pose_pdbqt
+    ):
+        try:
+            from autodock.interactions import render_prolif_figure
+
+            prolif_figs = render_prolif_figure(
+                receptor_pdb,
+                result.best_pose_pdbqt,
+                output_html=os.path.join(dirs["figures"], "2d_prolif_network.html"),
+                output_barcode_png=os.path.join(dirs["figures"], "2d_prolif_barcode.png"),
+                output_barcode_pdf=os.path.join(dirs["figures"], "2d_prolif_barcode.pdf"),
+            )
+            outputs.update({f"fig_prolif_{k}": v for k, v in prolif_figs.items()})
+        except (RuntimeError, OSError, ValueError, TypeError, ImportError) as exc:
+            logger.warning(f"ProLIF native figure failed: {exc}")
+
     # ── 3. Render figures (2D + 3D) ─────────────────────────────────────────
     if do_rendering and receptor_pdb and result.best_pose_pdbqt:
         fig_dir = dirs["figures"]

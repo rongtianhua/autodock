@@ -670,6 +670,83 @@ def detect_interactions_prolif(
     return interactions
 
 
+def render_prolif_figure(
+    receptor_pdb: str,
+    ligand_pdbqt: str,
+    output_html: str,
+    output_barcode_png: str | None = None,
+    output_barcode_pdf: str | None = None,
+) -> dict[str, str]:
+    """Render ProLIF's native interaction figures for a docked complex.
+
+    Produces two *native* ProLIF v2 visualisations of the same fingerprint
+    used by :func:`detect_interactions_prolif`:
+
+    1. **LigNetwork** (interactive HTML) — the canonical ProLIF 2D ligand
+       interaction figure: ligand 2D structure with per-residue interaction
+       edges. ``save_png`` is Jupyter-only (it returns a Javascript display
+       object, not bytes), so the interactive HTML is the primary artefact.
+    2. **Barcode** (PNG + optional PDF, 300 dpi) — residues × frames presence
+       matrix; for a single static pose it degenerates to one column but is
+       still useful as a residue × interaction-type summary and becomes
+       meaningful when the caller passes multi-frame fingerprints later.
+
+    Args:
+        receptor_pdb: Receptor PDB file.
+        ligand_pdbqt: Ligand PDBQT file (may contain REMARK SMILES).
+        output_html: Output path for the interactive LigNetwork HTML.
+        output_barcode_png: Optional output path for the barcode PNG.
+        output_barcode_pdf: Optional output path for the barcode PDF.
+
+    Returns:
+        Dict of produced artefact kind → path (only successfully written ones).
+    """
+    if not _HAVE_RDKIT or not _HAVE_PROLIF:
+        raise VisualizationError("ProLIF figure requires rdkit + prolif.")
+
+    import prolif as plf
+
+    t0 = time.perf_counter()
+    prot_mol = _build_prolif_receptor_mol(receptor_pdb)
+    lig_mol_rdkit = _build_ligand_mol_for_prolif(ligand_pdbqt)
+    lig_mol = plf.Molecule.from_rdkit(lig_mol_rdkit)
+
+    fp = plf.Fingerprint()
+    ifp = fp.generate(lig_mol, prot_mol, metadata=True)
+    if not ifp:
+        logger.info("ProLIF figure: 0 interactions — nothing to render")
+        return {}
+    # plot_barcode / plot_lignetwork require the post-run `ifp` attribute;
+    # Fingerprint.generate returns it but does not set it.
+    fp.ifp = {0: ifp}
+
+    produced: dict[str, str] = {}
+
+    try:
+        network = fp.plot_lignetwork(lig_mol_rdkit, display_all=False, kind="aggregate")
+        network.save(output_html)
+        produced["lignetwork_html"] = output_html
+    except (RuntimeError, OSError, ValueError, TypeError, ImportError) as exc:
+        logger.warning(f"ProLIF LigNetwork render failed: {exc}")
+
+    if output_barcode_png or output_barcode_pdf:
+        try:
+            ax = fp.plot_barcode(figsize=(7, 5), dpi=300, n_frame_ticks=1)
+            fig = ax.get_figure()
+            if output_barcode_png:
+                fig.savefig(output_barcode_png, dpi=300, bbox_inches="tight")
+                produced["barcode_png"] = output_barcode_png
+            if output_barcode_pdf:
+                fig.savefig(output_barcode_pdf, bbox_inches="tight")
+                produced["barcode_pdf"] = output_barcode_pdf
+        except (RuntimeError, OSError, ValueError, TypeError, ImportError) as exc:
+            logger.warning(f"ProLIF barcode render failed: {exc}")
+
+    total_t = time.perf_counter() - t0
+    logger.info(f"ProLIF native figures rendered ({total_t:.3f}s)")
+    return produced
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Cross-engine discrepancy reporting
 # ─────────────────────────────────────────────────────────────────────────────

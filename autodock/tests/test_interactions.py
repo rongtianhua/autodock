@@ -639,3 +639,65 @@ class TestInteractionCategories:
             "Metal complex",
         }
         assert expected.issubset(types)
+
+
+# ── ProLIF native figure ─────────────────────────────────────────────────────
+
+
+class TestRenderProlifFigure:
+    def _fake_fp(self, ifp_result):
+        fp = MagicMock()
+        fp.generate.return_value = ifp_result
+        return fp
+
+    @patch("autodock.interactions._build_ligand_mol_for_prolif")
+    @patch("autodock.interactions._build_prolif_receptor_mol")
+    def test_empty_ifp_produces_nothing(self, mock_rec, mock_lig, tmp_path):
+        import prolif as plf
+
+        mock_lig.return_value = MagicMock()
+        with patch.object(plf, "Molecule") as mock_mol_cls:
+            mock_mol_cls.from_rdkit.return_value = MagicMock()
+            with patch.object(plf, "Fingerprint") as mock_fp_cls:
+                mock_fp_cls.return_value = self._fake_fp({})
+                out = intx.render_prolif_figure(
+                    "rec.pdb",
+                    "lig.pdbqt",
+                    output_html=str(tmp_path / "net.html"),
+                    output_barcode_png=str(tmp_path / "bc.png"),
+                )
+        assert out == {}
+
+    @patch("autodock.interactions._build_ligand_mol_for_prolif")
+    @patch("autodock.interactions._build_prolif_receptor_mol")
+    def test_writes_network_and_barcode(self, mock_rec, mock_lig, tmp_path):
+        import prolif as plf
+
+        mock_lig.return_value = MagicMock()
+        network = MagicMock()
+        fig = MagicMock()
+        ax = MagicMock()
+        ax.get_figure.return_value = fig
+        fp = MagicMock()
+        fp.generate.return_value = {("LIG", "ASP1"): {"HBAcceptor": [{"distance": 2.8}]}}
+        fp.plot_lignetwork.return_value = network
+        fp.plot_barcode.return_value = ax
+
+        with patch.object(plf, "Molecule") as mock_mol_cls:
+            mock_mol_cls.from_rdkit.return_value = MagicMock()
+            with patch.object(plf, "Fingerprint", return_value=fp):
+                out = intx.render_prolif_figure(
+                    "rec.pdb",
+                    "lig.pdbqt",
+                    output_html=str(tmp_path / "net.html"),
+                    output_barcode_png=str(tmp_path / "bc.png"),
+                    output_barcode_pdf=str(tmp_path / "bc.pdf"),
+                )
+
+        assert out["lignetwork_html"] == str(tmp_path / "net.html")
+        assert out["barcode_png"] == str(tmp_path / "bc.png")
+        assert out["barcode_pdf"] == str(tmp_path / "bc.pdf")
+        network.save.assert_called_once_with(str(tmp_path / "net.html"))
+        fig.savefig.assert_called()
+        # generate result must be exposed as fp.ifp for plot_* to work
+        assert fp.ifp == {0: fp.generate.return_value}
